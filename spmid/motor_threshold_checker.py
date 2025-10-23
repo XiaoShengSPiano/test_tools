@@ -73,7 +73,7 @@ class MotorThresholdChecker:
         pwm_value = a * (velocity ** 2) + b * velocity + c
         return pwm_value
     
-    def check_threshold(self, velocity, motor_name, tolerance=10):
+    def check_threshold(self, velocity: float, motor_name: str, tolerance: float = 10) -> bool:
         """
         检查单个电机的PWM值是否超过阈值（考虑误差范围）
         
@@ -140,25 +140,25 @@ class MotorThresholdChecker:
         return results
 
 # 使用示例
-if __name__ == "__main__":
-    # 初始化检查器（请替换为实际文件路径）
-    checker = MotorThresholdChecker(
-        fit_equations_path="quadratic_fit_formulas.json",
-        pwm_thresholds_path="inflection_pwm_values.json"
-    )
+# if __name__ == "__main__":
+#     # 初始化检查器（请替换为实际文件路径）
+#     checker = MotorThresholdChecker(
+#         fit_equations_path="quadratic_fit_formulas.json",
+#         pwm_thresholds_path="inflection_pwm_values.json"
+#     )
     
-    # 测试速度值
-    test_velocity = 100.0
+#     # 测试速度值
+#     test_velocity = 100.0
     
-    # 检查所有电机
-    results = checker.check_all_motors(test_velocity)
+#     # 检查所有电机
+#     results = checker.check_all_motors(test_velocity)
     
-    # 打印最终结果
-    print("\n最终结果汇总:")
-    print(f"速度值: {test_velocity}")
-    for motor_name, exceeds_threshold in results.items():
-        status = "超过阈值" if exceeds_threshold else "未超过阈值"
-        print(f"{motor_name}: {status}")
+#     # 打印最终结果
+#     print("\n最终结果汇总:")
+#     print(f"速度值: {test_velocity}")
+#     for motor_name, exceeds_threshold in results.items():
+#         status = "超过阈值" if exceeds_threshold else "未超过阈值"
+#         print(f"{motor_name}: {status}")
     
     # 也可以单独检查特定电机
     # motor_3_result = checker.check_threshold(test_velocity, "motor_3")

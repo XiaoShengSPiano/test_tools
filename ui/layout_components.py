@@ -38,8 +38,6 @@ def create_main_layout():
         # 隐藏的会话ID存储
         dcc.Store(id='session-id', storage_type='session'),
 
-        # 隐藏的加载触发器
-        dcc.Store(id='loading-trigger', storage_type='memory'),
 
         # 页面标题
         dbc.Container([
@@ -542,16 +540,13 @@ def create_report_layout(backend):
                             columns=[
                                 {"name": "问题类型", "id": "problem_type"},
                                 {"name": "数据类型", "id": "data_type"},
-                                {"name": "键位", "id": "keyId"},
+                                {"name": "键位ID", "id": "keyId"},
+                                {"name": "键名", "id": "keyName"},
                                 {"name": "按下时间", "id": "keyOn"},
                                 {"name": "释放时间", "id": "keyOff"},
-                                {"name": "均值", "id": "mean"},
-                                {"name": "标准差", "id": "std"},
-                                {"name": "最大值", "id": "max"},
-                                {"name": "最小值", "id": "min"},
                                 {"name": "index", "id": "index"},
                             ],
-                            data=backend.get_drop_hammers_data(),
+                            data=backend.get_error_table_data('丢锤'),
                             page_size=10,
                             style_cell={
                                 'textAlign': 'center',
@@ -562,15 +557,12 @@ def create_report_layout(backend):
                                 'textOverflow': 'ellipsis',
                             },
                             style_cell_conditional=[
-                                {'if': {'column_id': 'problem_type'}, 'width': '15%'},
+                                {'if': {'column_id': 'problem_type'}, 'width': '16%'},
                                 {'if': {'column_id': 'data_type'}, 'width': '12%'},
-                                {'if': {'column_id': 'keyId'}, 'width': '10%'},
-                                {'if': {'column_id': 'keyOn'}, 'width': '15%'},
-                                {'if': {'column_id': 'keyOff'}, 'width': '15%'},
-                                {'if': {'column_id': 'mean'}, 'width': '12%'},
-                                {'if': {'column_id': 'std'}, 'width': '12%'},
-                                {'if': {'column_id': 'max'}, 'width': '9%'},
-                                {'if': {'column_id': 'min'}, 'width': '9%'},
+                                {'if': {'column_id': 'keyId'}, 'width': '12%'},
+                                {'if': {'column_id': 'keyName'}, 'width': '12%'},
+                                {'if': {'column_id': 'keyOn'}, 'width': '24%'},
+                                {'if': {'column_id': 'keyOff'}, 'width': '24%'},
                             ],
                             style_header={
                                 'backgroundColor': '#f8d7da',
@@ -621,16 +613,13 @@ def create_report_layout(backend):
                             columns=[
                                 {"name": "问题类型", "id": "problem_type"},
                                 {"name": "数据类型", "id": "data_type"},
-                                {"name": "键位", "id": "keyId"},
+                                {"name": "键位ID", "id": "keyId"},
+                                {"name": "键名", "id": "keyName"},
                                 {"name": "按下时间", "id": "keyOn"},
                                 {"name": "释放时间", "id": "keyOff"},
-                                {"name": "均值", "id": "mean"},
-                                {"name": "标准差", "id": "std"},
-                                {"name": "最大值", "id": "max"},
-                                {"name": "最小值", "id": "min"},
                                 {"name": "index", "id": "index"}
                             ],
-                            data=backend.get_multi_hammers_data(),
+                            data=backend.get_error_table_data('多锤'),
                             page_size=10,
                             style_cell={
                                 'textAlign': 'center',
@@ -641,15 +630,12 @@ def create_report_layout(backend):
                                 'textOverflow': 'ellipsis',
                             },
                             style_cell_conditional=[
-                                {'if': {'column_id': 'problem_type'}, 'width': '15%'},
+                                {'if': {'column_id': 'problem_type'}, 'width': '16%'},
                                 {'if': {'column_id': 'data_type'}, 'width': '12%'},
-                                {'if': {'column_id': 'keyId'}, 'width': '10%'},
-                                {'if': {'column_id': 'keyOn'}, 'width': '15%'},
-                                {'if': {'column_id': 'keyOff'}, 'width': '15%'},
-                                {'if': {'column_id': 'mean'}, 'width': '12%'},
-                                {'if': {'column_id': 'std'}, 'width': '12%'},
-                                {'if': {'column_id': 'max'}, 'width': '9%'},
-                                {'if': {'column_id': 'min'}, 'width': '9%'},
+                                {'if': {'column_id': 'keyId'}, 'width': '12%'},
+                                {'if': {'column_id': 'keyName'}, 'width': '12%'},
+                                {'if': {'column_id': 'keyOn'}, 'width': '24%'},
+                                {'if': {'column_id': 'keyOff'}, 'width': '24%'},
                             ],
                             style_header={
                                 'backgroundColor': '#fff3cd',
@@ -684,6 +670,74 @@ def create_report_layout(backend):
                             selected_rows=[],
                             sort_action="native",
                             style_table={'height': 'calc(45vh - 120px)', 'overflowY': 'auto', 'border': '1px solid #dee2e6', 'borderRadius': '5px'}
+                        ),
+                    ], className="mb-3", style={'backgroundColor': '#ffffff', 'padding': '15px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
+
+                    # 无效音符统计表格
+                    html.Div([
+                        dbc.Row([
+                            dbc.Col([
+                                html.H6("无效音符统计", className="mb-2",
+                                       style={'color': '#6c757d', 'fontWeight': 'bold', 'borderBottom': '2px solid #6c757d', 'paddingBottom': '5px'}),
+                            ], width=12)
+                        ]),
+                        dash_table.DataTable(
+                            id='invalid-notes-table',
+                            columns=[
+                                {"name": "数据类型", "id": "data_type"},
+                                {"name": "总音符数", "id": "total_notes"},
+                                {"name": "有效音符", "id": "valid_notes"},
+                                {"name": "无效音符", "id": "invalid_notes"},
+                                {"name": "持续时间过短", "id": "duration_too_short"},
+                                {"name": "触后力度过弱", "id": "after_touch_too_weak"},
+                                {"name": "数据为空", "id": "empty_data"},
+                                {"name": "其他错误", "id": "other_errors"}
+                            ],
+                            data=backend.get_invalid_notes_table_data(),
+                            page_size=10,
+                            style_cell={
+                                'textAlign': 'center',
+                                'fontSize': '10px',
+                                'fontFamily': 'Arial',
+                                'padding': '6px',
+                                'overflow': 'hidden',
+                                'textOverflow': 'ellipsis',
+                            },
+                            style_cell_conditional=[
+                                {'if': {'column_id': 'data_type'}, 'width': '15%'},
+                                {'if': {'column_id': 'total_notes'}, 'width': '12%'},
+                                {'if': {'column_id': 'valid_notes'}, 'width': '12%'},
+                                {'if': {'column_id': 'invalid_notes'}, 'width': '12%'},
+                                {'if': {'column_id': 'duration_too_short'}, 'width': '15%'},
+                                {'if': {'column_id': 'after_touch_too_weak'}, 'width': '15%'},
+                                {'if': {'column_id': 'empty_data'}, 'width': '10%'},
+                                {'if': {'column_id': 'other_errors'}, 'width': '9%'},
+                            ],
+                            style_header={
+                                'backgroundColor': '#e9ecef',
+                                'fontWeight': 'bold',
+                                'border': '1px solid #dee2e6',
+                                'fontSize': '10px',
+                                'color': '#495057',
+                                'textAlign': 'center'
+                            },
+                            style_data={
+                                'border': '1px solid #dee2e6',
+                                'fontSize': '9px'
+                            },
+                            style_data_conditional=[
+                                {
+                                    'if': {'filter_query': '{data_type} = 录制数据'},
+                                    'backgroundColor': '#f8f9fa',
+                                    'fontWeight': 'bold'
+                                },
+                                {
+                                    'if': {'filter_query': '{data_type} = 播放数据'},
+                                    'backgroundColor': '#ffffff'
+                                }
+                            ],
+                            sort_action="native",
+                            style_table={'height': 'calc(30vh - 80px)', 'overflowY': 'auto', 'border': '1px solid #dee2e6', 'borderRadius': '5px'}
                         ),
                     ], className="mb-3", style={'backgroundColor': '#ffffff', 'padding': '15px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
 

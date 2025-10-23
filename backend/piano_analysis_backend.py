@@ -26,6 +26,8 @@ from dtw import dtw
 import sys
 # 导入SPMID模块
 import spmid
+# from spmid.spmid_analysis import _calculate_global_time_offset  # 不再需要，使用分析器实例
+from spmid.spmid_analyzer import SPMIDAnalyzer
 
 logger = Logger.get_logger()
 
@@ -78,133 +80,272 @@ class PianoAnalysisBackend:
     
     def spmid_offset_alignment(self):
         """
-        执行SPMID偏移量对齐分析
+        执行SPMID偏移量对齐分析（使用新的动态时间窗口DTW算法）
         
         功能说明：
         分析钢琴录制数据与回放数据之间的时间偏移，计算每个键位的时序偏差统计信息。
-        通过DTW（动态时间规整）算法对齐时间序列，计算偏移量并生成统计报告。
+        使用新的动态时间窗口DTW算法进行精确对齐，解决音符数量差异大的问题。
         
         数据来源：
-        - self.record_key_of_notes: 按键位ID分组的录制音符数据（来自有效数据过滤）
-        - self.replay_key_of_notes: 按键位ID分组的播放音符数据（来自有效数据过滤）
+        - self.valid_record_data: 有效录制音符数据
+        - self.valid_replay_data: 有效播放音符数据
         
         返回：
         - df_stats: DataFrame，包含每个键位的统计信息（键位ID、配对数、中位数、均值、标准差）
         - all_offsets: numpy数组，包含所有键位的偏移量数据
         """
-        # 初始化统计变量
-        key_stats = []  # 存储每个键位的统计信息列表
-        all_offsets = []  # 存储所有键位的偏移量数据
-        hammer_counts = {'record': 0, 'replay': 0}  # 统计录制和播放的锤子总数
+        # 检查有效数据是否存在
+        if self.valid_record_data is None or self.valid_replay_data is None:
+            logger.error("有效数据不存在，无法进行偏移对齐分析")
+            return pd.DataFrame(), np.array([])
         
-        # 遍历所有钢琴键位进行对齐分析（键位ID范围：1-88）
+        try:
+            # 从分析器实例获取全局时间偏移量
+            if hasattr(self, 'analyzer') and self.analyzer:
+                global_offset = self.analyzer.get_global_time_offset()
+            else:
+                # 如果没有分析器实例，创建一个临时分析器来计算
+                temp_analyzer = SPMIDAnalyzer()
+                # 执行完整的分析流程来获取全局时间偏移量
+                temp_analyzer.analyze(self.record_data, self.replay_data)
+                global_offset = temp_analyzer.get_global_time_offset()
+            logger.info(f"计算得到的全局时间偏移量: {global_offset:.2f}ms")
+
+            # 按键位分组数据
+            record_by_key, replay_by_key = self._group_notes_by_key()
+
+            # 分析每个键位的偏移统计
+            key_stats, all_offsets = self._analyze_key_offset_statistics(record_by_key, replay_by_key)
+
+            # 生成统计报告
+            df_stats = pd.DataFrame(key_stats)
+            all_offsets = np.array(all_offsets)
+            
+            # 打印分析摘要
+            self._log_offset_alignment_summary(key_stats, all_offsets)
+            
+            return df_stats, all_offsets
+        except Exception as e:
+            logger.error(f"偏移对齐分析失败: {e}")
+            return pd.DataFrame(), np.array([])
+    
+    def _group_notes_by_key(self):
+        """按键位分组音符数据"""
+        record_by_key = {}
+        replay_by_key = {}
+        
+        # 分组录制数据
+        for note in self.valid_record_data:
+            if note.id not in record_by_key:
+                record_by_key[note.id] = []
+            if len(note.hammers) > 0:
+                record_by_key[note.id].append(note.hammers.index[0] + note.offset)
+        
+        # 分组播放数据
+        for note in self.valid_replay_data:
+            if note.id not in replay_by_key:
+                replay_by_key[note.id] = []
+            if len(note.hammers) > 0:
+                replay_by_key[note.id].append(note.hammers.index[0] + note.offset)
+        
+        return record_by_key, replay_by_key
+    
+    def _analyze_key_offset_statistics(self, record_by_key, replay_by_key):
+        """分析每个键位的偏移统计信息"""
+        key_stats = []
+        all_offsets = []
+        
+        # 分析每个键位（钢琴88个键）
         for key_id in range(1, 89):
-            # 分析单个键位的对齐情况
-            key_result = self._analyze_key_alignment(key_id, hammer_counts)
-            if key_result:
-                # 如果该键位有有效的对齐结果，添加到统计中
-                key_stats.append(key_result['stats'])  # 键位统计信息
-                all_offsets.extend(key_result['offsets'])  # 该键位的偏移量列表
+            if key_id in record_by_key and key_id in replay_by_key:
+                key_offsets = self._calculate_key_offsets(
+                    record_by_key[key_id], 
+                    replay_by_key[key_id]
+                )
+                
+                if key_offsets:
+                    stats = self._calculate_key_statistics(key_id, key_offsets)
+                    key_stats.append(stats)
+                    all_offsets.extend(key_offsets)
         
-        # 生成统计报告
-        df_stats = pd.DataFrame(key_stats)  # 转换为DataFrame格式
-        all_offsets = np.array(all_offsets)  # 转换为numpy数组
-        self._print_alignment_summary(hammer_counts, all_offsets)  # 打印分析摘要
+        return key_stats, all_offsets
+    
+    def _calculate_key_offsets(self, record_times, replay_times):
+        """计算单个键位的偏移量"""
+        record_times = sorted(record_times)
+        replay_times = sorted(replay_times)
         
-        return df_stats, all_offsets
+        key_offsets = []
+        for record_time in record_times:
+            # 找到最接近的播放时间
+            closest_replay_time = min(replay_times, key=lambda x: abs(x - record_time))
+            offset = closest_replay_time - record_time
+            key_offsets.append(offset)
+        
+        return key_offsets
+    
+    def _calculate_key_statistics(self, key_id, key_offsets):
+        """计算单个键位的统计信息"""
+        return {
+            'key_id': key_id,
+            'count': len(key_offsets),
+            'median': np.median(key_offsets),
+            'mean': np.mean(key_offsets),
+            'std': np.std(key_offsets)
+        }
+    
+    def _log_offset_alignment_summary(self, key_stats, all_offsets):
+        """记录偏移对齐分析摘要"""
+        logger.info(f"偏移对齐分析完成: 分析键位{len(key_stats)}个, 总偏移量{len(all_offsets)}个")
+        if len(all_offsets) > 0:
+            logger.info(f"全局偏移量统计: 中位数={np.median(all_offsets):.2f}ms, 均值={np.mean(all_offsets):.2f}ms, 标准差={np.std(all_offsets):.2f}ms")
 
-    def _analyze_key_alignment(self, key_id, hammer_counts):
+    def update_key_of_notes(self):
+        """使用有效数据重新构建按键索引"""
+        # 检查有效数据是否存在
+        if self.valid_record_data is None or self.valid_replay_data is None:
+            error_msg = "有效数据不存在，无法构建按键索引。请检查数据过滤过程。"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
+        
+        # 清空现有数据
+        self.record_key_of_notes = {}
+        self.replay_key_of_notes = {}
+
+        # 构建按键索引的辅助函数
+        def _build_key_index(notes, key_dict):
+            """构建按键索引的通用函数"""
+            for note in notes:
+                if note.id not in key_dict:
+                    key_dict[note.id] = []
+                key_dict[note.id].append(note)
+
+        # 使用有效数据重新构建按键索引
+        _build_key_index(self.valid_record_data, self.record_key_of_notes)
+        _build_key_index(self.valid_replay_data, self.replay_key_of_notes)
+
+        # 按时间排序所有键位的音符
+        self._sort_and_log_key_notes(self.record_key_of_notes, "录制")
+        self._sort_and_log_key_notes(self.replay_key_of_notes, "播放")
+
+    def _find_matched_note_pairs(self, record_notes, replay_notes):
         """
-        分析单个键位的对齐情况
+        找到录制和播放音符之间的最佳匹配对
+        
+        关键理解：
+        1. 以录制数据为基准进行匹配
+        2. 录制和播放有不同的起始时间戳（offset）
+        3. 数据记录的是相对时间戳，需要转换为绝对时间戳进行比较
+        
+        匹配策略：
+        1. 遍历每个录制音符
+        2. 在播放音符中找到最佳匹配（基于绝对时间戳）
+        3. 避免重复匹配
         
         参数：
-        - key_id: 钢琴键位ID（1-88）
-        - hammer_counts: 字典，用于统计录制和播放的锤子总数
-        
-        数据来源：
-        - self.record_key_of_notes: 按键位ID分组的录制音符字典
-        - self.replay_key_of_notes: 按键位ID分组的播放音符字典
+        - record_notes: 录制音符列表
+        - replay_notes: 播放音符列表
         
         返回：
-        - dict: 包含'stats'（统计信息）和'offsets'（偏移量列表）的字典
-        - None: 如果该键位没有数据或分析失败
+        - list: [(record_note, replay_note, match_quality), ...] 匹配对列表
         """
-        # 获取指定键位的音符数据
-        record_notes = self.record_key_of_notes.get(key_id, [])  # 录制数据中键位ID=key_id的所有音符
-        replay_notes = self.replay_key_of_notes.get(key_id, [])  # 播放数据中键位ID=key_id的所有音符
-        
-        # 如果某个键位没有录制数据或播放数据，跳过分析
         if not record_notes or not replay_notes:
-            return None
+            return []
         
-        # 提取锤子时间戳数据
-        # hammer_times: {'record': [时间戳列表], 'replay': [时间戳列表]}
-        hammer_times = self._extract_hammer_times(record_notes, replay_notes, hammer_counts)
-        if not hammer_times:
-            return None
+        matched_pairs = []
+        used_replay_indices = set()  # 记录已使用的播放音符索引
         
-        # 执行DTW（动态时间规整）对齐算法
-        # offsets: 偏移量列表，表示录制和播放之间的时间差异
-        offsets = self._perform_dtw_alignment(hammer_times['record'], hammer_times['replay'])
-        if not offsets:
-            return None
+        # 以录制数据为基准，为每个录制音符找最佳匹配
+        for record_note in record_notes:
+            best_match = None
+            best_quality = 0
+            best_replay_idx = -1
+            
+            # 在播放音符中寻找最佳匹配
+            for replay_idx, replay_note in enumerate(replay_notes):
+                # 跳过已经被使用的播放音符
+                if replay_idx in used_replay_indices:
+                    continue
+                
+                # 计算匹配质量（基于绝对时间戳）
+                match_quality = self._calculate_match_quality_absolute_time(record_note, replay_note)
+                
+                if match_quality > best_quality:
+                    best_quality = match_quality
+                    best_match = replay_note
+                    best_replay_idx = replay_idx
+            
+            # 如果找到质量足够好的匹配，添加到结果中
+            if best_match is not None and best_quality > 0.3:  # 质量阈值
+                matched_pairs.append((record_note, best_match, best_quality))
+                used_replay_indices.add(best_replay_idx)
+                logger.debug(f"匹配成功: 录制音符offset={record_note.offset}, 播放音符offset={best_match.offset}, 质量={best_quality:.3f}")
+            else:
+                logger.debug(f"录制音符offset={record_note.offset}未找到合适匹配")
         
-        # 计算该键位的统计信息（中位数、均值、标准差等）
-        stats = self._calculate_key_statistics(key_id, offsets)
-        
-        return {'stats': stats, 'offsets': offsets}
+        logger.info(f"匹配完成: 录制音符{len(record_notes)}个, 找到匹配{len(matched_pairs)}个")
+        return matched_pairs
 
-    def _extract_hammer_times(self, record_notes, replay_notes, hammer_counts):
+    def _calculate_match_quality_absolute_time(self, record_note, replay_note):
         """
-        提取锤子时间戳数据
+        基于绝对时间戳计算两个音符之间的匹配质量分数（仅使用第一个锤子与按键持续时间）
         
-        参数：
-        - record_notes: 录制数据中某个键位的音符列表
-        - replay_notes: 播放数据中某个键位的音符列表
-        - hammer_counts: 字典，用于统计锤子总数 {'record': 0, 'replay': 0}
-        
-        数据来源：
-        - note.hammers: 音符的锤子数据（pandas Series，索引为时间戳）
-        - note.offset: 音符的全局时间偏移量
-        
-        处理逻辑：
-        1. 遍历录制音符，在播放音符中找到最佳匹配
-        2. 提取匹配音符对的锤子时间戳
-        3. 统计锤子总数
-        
-        返回：
-        - dict: {'record': [录制时间戳列表], 'replay': [播放时间戳列表]}
-        - None: 如果数据无效
+        时间单位：毫秒（全部为绝对时间：相对时间戳 + offset）
+        评分因素（0-1）：
+        - keyon 接近度（0.6）
+        - 持续时间相似度（0.3）
+        - keyoff 接近度（0.1）
         """
-        record_times = []  # 存储录制数据的锤子时间戳
-        replay_times = []  # 存储播放数据的锤子时间戳
-        
-        # 遍历录制数据中的每个音符
-        for note in record_notes:
-            # 在播放数据中找到最佳匹配的音符
-            # 注意：这里存在逻辑问题，因为record_notes和replay_notes都是相同键位的音符
-            match_note = spmid.find_best_matching_note(note, replay_notes)
-            if match_note is None:
-                continue  # 没有找到匹配的音符，跳过
-            
-            # 提取录制数据的时间戳
-            # note.hammers.index: 锤子的相对时间戳
-            # note.offset: 音符的全局时间偏移量
-            # 最终时间戳 = 相对时间戳 + 全局偏移量
-            record_times.extend(note.hammers.index + note.offset)
-            hammer_counts['record'] += len(note.hammers)  # 统计录制锤子总数
-            
-            # 提取播放数据的时间戳
-            # match_note.hammers.index: 匹配音符的锤子相对时间戳
-            # match_note.offset: 匹配音符的全局时间偏移量
-            replay_times.extend(match_note.hammers.index + match_note.offset)
-            hammer_counts['replay'] += len(match_note.hammers)  # 统计播放锤子总数
-        
-        # 验证时间戳数据的有效性
-        if not self._validate_hammer_times(record_times, replay_times):
-            return None
-        
-        return {'record': record_times, 'replay': replay_times}
+        try:
+            # 基础校验
+            if len(record_note.hammers) == 0 or len(replay_note.hammers) == 0:
+                return 0.0
+
+            def get_key_times(note):
+                """返回 (keyon, keyoff) 绝对时间，毫秒。优先 after_touch；无则使用第一锤。"""
+                first_hammer_abs = note.hammers.index[0] + note.offset
+                if len(note.after_touch) > 0:
+                    keyon = note.after_touch.index[0] + note.offset
+                    keyoff = note.after_touch.index[-1] + note.offset
+                else:
+                    keyon = first_hammer_abs
+                    keyoff = first_hammer_abs
+                return float(keyon), float(keyoff)
+
+            record_keyon, record_keyoff = get_key_times(record_note)
+            replay_keyon, replay_keyoff = get_key_times(replay_note)
+
+            keyon_diff = abs(record_keyon - replay_keyon)
+            keyoff_diff = abs(record_keyoff - replay_keyoff)
+
+            record_duration = max(0.0, record_keyoff - record_keyon)
+            replay_duration = max(0.0, replay_keyoff - replay_keyon)
+            target_duration = max(record_duration, replay_duration)
+
+            # 阈值：与 find_best_matching_notes 保持一致量级（约 500ms-2000ms）
+            base_threshold_ms = 1000.0
+            duration_factor = min(2.0, max(0.5, target_duration / 500.0))
+            threshold_ms = base_threshold_ms * duration_factor
+
+            def score_from_diff(diff_ms: float, threshold: float) -> float:
+                if threshold <= 0:
+                    return 0.0
+                ratio = diff_ms / threshold
+                return 1.0 - min(1.0, max(0.0, ratio))
+
+            keyon_score = score_from_diff(keyon_diff, threshold_ms)
+            keyoff_score = score_from_diff(keyoff_diff, threshold_ms)
+
+            if record_duration == 0.0 and replay_duration == 0.0:
+                duration_score = 1.0
+            elif record_duration == 0.0 or replay_duration == 0.0:
+                duration_score = 0.0
+            else:
+                duration_score = min(record_duration, replay_duration) / max(record_duration, replay_duration)
+
+            return float(keyon_score * 0.6 + duration_score * 0.3 + keyoff_score * 0.1)
+        except Exception:
+            return 0.0
 
     def _validate_hammer_times(self, record_times, replay_times):
         """
@@ -228,50 +369,7 @@ class PianoAnalysisBackend:
             return False
         return True
 
-    def _perform_dtw_alignment(self, record_times, replay_times):
-        """
-        执行DTW（动态时间规整）对齐算法
-        
-        参数：
-        - record_times: 录制数据的锤子时间戳列表
-        - replay_times: 播放数据的锤子时间戳列表
-        
-        算法说明：
-        DTW（Dynamic Time Warping）是一种时间序列对齐算法，用于处理两个时间序列
-        在时间轴上的非线性对齐问题。在钢琴分析中，用于对齐录制和播放的锤子时间戳。
-        
-        处理过程：
-        1. 将时间戳列表转换为numpy数组并重塑为列向量
-        2. 使用DTW算法计算两个时间序列的最优对齐路径
-        3. 根据对齐路径计算偏移量（播放时间 - 录制时间）
-        
-        返回：
-        - list: 偏移量列表，表示录制和播放之间的时间差异（单位：毫秒）
-        - None: 如果DTW对齐失败
-        """
-        try:
-            # 执行DTW对齐
-            # 将时间戳列表转换为numpy数组并重塑为列向量（DTW算法要求）
-            alignment = dtw(
-                np.array(record_times).reshape(-1, 1),  # 录制时间戳列向量
-                np.array(replay_times).reshape(-1, 1),  # 播放时间戳列向量
-                keep_internals=True  # 保留内部对齐信息
-            )
-            
-            # 计算偏移量
-            # alignment.index1: 录制时间戳的索引序列
-            # alignment.index2: 播放时间戳的索引序列
-            # 偏移量 = 播放时间戳 - 录制时间戳
-            offsets = [
-                replay_times[idx2] - record_times[idx1] 
-                for idx1, idx2 in zip(alignment.index1, alignment.index2)
-            ]
-            
-            return offsets
-            
-        except Exception as e:
-            logger.warning(f"DTW对齐失败: {e}")
-            return None
+    
 
     def _calculate_key_statistics(self, key_id, offsets):
         """
@@ -318,18 +416,6 @@ class PianoAnalysisBackend:
         logger.info(f"所有按键偏移量均值: {np.mean(all_offsets):.2f} ms")
         logger.info(f"所有按键偏移量标准差: {np.std(all_offsets):.2f} ms")
 
-
-    def update_key_of_notes(self):
-        """使用有效数据重新构建按键索引"""
-        # 检查有效数据是否存在
-        if self.valid_record_data is None or self.valid_replay_data is None:
-            error_msg = "有效数据不存在，无法构建按键索引。请检查数据过滤过程。"
-            logger.error(error_msg)
-            raise RuntimeError(error_msg)
-        
-        # 清空现有数据
-        self.record_key_of_notes = {}
-        self.replay_key_of_notes = {}
 
         # 构建按键索引的辅助函数
         def _build_key_index(notes, key_dict):
@@ -517,7 +603,6 @@ class PianoAnalysisBackend:
         self.original_file_content = spmid_bytes
         logger.info(f"✅ 已保存原始文件内容，大小: {len(spmid_bytes)} 字节")
 
-        # SPMID模块已确保可用，直接进行数据分析
 
         # 记录当前会话信息，便于调试和日志追踪
         logger.info(f"会话 {self.session_id[:8] if self.session_id else 'unknown'}... 开始加载SPMID文件")
@@ -613,6 +698,7 @@ class PianoAnalysisBackend:
             # 异常处理：如果所有计算都失败，返回offset作为备选值
             return int(getattr(note, 'offset', 0)), int(getattr(note, 'offset', 0))
 
+    # TODO
     def _trim_data_by_replay_time(self):
         """
         根据播放轨道的最后时间戳裁剪数据
@@ -656,7 +742,6 @@ class PianoAnalysisBackend:
             # 记录裁剪结果，便于调试和监控
             logger.info(f"基于播放最后时间戳 {replay_last_time} 进行裁剪: 录制 {before_filter_record}->{len(self.record_data)} 条, 播放 {before_filter_replay}->{len(self.replay_data)} 条")
 
-            # 数据裁剪完成，按键索引将在错误分析后更新
 
     def _perform_error_analysis(self):
         """
@@ -674,17 +759,17 @@ class PianoAnalysisBackend:
         - 仅处理经过时间裁剪后的数据，确保分析结果的准确性
         """
         # 执行异常分析：调用核心分析函数，检测三种类型的错误
-        # 返回5个值：多锤、丢锤、不发声锤子、有效录制数据、有效播放数据
+        # 返回7个值：多锤、丢锤、不发声锤子、有效录制数据、有效播放数据、无效音符统计、匹配对
         analysis_result = spmid.spmid_analysis(self.record_data, self.replay_data)
         
         # 检查返回格式是否正确
-        if len(analysis_result) != 5:
-            error_msg = f"分析结果格式错误：期望5个值，实际{len(analysis_result)}个值"
+        if len(analysis_result) != 7:
+            error_msg = f"分析结果格式错误：期望7个值，实际{len(analysis_result)}个值"
             logger.error(error_msg)
             raise ValueError(error_msg)
         
         # 解包分析结果
-        self.multi_hammers, self.drop_hammers, self.silent_hammers, self.valid_record_data, self.valid_replay_data = analysis_result
+        self.multi_hammers, self.drop_hammers, self.silent_hammers, self.valid_record_data, self.valid_replay_data, self.invalid_notes_table_data, self.matched_pairs = analysis_result
 
         # 初始化统一错误音符列表，用于存储所有类型的错误
         self.all_error_notes = []
@@ -697,6 +782,12 @@ class PianoAnalysisBackend:
         # 记录分析完成信息，便于调试和监控
         logger.info(f"SPMID数据加载完成 - 多锤问题: {len(self.multi_hammers)} 个, 丢锤问题: {len(self.drop_hammers)} 个, 不发声锤子: {len(self.silent_hammers)} 个")
         
+        # 确认时序对齐与按键匹配后的数据已正确保存
+        if not self.valid_record_data or not self.valid_replay_data:
+            logger.warning("⚠️ valid_record_data 或 valid_replay_data 为空，程序存在bug")
+        else:
+            logger.info(f"✅ 已根据时序对齐与按键匹配生成最终配对数据用于展示: 录制 {len(self.valid_record_data)} 个, 播放 {len(self.valid_replay_data)} 个")
+
         # 在生成有效数据后，重新构建按键索引
         # 确保按键索引使用有效数据而不是原始数据
         self.update_key_of_notes()
@@ -714,6 +805,62 @@ class PianoAnalysisBackend:
             error_note.error_type = error_type  # 设置错误类型
             error_note.global_index = len(self.all_error_notes)  # 分配全局索引
             self.all_error_notes.append(error_note)  # 添加到统一列表
+
+    # todo
+    def _get_final_matched_data(self):
+        """获取经过时序对齐和按键匹配后的最终配对数据
+        
+        返回：
+            tuple: (final_record_data, final_replay_data) - 一一对应的最终配对数据
+        """
+        if not self.valid_record_data or not self.valid_replay_data:
+            raise RuntimeError("valid_record_data 或 valid_replay_data 为空，程序存在bug")
+        
+        return self.valid_record_data, self.valid_replay_data
+
+    def get_invalid_notes_table_data(self):
+        """获取无效音符的表格数据
+        
+        返回：
+            list: 适合DataTable显示的表格数据
+        """
+        invalid_data = getattr(self, 'invalid_notes_table_data', {})
+        if not invalid_data:
+            return []
+        
+        table_data = []
+        
+        # 处理录制数据
+        if 'record_data' in invalid_data:
+            record_data = invalid_data['record_data']
+            record_reasons = record_data.get('invalid_reasons', {})
+            table_data.append({
+                'data_type': '录制数据',
+                'total_notes': record_data.get('total_notes', 0),
+                'valid_notes': record_data.get('valid_notes', 0),
+                'invalid_notes': record_data.get('invalid_notes', 0),
+                'duration_too_short': record_reasons.get('duration_too_short', 0),
+                'after_touch_too_weak': record_reasons.get('after_touch_too_weak', 0),
+                'empty_data': record_reasons.get('empty_data', 0),
+                'other_errors': record_reasons.get('other_errors', 0)
+            })
+        
+        # 处理播放数据
+        if 'replay_data' in invalid_data:
+            replay_data = invalid_data['replay_data']
+            replay_reasons = replay_data.get('invalid_reasons', {})
+            table_data.append({
+                'data_type': '播放数据',
+                'total_notes': replay_data.get('total_notes', 0),
+                'valid_notes': replay_data.get('valid_notes', 0),
+                'invalid_notes': replay_data.get('invalid_notes', 0),
+                'duration_too_short': replay_reasons.get('duration_too_short', 0),
+                'after_touch_too_weak': replay_reasons.get('after_touch_too_weak', 0),
+                'empty_data': replay_reasons.get('empty_data', 0),
+                'other_errors': replay_reasons.get('other_errors', 0)
+            })
+        
+        return table_data
 
     def _cleanup_temp_file(self, temp_file_path):
         """
@@ -750,7 +897,7 @@ class PianoAnalysisBackend:
             # 如果所有重试都失败，记录警告但不影响程序运行
             logger.warning(f"⚠️ 临时文件删除失败，但不影响功能: {temp_file_path}，错误信息: {last_exception}")
 
-    def load_spmid_data(self, spmid_bytes):
+    def load_spmid_data(self, spmid_bytes: bytes) -> bool:
         """
         加载SPMID文件数据并进行异常分析
         
@@ -859,11 +1006,15 @@ class PianoAnalysisBackend:
             if not self.record_data and not self.replay_data:
                 return self._create_empty_plot("请先上传SPMID文件")
 
-            # 使用筛选后的数据
-            filtered_record, filtered_replay = self.get_filtered_data()
+
+            final_record, final_replay = self._get_final_matched_data()
+            
+            if not final_record or not final_replay:
+                return self._create_empty_plot("没有找到匹配的数据对")
+            
             # 获取显示时间范围用于设置x轴
             display_time_range = self.get_display_time_range()
-            fig = spmid.plot_bar_plotly(filtered_record, filtered_replay, display_time_range)
+            fig = spmid.plot_bar_plotly(final_record, final_replay, display_time_range)
 
             if fig is not None:
                 # 更新布局以适配应用界面
@@ -884,31 +1035,58 @@ class PianoAnalysisBackend:
             traceback.print_exc()
             return self._create_empty_plot(f"生成瀑布图失败: {str(e)}")
         
-    # todo        
     def generate_watefall_conbine_plot(self, key_on, key_off, key_id):
-
-        index1 = spmid.find_best_matching_notes_debug(notes_list=self.record_data,target_key_id=key_id, target_keyon=key_on, target_keyoff=key_off)
-        index2 = spmid.find_best_matching_notes_debug(notes_list=self.replay_data,target_key_id=key_id, target_keyon=key_on, target_keyoff=key_off)
-        detail_figure1 = spmid.plot_note_comparison_plotly(self.record_data[index1], None)
-        detail_figure2 = spmid.plot_note_comparison_plotly(None, self.replay_data[index2])
-        detail_figure_combined = spmid.plot_note_comparison_plotly(self.record_data[index1], self.replay_data[index2])
+        """生成瀑布图对比图，使用已匹配的数据"""
+        # 从matched_pairs中查找匹配的音符对
+        record_note = None
+        replay_note = None
+        
+        if hasattr(self, 'matched_pairs') and self.matched_pairs:
+            for record_index, replay_index, r_note, p_note in self.matched_pairs:
+                if r_note.id == key_id:
+                    # 检查时间是否匹配
+                    r_keyon = r_note.hammers.index[0] + r_note.offset
+                    r_keyoff = r_note.after_touch.index[-1] + r_note.offset if len(r_note.after_touch) > 0 else r_note.hammers.index[0] + r_note.offset
+                    
+                    if abs(r_keyon - key_on) < 1000 and abs(r_keyoff - key_off) < 1000:  # 1秒容差
+                        record_note = r_note
+                        replay_note = p_note
+                        break
+        
+        detail_figure1 = spmid.plot_note_comparison_plotly(record_note, None)
+        detail_figure2 = spmid.plot_note_comparison_plotly(None, replay_note)
+        detail_figure_combined = spmid.plot_note_comparison_plotly(record_note, replay_note)
 
         return detail_figure1, detail_figure2, detail_figure_combined
 
     def generate_watefall_conbine_plot_by_index(self, index: int, is_record: bool):
+        """根据索引生成瀑布图对比图，使用已匹配的数据"""
         record_note = None
         play_note = None
+        
         if is_record:
             if index < 0 or index >= len(self.record_data):
                 return None
             record_note = self.record_data[index]
-            play_note = spmid.find_best_matching_note(record_note, self.replay_key_of_notes.get(record_note.id, []))
+            
+            # 从matched_pairs中查找匹配的播放音符
+            if hasattr(self, 'matched_pairs') and self.matched_pairs:
+                for record_index, replay_index, r_note, p_note in self.matched_pairs:
+                    if record_index == index:
+                        play_note = p_note
+                        break
 
         else:
             if index < 0 or index >= len(self.replay_data):
                 return None
             play_note = self.replay_data[index]
-            record_note = spmid.find_best_matching_note(play_note, self.record_key_of_notes.get(play_note.id, []))
+            
+            # 从matched_pairs中查找匹配的录制音符
+            if hasattr(self, 'matched_pairs') and self.matched_pairs:
+                for record_index, replay_index, r_note, p_note in self.matched_pairs:
+                    if replay_index == index:
+                        record_note = r_note
+                        break
         
         detail_figure1 = spmid.plot_note_comparison_plotly(record_note, None)
         detail_figure2 = spmid.plot_note_comparison_plotly(None, play_note)
@@ -934,16 +1112,25 @@ class PianoAnalysisBackend:
             if len(error_note.infos) == 0:
                 return self._create_error_image("无数据")
 
-            record_info = error_note.infos[0]
             self._setup_plot_figure()
 
-            if len(error_note.infos) == 1:
-                # 丢锤情况
-                return self._create_drop_hammer_image(record_info)
+            # 根据错误类型决定图片生成逻辑
+            if error_note.error_type == '丢锤':
+                # 丢锤：只有录制数据
+                if len(error_note.infos) > 0:
+                    record_info = error_note.infos[0]
+                    return self._create_drop_hammer_image(record_info)
+                else:
+                    return self._create_error_image("丢锤数据无效")
+            elif error_note.error_type == '多锤':
+                # 多锤：只有播放数据
+                if len(error_note.infos) > 1:
+                    play_info = error_note.infos[1]
+                    return self._create_multi_hammer_image(None, play_info)
+                else:
+                    return self._create_error_image("多锤数据无效")
             else:
-                # 多锤情况
-                play_info = error_note.infos[1]
-                return self._create_multi_hammer_image(record_info, play_info)
+                return self._create_error_image(f"未知错误类型: {error_note.error_type}")
 
         except Exception as e:
             logger.error(f"创建真实图片时出错: {e}")
@@ -973,9 +1160,9 @@ class PianoAnalysisBackend:
 
     def _create_multi_hammer_image(self, record_info, play_info) -> str:
         """创建多锤检测图片"""
-        if (record_info.index >= len(self.record_data) or 
-            play_info.index >= len(self.replay_data)):
-            return self._create_error_image("数据索引无效")
+        # 多锤情况下，录制数据可能为None，只检查播放数据
+        if play_info.index >= len(self.replay_data):
+            return self._create_error_image("播放数据索引无效")
 
         try:
             # 尝试使用spmid的内置函数
@@ -986,27 +1173,45 @@ class PianoAnalysisBackend:
 
     def _create_multi_hammer_with_spmid(self, record_info, play_info) -> str:
         """使用spmid内置函数创建多锤图片"""
-        # 使用spmid的算法生成对比图
-        fig = spmid.get_figure_by_index(self.record_data, self.replay_data,
-                                                record_info.index, play_info.index)
-
-        # 设置中文标题和标签
-        self._setup_multi_hammer_style(record_info.keyId)
-        self._update_legend_to_chinese()
+        # 多锤情况下，录制数据可能为None，只绘制播放数据
+        if record_info is None:
+            # 只绘制播放数据
+            # 修复bug：确保index是有效的非负索引
+            if play_info.index < 0 or play_info.index >= len(self.replay_data):
+                return self._create_error_image("播放数据索引无效")
+            play_note = self.replay_data[play_info.index]
+            self._plot_play_data(play_note)
+            self._setup_multi_hammer_style(play_info.keyId)
+        else:
+            # 使用spmid的算法生成对比图
+            fig = spmid.get_figure_by_index(self.record_data, self.replay_data,
+                                            record_info.index, play_info.index)
+            # 设置中文标题和标签
+            self._setup_multi_hammer_style(record_info.keyId)
+            self._update_legend_to_chinese()
         
         return self._convert_plot_to_base64()
 
     def _create_multi_hammer_manual(self, record_info, play_info) -> str:
         """手动绘制多锤检测图片"""
-        record_note = self.record_data[record_info.index]
+        # 修复bug：确保index是有效的非负索引
+        if play_info.index < 0 or play_info.index >= len(self.replay_data):
+            return self._create_error_image("播放数据索引无效")
         play_note = self.replay_data[play_info.index]
 
-        # 绘制录制和播放数据
-        self._plot_record_data(record_note)
-        self._plot_play_data(play_note)
-        
-        # 设置图表样式
-        self._setup_multi_hammer_style(record_info.keyId)
+        if record_info is None:
+            # 多锤情况：只绘制播放数据
+            self._plot_play_data(play_note)
+            self._setup_multi_hammer_style(play_info.keyId)
+        else:
+            # 传统情况：绘制录制和播放数据
+            # 修复bug：确保index是有效的非负索引
+            if record_info.index < 0 or record_info.index >= len(self.record_data):
+                return self._create_error_image("录制数据索引无效")
+            record_note = self.record_data[record_info.index]
+            self._plot_record_data(record_note)
+            self._plot_play_data(play_note)
+            self._setup_multi_hammer_style(record_info.keyId)
         
         return self._convert_plot_to_base64()
 
@@ -1101,60 +1306,88 @@ class PianoAnalysisBackend:
         )
         return fig
 
-    def get_multi_hammers_data(self):
-        """获取多锤表格数据"""
+    def _build_error_table_rows(self, target_error_type: str):
+        """基于统一的错误列表生成表格数据。
+        - 仅使用第一锤与 after_touch 生成 keyon/keyoff（绝对时间，ms）
+        - 根据错误类型正确显示录制/播放数据
+        - 移除无意义的统计列（mean/std/max/min）
+        """
         table_data = []
-        for i, error_note in enumerate(self.multi_hammers):
-            # 录制数据行
-            if len(error_note.infos) > 0 and len(error_note.diffs) > 0:
-                record_info = error_note.infos[0]
-                record_diff = error_note.diffs[0]
+        for error_note in self.all_error_notes:
+            if getattr(error_note, 'error_type', '') != target_error_type:
+                continue
+            
+            # 根据错误类型决定显示逻辑
+            if target_error_type == '丢锤':
+                # 丢锤：录制有，播放没有
+                if len(error_note.infos) > 0:
+                    rec = error_note.infos[0]
                 table_data.append({
                     'global_index': error_note.global_index,
                     'problem_type': error_note.error_type,
                     'data_type': 'record',
-                    'keyId': record_info.keyId,
-                    'keyOn': record_info.keyOn,
-                    'keyOff': record_info.keyOff,
-                    'mean': f"{record_diff.mean:.2f}",
-                    'std': f"{record_diff.std:.2f}",
-                    'max': f"{record_diff.max:.2f}",
-                    'min': f"{record_diff.min:.2f}",
-                    "index": record_info.index
-                })
-
-            # 播放数据行 - 如果没有播放数据，显示"无匹配数据"
-            if len(error_note.infos) > 1 and len(error_note.diffs) > 1:
-                play_info = error_note.infos[1]
-                play_diff = error_note.diffs[1]
-                table_data.append({
-                    'global_index': error_note.global_index,
-                    'problem_type': '',
-                    'data_type': 'play',
-                    'keyId': play_info.keyId,
-                    'keyOn': play_info.keyOn,
-                    'keyOff': play_info.keyOff,
-                    'mean': f"{play_diff.mean:.2f}",
-                    'std': f"{play_diff.std:.2f}",
-                    'max': f"{play_diff.max:.2f}",
-                    'min': f"{play_diff.min:.2f}",
-                    'index': play_info.index
-                })
-            else:
-                # 没有匹配的播放数据
+                        'keyId': rec.keyId,
+                        'keyName': self._get_key_name(rec.keyId),
+                        'keyOn': rec.keyOn,
+                        'keyOff': rec.keyOff,
+                        'index': rec.index
+                    })
+                # 播放行显示"无匹配"
                 table_data.append({
                     'global_index': error_note.global_index,
                     'problem_type': '',
                     'data_type': 'play',
                     'keyId': '无匹配',
+                    'keyName': '无匹配',
                     'keyOn': '无匹配',
-                    'keyOff': '无匹配',
-                    'mean': '无匹配',
-                    'std': '无匹配',
-                    'max': '无匹配',
-                    'min': '无匹配'
+                    'keyOff': '无匹配'
+                })
+                
+            elif target_error_type == '多锤':
+                # 多锤：播放比录制多一次（或多次）
+                # 优先显示录制端的“正常对应”作为对比（若有）
+                if len(error_note.infos) > 0:
+                    rec = error_note.infos[0]
+                    table_data.append({
+                        'global_index': error_note.global_index,
+                        'problem_type': error_note.error_type,
+                        'data_type': 'record',
+                        'keyId': rec.keyId,
+                        'keyName': self._get_key_name(rec.keyId),
+                        'keyOn': rec.keyOn,
+                        'keyOff': rec.keyOff,
+                        'index': rec.index
+                })
+            else:
+                    # 若没有录制端对应信息，标注无匹配
+                table_data.append({
+                    'global_index': error_note.global_index,
+                        'problem_type': error_note.error_type,
+                        'data_type': 'record',
+                    'keyId': '无匹配',
+                        'keyName': '无匹配',
+                    'keyOn': '无匹配',
+                        'keyOff': '无匹配'
+                    })
+
+                # 播放端显示额外的那一次
+                if len(error_note.infos) > 1:
+                    play = error_note.infos[1]
+                    table_data.append({
+                        'global_index': error_note.global_index,
+                        'problem_type': '',
+                        'data_type': 'play',
+                        'keyId': play.keyId,
+                        'keyName': self._get_key_name(play.keyId),
+                        'keyOn': play.keyOn,
+                        'keyOff': play.keyOff,
+                        'index': play.index
                 })
         return table_data
+
+    def get_error_table_data(self, error_type: str):
+        """统一接口：根据错误类型返回表格数据。"""
+        return self._build_error_table_rows(error_type)
 
     def get_available_keys(self):
         """获取可用的键ID列表"""
@@ -1424,6 +1657,7 @@ class PianoAnalysisBackend:
         self.display_time_range = None
         logger.info("⏰ 重置显示时间范围到原始数据范围")
 
+    # todo
     def get_filtered_data(self):
         """获取筛选后的数据（同时应用键ID和时间轴筛选）"""
         # 使用有效数据（经过发声检测过滤的数据）而不是原始数据
@@ -1480,123 +1714,3 @@ class PianoAnalysisBackend:
         
         logger.info(f"🔍 综合筛选结果: 录制 {len(filtered_record or [])}/{len(self.record_data or [])} 个音符, 播放 {len(filtered_replay or [])}/{len(self.replay_data or [])} 个音符")
         return filtered_record, filtered_replay
-
-    def get_drop_hammers_data(self):
-        """获取丢锤表格数据"""
-        table_data = []
-        for i, error_note in enumerate(self.drop_hammers):
-            # 录制数据行
-            if len(error_note.infos) > 0 and len(error_note.diffs) > 0:
-                record_info = error_note.infos[0]
-                record_diff = error_note.diffs[0]
-                table_data.append({
-                    'global_index': error_note.global_index,
-                    'problem_type': error_note.error_type,
-                    'data_type': 'record',
-                    'keyId': record_info.keyId,
-                    'keyOn': record_info.keyOn,
-                    'keyOff': record_info.keyOff,
-                    'mean': f"{record_diff.mean:.2f}",
-                    'std': f"{record_diff.std:.2f}",
-                    'max': f"{record_diff.max:.2f}",
-                    'min': f"{record_diff.min:.2f}",
-                    'index': record_info.index
-                })
-
-            # 播放数据行 - 如果没有播放数据，显示"无匹配数据"
-            if len(error_note.infos) > 1 and len(error_note.diffs) > 1:
-                play_info = error_note.infos[1]
-                play_diff = error_note.diffs[1]
-                table_data.append({
-                    'global_index': error_note.global_index,
-                    'problem_type': '',
-                    'data_type': 'play',
-                    'keyId': play_info.keyId,
-                    'keyOn': play_info.keyOn,
-                    'keyOff': play_info.keyOff,
-                    'mean': f"{play_diff.mean:.2f}",
-                    'std': f"{play_diff.std:.2f}",
-                    'max': f"{play_diff.max:.2f}",
-                    'min': f"{play_diff.min:.2f}",
-                    'index': play_info.index
-                })
-            else:
-                # 没有匹配的播放数据
-                table_data.append({
-                    'global_index': error_note.global_index,
-                    'problem_type': '',
-                    'data_type': 'play',
-                    'keyId': '无匹配',
-                    'keyOn': '无匹配',
-                    'keyOff': '无匹配',
-                    'mean': '无匹配',
-                    'std': '无匹配',
-                    'max': '无匹配',
-                    'min': '无匹配'
-                })
-        return table_data
-
-    def get_available_keys(self):
-        """获取可用的键ID列表"""
-        if not self.available_keys and (self.record_data or self.replay_data):
-            self._update_available_keys()
-        return self.available_keys
-
-    def _update_available_keys(self):
-        """更新可用的键ID列表"""
-        all_keys = set()
-        key_stats = {}
-        
-        # 收集录制和播放数据中的所有键ID
-        for track_data in [self.record_data, self.replay_data]:
-            if track_data:
-                for note in track_data:
-                    if hasattr(note, 'id'):
-                        key_id = int(note.id)
-                        # 检查音符是否有有效的数据（after_touch或hammers不为空）
-                        has_valid_data = False
-                        if hasattr(note, 'after_touch') and note.after_touch is not None and not note.after_touch.empty:
-                            has_valid_data = True
-                        elif hasattr(note, 'hammers') and note.hammers is not None and not note.hammers.empty:
-                            has_valid_data = True
-                        
-                        if has_valid_data:
-                            all_keys.add(key_id)
-                            key_stats[key_id] = key_stats.get(key_id, 0) + 1
-        
-        # 生成键ID选项列表
-        self.available_keys = []
-        for key_id in sorted(all_keys):
-            count = key_stats.get(key_id, 0)
-            key_name = self._get_key_name(key_id)
-            self.available_keys.append({
-                'label': f'{key_name} (ID:{key_id}, {count}次)',
-                'value': key_id
-            })
-        
-        logger.info(f"📊 更新可用键ID列表: {len(self.available_keys)} 个键位")
-
-    def _get_key_name(self, key_id):
-        """获取键位名称"""
-        if key_id == 89:
-            return "右踏板"
-        elif key_id == 90:
-            return "左踏板"
-        else:
-            return f"键位{key_id}"
-
-    def set_key_filter(self, key_ids):
-        """设置键ID筛选器"""
-        self.key_filter = key_ids if key_ids else None
-        logger.info(f"🔍 设置键ID筛选器: {self.key_filter}")
-
-    def get_key_filter_status(self):
-        """获取键ID筛选状态信息"""
-        if not self.key_filter:
-            return "显示全部键位"
-        
-        key_names = []
-        for key_id in self.key_filter:
-            key_names.append(self._get_key_name(key_id))
-        
-        return f"当前显示：{', '.join(key_names)} ({len(self.key_filter)}个键位)"

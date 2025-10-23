@@ -10,7 +10,7 @@ logger = Logger.get_logger()
 # 导入SPMID相关模块
 try:
     from spmid.types import NoteInfo, Diffs, ErrorNote
-    from spmid.spmid_analysis import spmid_analysis
+    from spmid.spmid_analyzer import spmid_analysis
     from spmid.spmid_reader import SPMidReader
     SPMID_AVAILABLE = True
 except ImportError as e:

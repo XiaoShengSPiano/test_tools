@@ -19,24 +19,6 @@ from utils.logger import Logger
 logger = Logger.get_logger()
 
 
-def create_loading_component(message, color="#007bff"):
-    """创建加载动画组件"""
-    return html.Div([
-        dcc.Loading(
-            id=f"loading-{uuid.uuid4()}",
-            type="dot",
-            color=color,
-            children=[html.Div(message, className="text-center")],
-            style={'height': '200px'}
-        )
-    ], style={
-        'minHeight': '400px',
-        'display': 'flex',
-        'alignItems': 'center',
-        'justifyContent': 'center'
-    })
-
-
 def _create_empty_figure_for_callback(title):
     """创建用于回调的空Plotly figure对象"""
     import plotly.graph_objects as go
@@ -63,46 +45,6 @@ def _create_empty_figure_for_callback(title):
     )
 
     return fig
-
-
-# Helper functions for process_data_after_loading
-def _get_safe_time_range(backend, update_value=True):
-    """安全获取时间范围，避免滑块组件出现无限递归"""
-    try:
-        time_range = backend.get_time_range()
-        time_min, time_max = time_range
-        
-        # 确保时间范围是合理的数值
-        if not isinstance(time_min, (int, float)) or not isinstance(time_max, (int, float)):
-            logger.warning("⚠️ 时间范围包含非数值类型，使用默认值")
-            time_min, time_max = 0, 1000
-        elif time_min >= time_max:
-            logger.warning("⚠️ 时间范围无效（min >= max），使用默认值")
-            time_min, time_max = 0, 1000
-        elif time_max - time_min > 1e8:  # 防止范围过大导致滑块组件崩溃
-            logger.warning("⚠️ 时间范围过大，使用默认值")
-            time_min, time_max = 0, 1000
-        elif time_min < 0:  # 防止负数时间
-            logger.warning("⚠️ 时间范围包含负数，调整为非负值")
-            time_min = 0
-            if time_max <= 0:
-                time_max = 1000
-        
-        # 确保是整数（滑块组件处理整数更稳定）
-        time_min, time_max = int(time_min), int(time_max)
-        
-        # 只在需要时返回value，否则返回no_update避免触发滑块更新
-        if update_value:
-            return time_min, time_max, [time_min, time_max]
-        else:
-            return time_min, time_max, no_update
-        
-    except Exception as e:
-        logger.warning(f"⚠️ 获取时间范围失败，使用默认值: {e}")
-        if update_value:
-            return 0, 1000, [0, 1000]
-        else:
-            return 0, 1000, no_update
 
 
 def _detect_trigger_source(ctx, backend, contents, filename, history_id):
@@ -142,7 +84,8 @@ def _detect_trigger_source(ctx, backend, contents, filename, history_id):
         trigger_source = _detect_trigger_from_state_change(current_state, previous_state, backend, current_time)
     
     # 记录最终结果
-    logger.info(f"🔍 最终确定触发源: {trigger_source}, 当前数据源: {getattr(backend, '_data_source', 'none')}")
+    data_source = getattr(backend, '_data_source', 'none') if backend else 'none'
+    logger.info(f"🔍 最终确定触发源: {trigger_source}, 当前数据源: {data_source}")
     return trigger_source
 
 def _get_current_state(contents, filename, history_id):
@@ -157,6 +100,12 @@ def _get_current_state(contents, filename, history_id):
 
 def _get_previous_state(backend):
     """获取上次的状态信息"""
+    if not backend:
+        return {
+            'last_upload_content': None,
+            'last_history_id': None
+        }
+    
     return {
         'last_upload_content': getattr(backend, '_last_upload_content', None),
         'last_history_id': getattr(backend, '_last_selected_history_id', None)
@@ -325,7 +274,7 @@ def _handle_history_selection(history_id, backend, history_manager):
 
 def _handle_waterfall_button(backend, history_manager):
     """处理瀑布图按钮点击"""
-    current_data_source = getattr(backend, '_data_source', 'none')
+    current_data_source = getattr(backend, '_data_source', 'none') if backend else 'none'
     logger.info(f"🔄 生成瀑布图（数据源: {current_data_source}）")
     
     # 检查是否有已加载的数据
@@ -342,7 +291,7 @@ def _handle_waterfall_button(backend, history_manager):
 
 def _handle_report_button(backend, history_manager):
     """处理报告按钮点击"""
-    current_data_source = getattr(backend, '_data_source', 'none')
+    current_data_source = getattr(backend, '_data_source', 'none') if backend else 'none'
     logger.info(f"🔄 生成分析报告（数据源: {current_data_source}）")
     
     # 检查是否有已加载的数据
@@ -393,6 +342,10 @@ def _handle_fallback_logic(contents, filename, history_id, backend, history_mana
             ])
             return empty_fig, error_content, no_update, [], "显示全部键位", 0, 1000, [0, 1000], "显示全部时间范围"
 
+    # 最终兜底：无上传、无历史选择、无触发
+    placeholder_fig = _create_empty_figure_for_callback("等待操作：请上传文件或选择历史记录")
+    return placeholder_fig, no_update, no_update, [], "显示全部键位", 0, 1000, [0, 1000], "显示全部时间范围"
+
 
 def register_callbacks(app, backends, history_manager):
     """注册所有回调函数"""
@@ -408,10 +361,17 @@ def register_callbacks(app, backends, history_manager):
             return str(uuid.uuid4())
         return session_data
 
-    # 第一步：显示加载动画的回调
+    # 主要的数据处理回调
     @app.callback(
-        [ Output('report-content', 'children'),
-         Output('loading-trigger', 'data')],
+        [Output('main-plot', 'figure'),
+         Output('report-content', 'children'),
+         Output('history-dropdown', 'options'),
+         Output('key-filter-dropdown', 'options'),
+         Output('key-filter-status', 'children'),
+         Output('time-filter-slider', 'min'),
+         Output('time-filter-slider', 'max'),
+         Output('time-filter-slider', 'value'),
+         Output('time-filter-status', 'children')],
         [Input('upload-spmid-data', 'contents'),
          Input('btn-waterfall', 'n_clicks'),
          Input('btn-report', 'n_clicks'),
@@ -419,65 +379,11 @@ def register_callbacks(app, backends, history_manager):
          Input('key-filter-dropdown', 'value'),
          Input('btn-show-all-keys', 'n_clicks')],
         [State('upload-spmid-data', 'filename'),
-         State('session-id', 'data'),
-         State('loading-trigger', 'data')],
-        prevent_initial_call=True
-    )
-    def show_loading_animation(contents, waterfall_clicks, report_clicks, history_id, key_filter, show_all_keys, filename, session_id, current_trigger):
-        """第一步：立即显示加载动画"""
-        ctx = callback_context
-        if not ctx.triggered:
-            return empty_figure, no_update, no_update
-
-        trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
-        trigger_value = str(uuid.uuid4())  # 生成新的触发值
-
-        # 根据不同的触发源显示对应的加载动画
-        if trigger_id == 'upload-spmid-data' and contents:
-            loading_waterfall = create_loading_component("正在分析SPMID文件并生成瀑布图...", "#007bff")
-            loading_report = create_loading_component("正在生成分析报告...", "#28a745")
-            return loading_report, trigger_value
-
-        elif trigger_id == 'btn-waterfall' and waterfall_clicks:
-            loading_waterfall = create_loading_component("正在生成瀑布图...", "#007bff")
-            return  no_update, trigger_value
-
-        elif trigger_id == 'btn-report' and report_clicks:
-            loading_report = create_loading_component("正在生成分析报告...", "#28a745")
-            return  loading_report, trigger_value
-
-        elif trigger_id == 'history-dropdown' and history_id:
-            loading_waterfall = create_loading_component("正在加载瀑布图...", "#007bff")
-            loading_report = create_loading_component("正在加载分析报告...", "#28a745")
-            return loading_report, trigger_value
-
-        return no_update, no_update
-
-    # 第二步：实际处理数据的回调
-    @app.callback(
-        [Output('main-plot', 'figure'),
-         Output('report-content', 'children', allow_duplicate=True),
-         Output('history-dropdown', 'options', allow_duplicate=True),
-         Output('key-filter-dropdown', 'options', allow_duplicate=True),
-         Output('key-filter-status', 'children', allow_duplicate=True),
-         Output('time-filter-slider', 'min', allow_duplicate=True),
-         Output('time-filter-slider', 'max', allow_duplicate=True),
-         Output('time-filter-slider', 'value', allow_duplicate=True),
-         Output('time-filter-status', 'children', allow_duplicate=True)],
-        [Input('loading-trigger', 'data')],
-        [State('upload-spmid-data', 'contents'),
-         State('upload-spmid-data', 'filename'),
-         State('btn-waterfall', 'n_clicks'),
-         State('btn-report', 'n_clicks'),
-         State('history-dropdown', 'value'),
-         State('key-filter-dropdown', 'value'),
          State('session-id', 'data')],
         prevent_initial_call=True
     )
-    def process_data_after_loading(loading_trigger, contents, filename, waterfall_clicks, report_clicks, history_id, key_filter, session_id):
-        """第二步：在显示加载动画后处理实际数据"""
-        if not loading_trigger:
-            return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
+    def process_data(contents, waterfall_clicks, report_clicks, history_id, key_filter, show_all_keys, filename, session_id):
+        """处理数据的主要回调函数"""
 
         # 获取触发上下文
         ctx = callback_context
@@ -488,9 +394,6 @@ def register_callbacks(app, backends, history_manager):
         backend = backends[session_id]
 
         try:
-            # 添加延迟确保加载动画能被看到
-            time.sleep(0.5)
-
             # 检测触发源
             trigger_source = _detect_trigger_source(ctx, backend, contents, filename, history_id)
             
@@ -541,7 +444,35 @@ def register_callbacks(app, backends, history_manager):
          State('session-id', 'data')],
         prevent_initial_call=True
     )
-    def _create_default_placeholder_content():
+    def handle_table_selection(drop_selected, multi_selected, drop_data, multi_data, session_id):
+        """处理表格选择回调"""
+        try:
+            # 获取后端实例
+            if session_id not in backends:
+                detail_content, image_content = _create_default_placeholder_content()
+                return [], [], detail_content, image_content
+            backend = backends[session_id]
+            
+            # 确定触发源（表格选择）
+            trigger_id = None
+            if drop_selected:
+                trigger_id = 'drop-hammers-table'
+            elif multi_selected:
+                trigger_id = 'multi-hammers-table'
+            
+            # 处理选择逻辑
+            drop_rows, multi_rows, detail_content, image_content = _handle_table_selection(
+                trigger_id, drop_selected, multi_selected, drop_data, multi_data, backend
+            )
+            
+            return drop_rows, multi_rows, detail_content, image_content
+            
+        except Exception as e:
+            logger.error(f"表格选择回调处理失败: {e}")
+            detail_content, image_content = _create_default_placeholder_content()
+            return [], [], detail_content, image_content
+
+    def _create_default_placeholder_content(*args, **kwargs):
         """创建默认的占位符内容"""
         detail_content = html.Div([
             html.I(className="fas fa-info-circle", style={'fontSize': '24px', 'color': '#6c757d', 'marginBottom': '8px'}),
@@ -556,7 +487,7 @@ def register_callbacks(app, backends, history_manager):
                    className="text-muted text-center",
                    style={'fontSize': '12px'})
         ], className="d-flex flex-column align-items-center justify-content-center h-100")
-        
+
         return detail_content, image_content
 
     def _create_error_image_content(error_msg):
@@ -618,53 +549,6 @@ def register_callbacks(app, backends, history_manager):
 
         return drop_rows, multi_rows, detail_content, image_content
 
-    def update_report_tables_and_display(drop_selected, multi_selected, drop_data, multi_data, session_id):
-        """更新报告表格选择和显示 - 仅在报告页面存在时工作"""
-        try:
-            if session_id not in backends:
-                return [], [], no_update, no_update
-
-            backend = backends[session_id]
-            ctx = callback_context
-
-            # 如果没有触发事件，返回默认值
-            if not ctx.triggered:
-                detail_content, image_content = _create_default_placeholder_content()
-                return [], [], detail_content, image_content
-
-            # 获取触发的控件
-            trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
-
-            if trigger_id == 'drop-hammers-table' and drop_selected:
-                # 丢锤表格被���择，清除多锤表格选择
-                drop_rows = drop_selected
-                multi_rows = []
-
-                if drop_data and drop_selected:
-                    detail_content, image_content = _process_selected_row(
-                        drop_data[drop_selected[0]], backend
-                    )
-                else:
-                    detail_content, image_content = _create_default_placeholder_content()
-
-            elif trigger_id == 'multi-hammers-table' and multi_selected:
-                # 多锤表格被选择，清除丢锤表格选择
-                drop_rows = []
-                multi_rows = multi_selected
-                
-                if multi_data and multi_selected:
-                    detail_content, image_content = _process_selected_row(
-                        multi_data[multi_selected[0]], backend
-                    )
-                else:
-                    detail_content, image_content = _create_default_placeholder_content()
-
-            return drop_rows, multi_rows, detail_content, image_content
-
-        except Exception as e:
-            # 如果表格组件不存在，返回默认值
-            logger.error(f"表格回调错误（这是正常的，当报告页面未生成时）: {e}")
-            return [], [], no_update, no_update
 
     # 添加时间滑块初始化回调 - 当数据加载完成后自动设置合理的时间范围
     @app.callback(
@@ -764,7 +648,7 @@ def register_callbacks(app, backends, history_manager):
             return [], None
 
     @app.callback(
-        Output('history-dropdown', 'options'),
+        Output('history-dropdown', 'options', allow_duplicate=True),
         [Input('history-search', 'value'),
          Input('session-id', 'data')],
         prevent_initial_call=True  # 修改为True，防止初始化时重复调用

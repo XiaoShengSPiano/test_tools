@@ -92,9 +92,6 @@ def plot_bar(record,play):
     plt.tight_layout()
     plt.show()
 
-
-
-
 def plot_bar_plotly(record, play, time_range=None):
     """
     使用Plotly绘制钢琴按键事件瀑布图
