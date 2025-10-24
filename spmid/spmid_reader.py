@@ -263,7 +263,7 @@ class SPMidReader:
         self.tracks.append(notes)
     
     @property
-    def track_count(self) -> int:
+    def get_track_count(self) -> int:
         """返回音轨数量"""
         return len(self.tracks)
     

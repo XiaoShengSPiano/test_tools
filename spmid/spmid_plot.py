@@ -72,8 +72,8 @@ def plot_bar(record,play):
     for b in all_bars:
         ax.hlines(
             y=b['key_id'],
-            xmin=b['t_on'],
-            xmax=b['t_off'],
+            xmin=b['t_on']/10,
+            xmax=b['t_off']/10,
             colors=cmap(norm(b['value'])),
             linewidth=1,
             alpha=0.9,
@@ -146,15 +146,15 @@ def plot_bar_plotly(record, play, time_range=None):
     for b in all_bars:
         color = 'rgba' + str(tuple(int(255*x) for x in cmap(norm(b['value']))[:3]) + (0.9,))
         fig.add_trace(go.Scatter(
-            x=[b['t_on'], b['t_off']],
+            x=[b['t_on']/10, b['t_off']/10],
             y=[b['key_id'], b['key_id']],
             mode='lines',
             line=dict(color=color, width=3),
             name=b['label'],
             showlegend=False,
             hoverinfo='text',
-            text=f'Index: {b["index"]}<br>Key: {int(b["key_id"])}<br>Value: {b["value"]}<br>Label: {b["label"]}',
-            customdata=[[b['t_on'], b['t_off'], int(b['key_id']), b['value'], b['label'],int(b['index'])]]
+            text=f'Index: {b["index"]}<br>Key: {int(b["key_id"])}<br>Value: {b["value"]}<br>Label: {b["label"]}<br>Key On: {b["t_on"]/10:.1f}ms<br>Key Off: {b["t_off"]/10:.1f}ms',
+            customdata=[[b['t_on']/10, b['t_off']/10, int(b['key_id']), b['value'], b['label'],int(b['index'])]]
         ))
 
     # 添加色条
@@ -181,7 +181,7 @@ def plot_bar_plotly(record, play, time_range=None):
     
     # 设置x轴范围
     xaxis_config = {
-        'title': 'Time (100us)',
+        'title': 'Time (ms)',
         'showgrid': True,
         'gridcolor': 'lightgray',
         'gridwidth': 1
@@ -191,7 +191,7 @@ def plot_bar_plotly(record, play, time_range=None):
     if time_range and len(time_range) == 2:
         start_time, end_time = time_range
         xaxis_config['range'] = [start_time, end_time]
-        logger.info(f"⏰ 设置瀑布图x轴范围: {start_time} - {end_time} (100us)")
+        logger.info(f"⏰ 设置瀑布图x轴范围: {start_time} - {end_time} (ms)")
     
     fig.update_layout(
         title='Piano Key/Pedal Events Waterfall (Bar = KeyOn~KeyOff, Color=Value)',
@@ -291,7 +291,7 @@ def plot_note_comparison_plotly(record_note, play_note):
     # 更新布局
     fig.update_layout(
         title=title,
-        xaxis_title='时间 (100us)',
+        xaxis_title='时间 (ms)',
         yaxis_title='数值',
         height=500,
         width=800,
@@ -378,7 +378,7 @@ def plot_bar_plotly_improved(record, play):
         
         # 方案1：在锤子时间点添加大的散点作为主要点击目标
         fig.add_trace(go.Scatter(
-            x=[b['t_on']],  # 只在锤子时间点
+            x=[b['t_on']/10],  # 只在锤子时间点
             y=[b['key_id']],
             mode='markers',
             marker=dict(
@@ -391,8 +391,8 @@ def plot_bar_plotly_improved(record, play):
             name=b['label'],
             showlegend=False,
             hoverinfo='text',
-            text=f'Index: {b["index"]}<br>Key: {int(b["key_id"])}<br>Value: {b["value"]}<br>Label: {b["label"]}',
-            customdata=[[b['t_on'], b['t_off'], int(b['key_id']), b['value'], b['label'],int(b['index'])]]
+            text=f'Index: {b["index"]}<br>Key: {int(b["key_id"])}<br>Value: {b["value"]}<br>Label: {b["label"]}<br>Key On: {b["t_on"]/10:.1f}ms<br>Key Off: {b["t_off"]/10:.1f}ms',
+            customdata=[[b['t_on']/10, b['t_off']/10, int(b['key_id']), b['value'], b['label'],int(b['index'])]]
         ))
         
         # 方案2：创建整个线条区域的点击目标
@@ -401,7 +401,7 @@ def plot_bar_plotly_improved(record, play):
         num_points = max(3, int(line_length / 100))  # 根据线条长度决定点数
         
         for i in range(num_points):
-            t_point = b['t_on'] + (line_length * i / (num_points - 1))
+            t_point = (b['t_on'] + (line_length * i / (num_points - 1))) / 10
             fig.add_trace(go.Scatter(
                 x=[t_point],
                 y=[b['key_id']],
@@ -416,20 +416,20 @@ def plot_bar_plotly_improved(record, play):
                 name=b['label'],
                 showlegend=False,
                 hoverinfo='text',
-                text=f'Index: {b["index"]}<br>Key: {int(b["key_id"])}<br>Value: {b["value"]}<br>Label: {b["label"]}',
-                customdata=[[b['t_on'], b['t_off'], int(b['key_id']), b['value'], b['label'],int(b['index'])]]
+                text=f'Index: {b["index"]}<br>Key: {int(b["key_id"])}<br>Value: {b["value"]}<br>Label: {b["label"]}<br>Key On: {b["t_on"]/10:.1f}ms<br>Key Off: {b["t_off"]/10:.1f}ms',
+                customdata=[[b['t_on']/10, b['t_off']/10, int(b['key_id']), b['value'], b['label'],int(b['index'])]]
             ))
         
         # 方案3：保留原来的线条用于视觉显示
         fig.add_trace(go.Scatter(
-            x=[b['t_on'], b['t_off']],
+            x=[b['t_on']/10, b['t_off']/10],
             y=[b['key_id'], b['key_id']],
             mode='lines',
             line=dict(color=color, width=3),  # 适中的线条宽度，移除alpha参数
             name=b['label'],
             showlegend=False,
             hoverinfo='skip',  # 禁用悬停，避免与散点冲突
-            customdata=[[b['t_on'], b['t_off'], int(b['key_id']), b['value'], b['label'],int(b['index'])]]
+            customdata=[[b['t_on']/10, b['t_off']/10, int(b['key_id']), b['value'], b['label'],int(b['index'])]]
         ))
 
     # 添加色条
@@ -533,7 +533,7 @@ def plot_bar_plotly_with_invisible_click_areas(record, play):
         num_click_points = max(5, int(line_length / 50))  # 根据线条长度决定点击点数量
         
         for i in range(num_click_points):
-            t_point = b['t_on'] + (line_length * i / (num_click_points - 1))
+            t_point = (b['t_on'] + (line_length * i / (num_click_points - 1))) / 10
             fig.add_trace(go.Scatter(
                 x=[t_point],
                 y=[b['key_id']],
@@ -548,20 +548,20 @@ def plot_bar_plotly_with_invisible_click_areas(record, play):
                 name=b['label'],
                 showlegend=False,
                 hoverinfo='text',
-                text=f'Index: {b["index"]}<br>Key: {int(b["key_id"])}<br>Value: {b["value"]}<br>Label: {b["label"]}',
-                customdata=[[b['t_on'], b['t_off'], int(b['key_id']), b['value'], b['label'],int(b['index'])]]
+                text=f'Index: {b["index"]}<br>Key: {int(b["key_id"])}<br>Value: {b["value"]}<br>Label: {b["label"]}<br>Key On: {b["t_on"]/10:.1f}ms<br>Key Off: {b["t_off"]/10:.1f}ms',
+                customdata=[[b['t_on']/10, b['t_off']/10, int(b['key_id']), b['value'], b['label'],int(b['index'])]]
             ))
         
         # 2. 保持原有的视觉线条完全不变
         fig.add_trace(go.Scatter(
-            x=[b['t_on'], b['t_off']],
+            x=[b['t_on']/10, b['t_off']/10],
             y=[b['key_id'], b['key_id']],
             mode='lines',
             line=dict(color=color, width=3),
             name=b['label'],
             showlegend=False,
             hoverinfo='skip',  # 禁用悬停，避免与透明散点冲突
-            customdata=[[b['t_on'], b['t_off'], int(b['key_id']), b['value'], b['label'],int(b['index'])]]
+            customdata=[[b['t_on']/10, b['t_off']/10, int(b['key_id']), b['value'], b['label'],int(b['index'])]]
         ))
 
     # 添加色条
@@ -676,9 +676,9 @@ def plot_bar_plotly_with_enhanced_click_areas(record, play):
         # 在整条线上均匀分布不可见点击点
         for i in range(num_points):
             if num_points == 1:
-                t_point = b['t_on'] + line_length / 2  # 中点
+                t_point = (b['t_on'] + line_length / 2) / 10  # 中点
             else:
-                t_point = b['t_on'] + (line_length * i / (num_points - 1))
+                t_point = (b['t_on'] + (line_length * i / (num_points - 1))) / 10
             
             fig.add_trace(go.Scatter(
                 x=[t_point],
@@ -694,20 +694,20 @@ def plot_bar_plotly_with_enhanced_click_areas(record, play):
                 name=b['label'],
                 showlegend=False,
                 hoverinfo='text',
-                text=f'Index: {b["index"]}<br>Key: {int(b["key_id"])}<br>Value: {b["value"]}<br>Label: {b["label"]}',
-                customdata=[[b['t_on'], b['t_off'], int(b['key_id']), b['value'], b['label'],int(b['index'])]]
+                text=f'Index: {b["index"]}<br>Key: {int(b["key_id"])}<br>Value: {b["value"]}<br>Label: {b["label"]}<br>Key On: {b["t_on"]/10:.1f}ms<br>Key Off: {b["t_off"]/10:.1f}ms',
+                customdata=[[b['t_on']/10, b['t_off']/10, int(b['key_id']), b['value'], b['label'],int(b['index'])]]
             ))
         
         # 保持原有的视觉线条完全不变
         fig.add_trace(go.Scatter(
-            x=[b['t_on'], b['t_off']],
+            x=[b['t_on']/10, b['t_off']/10],
             y=[b['key_id'], b['key_id']],
             mode='lines',
             line=dict(color=color, width=3),
             name=b['label'],
             showlegend=False,
             hoverinfo='skip',
-            customdata=[[b['t_on'], b['t_off'], int(b['key_id']), b['value'], b['label'],int(b['index'])]]
+            customdata=[[b['t_on']/10, b['t_off']/10, int(b['key_id']), b['value'], b['label'],int(b['index'])]]
         ))
 
     # 添加色条

@@ -11,8 +11,8 @@ from dash import Input, Output, State, callback_context, no_update, html, dcc
 import dash_bootstrap_components as dbc
 from ui.layout_components import create_report_layout, create_detail_content, empty_figure
 from backend.piano_analysis_backend import PianoAnalysisBackend
-from utils.spmid_utils import NoteInfo, Diffs, ErrorNote
-from utils.data_processor import process_file_upload, process_history_selection
+from backend.data_manager import DataManager
+from ui.ui_processor import UIProcessor
 from utils.pdf_generator import PDFReportGenerator
 from utils.logger import Logger
 
@@ -193,15 +193,28 @@ def _update_history_state(backend, history_id, current_time):
     backend._data_source = 'history'
 
 
-def _handle_file_upload(contents, filename, backend, history_manager, key_filter):
+def _handle_file_upload(contents, filename, backend, key_filter):
     """处理文件上传操作"""
     logger.info(f"🔄 处理文件上传: {filename}")
-    backend._data_source = 'upload'
-    backend._current_history_id = None
     
-    info_content, error_content, error_msg = process_file_upload(contents, filename, backend, history_manager)
+    # 使用backend中的DataManager处理文件上传
+    success, result_data, error_msg = backend.process_file_upload(contents, filename)
+    
+    if success:
+        # 使用UIProcessor生成成功内容
+        ui_processor = UIProcessor()
+        info_content = ui_processor.create_upload_success_content(result_data)
+        error_content = None
+    else:
+        # 使用UIProcessor生成错误内容
+        ui_processor = UIProcessor()
+        info_content = None
+        error_content = ui_processor.create_upload_error_content(filename, error_msg)
     
     if info_content and not error_content:
+        # 执行数据分析
+        backend._perform_error_analysis()
+        
         # 设置键ID筛选
         if key_filter:
             backend.set_key_filter(key_filter)
@@ -218,11 +231,23 @@ def _handle_file_upload(contents, filename, backend, history_manager, key_filter
         key_options = backend.get_available_keys()
         key_status = backend.get_key_filter_status()
         
+        # 将key_status转换为可渲染的字符串
+        if key_status['enabled']:
+            key_status_text = f"已筛选 {len(key_status['filtered_keys'])} 个键位 (共 {key_status['total_available_keys']} 个)"
+        else:
+            key_status_text = f"显示全部 {key_status['total_available_keys']} 个键位"
+        
         # 完全避免更新滑块属性，防止无限递归
         time_status = backend.get_time_filter_status()
         
+        # 将time_status转换为可渲染的字符串
+        if time_status['enabled']:
+            time_status_text = f"时间范围: {time_status['start_time']:.2f}s - {time_status['end_time']:.2f}s (时长: {time_status['duration']:.2f}s)"
+        else:
+            time_status_text = "显示全部时间范围"
+        
         logger.info("✅ 文件上传处理完成，清空历史记录选择，显示新文件数据")
-        return fig, report_content, no_update, key_options, key_status, no_update, no_update, no_update, time_status
+        return fig, report_content, no_update, key_options, key_status_text, no_update, no_update, no_update, time_status_text
     else:
         # 处理上传错误
         if error_content:
@@ -240,16 +265,31 @@ def _handle_file_upload(contents, filename, backend, history_manager, key_filter
             return fig, error_div, no_update, [], "显示全部键位", 0, 1000, [0, 1000], "显示全部时间范围"
 
 
-def _handle_history_selection(history_id, backend, history_manager):
+def _handle_history_selection(history_id, backend):
     """处理历史记录选择操作"""
     logger.info(f"🔄 加载历史记录: {history_id}")
     
-    # 清理后端状态，确保使用历史记录数据
-    backend._data_source = 'history'
-    backend._current_history_id = history_id
+    # 使用HistoryManager处理历史记录选择（包含状态初始化）
+    success, result_data, error_msg = backend.history_manager.process_history_selection(history_id, backend)
     
-    # 调用历史记录处理函数
-    waterfall_fig, report_content = process_history_selection(history_id, history_manager, backend)
+    # 使用UIProcessor生成UI内容
+    ui_processor = UIProcessor()
+
+    if success:
+        if result_data['has_file_content']:
+            # 执行数据分析
+            backend._perform_error_analysis()
+            
+            # 有文件内容，生成瀑布图和报告
+            waterfall_fig = ui_processor.generate_history_waterfall(backend, result_data['filename'], result_data['main_record'])
+            report_content = ui_processor.generate_history_report(backend, result_data['filename'], result_data['history_id'])
+        else:
+            # 没有文件内容，只显示基本信息
+            waterfall_fig = ui_processor.create_empty_figure("历史记录无文件内容")
+            report_content = ui_processor.create_history_basic_info_content(result_data)
+    else:
+        waterfall_fig = ui_processor.create_empty_figure("历史记录加载失败")
+        report_content = ui_processor.create_error_content("历史记录加载失败", error_msg)
     
     if waterfall_fig and report_content:
         logger.info("✅ 历史记录加载完成，返回瀑布图和报告")
@@ -258,10 +298,22 @@ def _handle_history_selection(history_id, backend, history_manager):
         key_options = backend.get_available_keys()
         key_status = backend.get_key_filter_status()
         
+        # 将key_status转换为可渲染的字符串
+        if key_status['enabled']:
+            key_status_text = f"已筛选 {len(key_status['filtered_keys'])} 个键位 (共 {key_status['total_available_keys']} 个)"
+        else:
+            key_status_text = f"显示全部 {key_status['total_available_keys']} 个键位"
+        
         # 完全避免更新滑块属性，防止无限递归
         time_status = backend.get_time_filter_status()
         
-        return waterfall_fig, report_content, no_update, key_options, key_status, no_update, no_update, no_update, time_status
+        # 将time_status转换为可渲染的字符串
+        if time_status['enabled']:
+            time_status_text = f"时间范围: {time_status['start_time']:.2f}s - {time_status['end_time']:.2f}s (时长: {time_status['duration']:.2f}s)"
+        else:
+            time_status_text = "显示全部时间范围"
+        
+        return waterfall_fig, report_content, no_update, key_options, key_status_text, no_update, no_update, no_update, time_status_text
     else:
         logger.error("❌ 历史记录加载失败")
         empty_fig = _create_empty_figure_for_callback("历史记录加载失败")
@@ -272,7 +324,7 @@ def _handle_history_selection(history_id, backend, history_manager):
         return empty_fig, error_content, no_update, [], "显示全部键位", 0, 1000, [0, 1000], "显示全部时间范围"
 
 
-def _handle_waterfall_button(backend, history_manager):
+def _handle_waterfall_button(backend):
     """处理瀑布图按钮点击"""
     current_data_source = getattr(backend, '_data_source', 'none') if backend else 'none'
     logger.info(f"🔄 生成瀑布图（数据源: {current_data_source}）")
@@ -289,7 +341,7 @@ def _handle_waterfall_button(backend, history_manager):
         return empty_fig, no_update, no_update, [], "显示全部键位", 0, 1000, [0, 1000], "显示全部时间范围"
 
 
-def _handle_report_button(backend, history_manager):
+def _handle_report_button(backend):
     """处理报告按钮点击"""
     current_data_source = getattr(backend, '_data_source', 'none') if backend else 'none'
     logger.info(f"🔄 生成分析报告（数据源: {current_data_source}）")
@@ -312,14 +364,13 @@ def _handle_report_button(backend, history_manager):
         return no_update, error_content, no_update, no_update, no_update, no_update, no_update, no_update, no_update
 
 
-def _handle_fallback_logic(contents, filename, history_id, backend, history_manager):
+def _handle_fallback_logic(contents, filename, history_id, backend):
     """兜底逻辑：基于现有状态判断"""
     if contents and filename and not history_id:
         logger.info(f"🔄 兜底处理文件上传: {filename}")
-        backend._data_source = 'upload'
-        backend._current_history_id = None
         
-        info_content, error_content, error_msg = process_file_upload(contents, filename, backend, history_manager)
+        # 使用backend中的DataManager处理文件上传
+        success, result_data, error_msg = backend.process_file_upload(contents, filename)
         fig = backend.generate_waterfall_plot()
         report_content = create_report_layout(backend)
         
@@ -328,10 +379,24 @@ def _handle_fallback_logic(contents, filename, history_id, backend, history_mana
         
     elif history_id:
         logger.info(f"🔄 兜底处理历史记录: {history_id}")
-        backend._data_source = 'history'
-        backend._current_history_id = history_id
         
-        waterfall_fig, report_content = process_history_selection(history_id, history_manager, backend)
+        # 使用UIProcessor生成UI内容
+        ui_processor = UIProcessor()
+        # 使用HistoryManager处理历史记录选择（包含状态初始化）
+        success, result_data, error_msg = backend.history_manager.process_history_selection(history_id, backend)
+        
+        if success:
+            if result_data['has_file_content']:
+                # 有文件内容，生成瀑布图和报告
+                waterfall_fig = ui_processor.generate_history_waterfall(backend, result_data['filename'], result_data['main_record'])
+                report_content = ui_processor.generate_history_report(backend, result_data['filename'], result_data['history_id'])
+            else:
+                # 没有文件内容，只显示基本信息
+                waterfall_fig = ui_processor.create_empty_figure("历史记录无文件内容")
+                report_content = ui_processor.create_history_basic_info_content(result_data)
+        else:
+            waterfall_fig = ui_processor.create_empty_figure("历史记录加载失败")
+            report_content = ui_processor.create_error_content("历史记录加载失败", error_msg)
         if waterfall_fig and report_content:
             return waterfall_fig, report_content, no_update, [], "显示全部键位", 0, 1000, [0, 1000], "显示全部时间范围"
         else:
@@ -390,7 +455,7 @@ def register_callbacks(app, backends, history_manager):
 
         # 初始化后端实例
         if session_id not in backends:
-            backends[session_id] = PianoAnalysisBackend(session_id)
+            backends[session_id] = PianoAnalysisBackend(session_id, history_manager)
         backend = backends[session_id]
 
         try:
@@ -402,20 +467,20 @@ def register_callbacks(app, backends, history_manager):
 
             # 根据触发源分发处理
             if trigger_source == 'upload' and contents and filename:
-                return _handle_file_upload(contents, filename, backend, history_manager, key_filter)
+                return _handle_file_upload(contents, filename, backend, key_filter)
                 
             elif trigger_source == 'history' and history_id:
-                return _handle_history_selection(history_id, backend, history_manager)
+                return _handle_history_selection(history_id, backend)
                 
             elif trigger_source == 'waterfall':
-                return _handle_waterfall_button(backend, history_manager)
+                return _handle_waterfall_button(backend)
                 
             elif trigger_source == 'report':
-                return _handle_report_button(backend, history_manager)
+                return _handle_report_button(backend)
                 
             else:
                 # 兜底逻辑
-                return _handle_fallback_logic(contents, filename, history_id, backend, history_manager)
+                return _handle_fallback_logic(contents, filename, history_id, backend)
 
         except Exception as e:
             logger.error(f"❌ 处理数据失败: {e}")
@@ -862,15 +927,17 @@ def register_callbacks(app, backends, history_manager):
             time.sleep(0.3)
 
             # 生成PDF报告
+            source_info = backend.get_data_source_info() 
+            current_filename = source_info.get('filename') or "未知文件"
             pdf_generator = PDFReportGenerator(backend)
-            pdf_data = pdf_generator.generate_pdf_report(backend.current_filename or "未知文件")
+            pdf_data = pdf_generator.generate_pdf_report(current_filename)
 
             if not pdf_data:
                 return no_update
 
             # 生成安全的文件名
             import re
-            safe_filename = re.sub(r'[<>:"/\\|?*]', '_', backend.current_filename or "未知文件")
+            safe_filename = re.sub(r'[<>:"/\\|?*]', '_', current_filename or "未知文件")
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             filename = f"SPMID_完整分析报告_{safe_filename}_{timestamp}.pdf"
 
@@ -972,12 +1039,18 @@ def register_callbacks(app, backends, history_manager):
         fig = backend.generate_waterfall_plot()
         key_status = backend.get_key_filter_status()
         
+        # 将key_status转换为可渲染的字符串
+        if key_status['enabled']:
+            key_status_text = f"已筛选 {len(key_status['filtered_keys'])} 个键位 (共 {key_status['total_available_keys']} 个)"
+        else:
+            key_status_text = f"显示全部 {key_status['total_available_keys']} 个键位"
+        
         logger.info(f"🔍 键ID筛选状态: {key_status}")
         
         # 获取键ID选项
         key_options = backend.get_available_keys()
         
-        return fig, key_status, key_options
+        return fig, key_status_text, key_options
 
     # 时间轴筛选回调函数
     @app.callback(
@@ -1052,9 +1125,15 @@ def register_callbacks(app, backends, history_manager):
             fig = backend.generate_waterfall_plot()
             time_status = backend.get_time_filter_status()
             
+            # 将time_status转换为可渲染的字符串
+            if time_status['enabled']:
+                time_status_text = f"时间范围: {time_status['start_time']:.2f}s - {time_status['end_time']:.2f}s (时长: {time_status['duration']:.2f}s)"
+            else:
+                time_status_text = "显示全部时间范围"
+            
             logger.info(f"⏰ 时间轴筛选状态: {time_status}")
             
-            return fig, time_status, slider_value
+            return fig, time_status_text, slider_value
         except Exception as e:
             logger.error(f"❌ 时间筛选后生成瀑布图失败: {e}")
             import traceback

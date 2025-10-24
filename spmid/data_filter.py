@@ -99,15 +99,23 @@ class DataFilter:
             'duration_too_short': 0,
             'after_touch_too_weak': 0,
             'empty_data': 0,
+            'silent_notes': 0,  # 不发声音符（阈值检查失败）
             'other_errors': 0
         }
         
         for note in notes:
-            if self._is_note_valid(note):
+            is_valid, reason = self._is_note_valid_with_reason(note)
+            if is_valid:
                 valid_notes.append(note)
             else:
-                # 统计无效原因（这里可以扩展更详细的统计）
-                invalid_reasons['other_errors'] += 1
+                # 根据具体原因统计
+                if reason in invalid_reasons:
+                    invalid_reasons[reason] += 1
+                    # 调试：记录silent_notes的统计
+                    if reason == 'silent_notes':
+                        logger.info(f"🔇 发现不发声音符: 音符ID={note.id}, 锤速={note.hammers.values[0] if len(note.hammers) > 0 else 'N/A'}")
+                else:
+                    invalid_reasons['other_errors'] += 1
         
         invalid_counts = {
             'total_notes': len(notes),
@@ -116,9 +124,20 @@ class DataFilter:
             'invalid_reasons': invalid_reasons
         }
         
+        # 调试：打印统计结果
+        logger.info(f"📊 {data_type}数据过滤统计:")
+        logger.info(f"  总音符数: {len(notes)}")
+        logger.info(f"  有效音符数: {len(valid_notes)}")
+        logger.info(f"  无效音符数: {len(notes) - len(valid_notes)}")
+        logger.info(f"  不发声音符数: {invalid_reasons['silent_notes']}")
+        logger.info(f"  持续时间过短: {invalid_reasons['duration_too_short']}")
+        logger.info(f"  触后力度过弱: {invalid_reasons['after_touch_too_weak']}")
+        logger.info(f"  数据为空: {invalid_reasons['empty_data']}")
+        logger.info(f"  其他错误: {invalid_reasons['other_errors']}")
+        
         return valid_notes, invalid_counts
     
-    def _is_note_valid(self, note: Note) -> bool:
+    def _is_note_valid_with_reason(self, note: Note) -> Tuple[bool, str]:
         """
         检查音符是否有效
         
@@ -138,12 +157,13 @@ class DataFilter:
             - 持续时间：音符持续时间不能少于300ms
             - 触后力度：最大触后力度不能少于500
             - 阈值检查：通过电机阈值检查器验证是否能够发声
+            Tuple[bool, str]: (是否有效, 无效原因)
         """
         try:
             # 基本条件检查
             if len(note.after_touch) == 0 or len(note.hammers) == 0:
                 self._log_invalid_note_details(note, "数据为空", "after_touch或hammers为空")
-                return False
+                return False, 'empty_data'
             
             # 获取第一个锤子的速度值
             first_hammer_velocity = note.hammers.values[0]
@@ -151,7 +171,8 @@ class DataFilter:
             # 检查锤速是否为0
             if first_hammer_velocity == 0:
                 self._log_invalid_note_details(note, "锤速为0", f"锤速={first_hammer_velocity}")
-                return False
+                logger.info(f"🔇 音符ID={note.id} 被识别为不发声音符: 锤速为0")
+                return False, 'silent_notes'  # 锤速为0视为不发声音符
             
             # 检查音符的基本条件
             chazhi = note.after_touch.index[-1] - note.after_touch.index[0]
@@ -159,11 +180,11 @@ class DataFilter:
             
             if chazhi < 300:
                 self._log_invalid_note_details(note, "持续时间过短", f"持续时间={chazhi}ms (<300ms)")
-                return False
+                return False, 'duration_too_short'
                 
             if max_after_touch < 500:
                 self._log_invalid_note_details(note, "触后力度过弱", f"最大触后力度={max_after_touch} (<500)")
-                return False
+                return False, 'after_touch_too_weak'
             
             # 使用电机阈值检查器判断是否发声
             if self.threshold_checker:
@@ -172,15 +193,30 @@ class DataFilter:
                 
                 if not is_valid:
                     self._log_invalid_note_details(note, "阈值检查失败", f"锤速={first_hammer_velocity}, 电机={motor_name}")
+                    logger.info(f"🔇 音符ID={note.id} 被识别为不发声音符: 阈值检查失败, 锤速={first_hammer_velocity}")
+                    return False, 'silent_notes'  # 阈值检查失败视为不发声音符
                 
-                return is_valid
+                return True, 'valid'
             else:
                 # 如果没有阈值检查器，只进行基本检查
-                return True
+                return True, 'valid'
             
         except Exception as e:
             self._log_invalid_note_details(note, "异常错误", f"错误信息: {str(e)}")
-            return False
+            return False, 'other_errors'
+    
+    def _is_note_valid(self, note: Note) -> bool:
+        """
+        检查音符是否有效（兼容性方法）
+        
+        Args:
+            note: 待检查的音符对象
+            
+        Returns:
+            bool: 音符有效性检查结果
+        """
+        is_valid, _ = self._is_note_valid_with_reason(note)
+        return is_valid
     
     def _log_invalid_note_details(self, note: Note, reason: str, details: str) -> None:
         """

@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-SPMID数据分析器（重构版）
+SPMID数据分析器
 
 主协调器类，负责协调各个专门的分析组件：
 - DataFilter: 数据过滤
@@ -33,7 +33,7 @@ logger = Logger.get_logger()
 
 class SPMIDAnalyzer:
     """
-    SPMID数据分析器类（重构版）
+    SPMID数据分析器类
     
     主协调器，负责协调各个专门的分析组件完成完整的SPMID数据分析流程
     """
@@ -85,6 +85,10 @@ class SPMIDAnalyzer:
         # 步骤2：过滤有效音符数据
         self.valid_record_data, self.valid_replay_data, invalid_counts = self.data_filter.filter_valid_notes_data(record_data, replay_data)
         
+        # 保存第一次过滤后的数据用于准确率计算
+        self.initial_valid_record_data = self.valid_record_data.copy()
+        self.initial_valid_replay_data = self.valid_replay_data.copy()
+        
         # 步骤3：计算全局时间偏移量
         global_offset = self.time_aligner.calculate_global_time_offset(self.valid_record_data, self.valid_replay_data)
         logger.info(f"计算得到的全局时间偏移量: {global_offset}")
@@ -100,9 +104,13 @@ class SPMIDAnalyzer:
         )
         
         # 步骤6：提取正常匹配的音符对
-        self.valid_record_data, self.valid_replay_data = self.note_matcher.extract_normal_matched_pairs(
+        matched_record_data, matched_replay_data = self.note_matcher.extract_normal_matched_pairs(
             self.matched_pairs, self.multi_hammers, self.drop_hammers
         )
+        
+        # 保存匹配后的数据，但不覆盖初始数据
+        self.valid_record_data = matched_record_data
+        self.valid_replay_data = matched_replay_data
         
         # 步骤7：记录统计信息
         self._log_invalid_notes_statistics(record_data, replay_data, invalid_counts)
@@ -194,6 +202,82 @@ class SPMIDAnalyzer:
     def get_error_detector(self) -> Optional[ErrorDetector]:
         """获取异常检测器实例"""
         return self.error_detector
+    
+    def get_valid_record_data(self) -> Optional[List[Note]]:
+        """
+        获取有效录制数据
+        
+        Returns:
+            Optional[List[Note]]: 有效录制数据列表
+        """
+        return self.valid_record_data
+    
+    def get_valid_replay_data(self) -> Optional[List[Note]]:
+        """
+        获取有效播放数据
+        
+        Returns:
+            Optional[List[Note]]: 有效播放数据列表
+        """
+        return self.valid_replay_data
+    
+    def get_initial_valid_record_data(self) -> Optional[List[Note]]:
+        """
+        获取初始有效录制数据（第一次过滤后）
+        
+        Returns:
+            Optional[List[Note]]: 初始有效录制数据列表
+        """
+        return getattr(self, 'initial_valid_record_data', None)
+    
+    def get_initial_valid_replay_data(self) -> Optional[List[Note]]:
+        """
+        获取初始有效播放数据（第一次过滤后）
+        
+        Returns:
+            Optional[List[Note]]: 初始有效播放数据列表
+        """
+        return getattr(self, 'initial_valid_replay_data', None)
+    
+    def get_offset_alignment_data(self) -> List[Dict[str, Any]]:
+        """
+        获取偏移对齐数据
+        
+        Returns:
+            List[Dict[str, Any]]: 偏移对齐数据列表
+        """
+        if self.note_matcher:
+            return self.note_matcher.get_offset_alignment_data()
+        return []
+    
+    def get_invalid_notes_offset_analysis(self) -> List[Dict[str, Any]]:
+        """
+        获取无效音符的偏移对齐分析
+        
+        Returns:
+            List[Dict[str, Any]]: 无效音符偏移分析数据
+        """
+        if self.note_matcher and self.valid_record_data and self.valid_replay_data:
+            return self.note_matcher.get_invalid_notes_offset_analysis(
+                self.valid_record_data, self.valid_replay_data
+            )
+        return []
+    
+    def get_offset_statistics(self) -> Dict[str, Any]:
+        """
+        获取偏移统计信息
+        
+        Returns:
+            Dict[str, Any]: 偏移统计信息
+        """
+        if self.note_matcher:
+            return self.note_matcher.get_offset_statistics()
+        return {
+            'total_pairs': 0,
+            'keyon_offset_stats': {'average': 0.0, 'max': 0.0, 'min': 0.0, 'std': 0.0},
+            'keyoff_offset_stats': {'average': 0.0, 'max': 0.0, 'min': 0.0, 'std': 0.0},
+            'overall_offset_stats': {'average': 0.0, 'max': 0.0, 'min': 0.0, 'std': 0.0}
+        }
 
 
 # 为了保持向后兼容性，提供函数接口

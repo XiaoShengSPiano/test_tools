@@ -1,11 +1,13 @@
 
 import pandas as pd
 import matplotlib.pyplot as plt
+import numpy as np
 from backend.hammer_analysis import get_bar_segments
 from utils.logger import Logger
 
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from matplotlib import cm
 
 logger = Logger.get_logger()
 
@@ -61,7 +63,6 @@ def plot_bar_plotly(df_record, df_play):
     norm = lambda v: (v - vmin) / (vmax - vmin) if vmax > vmin else 0.5
 
     # 选用plotly自带的colormap
-    from matplotlib import cm
     cmap = cm.get_cmap('tab20b')
 
     fig = go.Figure()
@@ -96,7 +97,6 @@ def plot_bar_plotly(df_record, df_play):
         ))
 
     # 添加色条
-    import numpy as np
     colorbar_trace = go.Scatter(
         x=[None], y=[None],
         mode='markers',

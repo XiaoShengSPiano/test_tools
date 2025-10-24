@@ -11,7 +11,7 @@ SPMID音符匹配器
 """
 
 from .spmid_reader import Note
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Any
 from utils.logger import Logger
 
 logger = Logger.get_logger()
@@ -119,6 +119,183 @@ class NoteMatcher:
             global_time_offset: 新的全局时间偏移量
         """
         self.global_time_offset = global_time_offset
+    
+    def get_offset_alignment_data(self) -> List[Dict[str, Any]]:
+        """
+        获取偏移对齐数据 - 计算每个匹配对的时间偏移
+        
+        Returns:
+            List[Dict[str, Any]]: 偏移对齐数据列表
+        """
+        offset_data = []
+        
+        for record_idx, replay_idx, record_note, replay_note in self.matched_pairs:
+            # 计算按键开始时间偏移
+            record_keyon = record_note.after_touch.index[0] + record_note.offset if len(record_note.after_touch) > 0 else record_note.hammers.index[0] + record_note.offset
+            replay_keyon = replay_note.after_touch.index[0] + replay_note.offset if len(replay_note.after_touch) > 0 else replay_note.hammers.index[0] + replay_note.offset
+            keyon_offset = replay_keyon - record_keyon
+            
+            # 计算按键结束时间偏移
+            record_keyoff = record_note.after_touch.index[-1] + record_note.offset if len(record_note.after_touch) > 0 else record_note.hammers.index[0] + record_note.offset
+            replay_keyoff = replay_note.after_touch.index[-1] + replay_note.offset if len(replay_note.after_touch) > 0 else replay_note.hammers.index[0] + replay_note.offset
+            keyoff_offset = replay_keyoff - record_keyoff
+            
+            # 计算平均偏移
+            avg_offset = (keyon_offset + keyoff_offset) / 2
+            
+            offset_data.append({
+                'record_index': record_idx,
+                'replay_index': replay_idx,
+                'key_id': record_note.id,
+                'record_keyon': record_keyon,
+                'replay_keyon': replay_keyon,
+                'keyon_offset': keyon_offset,
+                'record_keyoff': record_keyoff,
+                'replay_keyoff': replay_keyoff,
+                'keyoff_offset': keyoff_offset,
+                'average_offset': avg_offset,
+                'record_duration': record_keyoff - record_keyon,
+                'replay_duration': replay_keyoff - replay_keyon,
+                'duration_diff': (replay_keyoff - replay_keyon) - (record_keyoff - record_keyon)
+            })
+        
+        return offset_data
+    
+    def get_invalid_notes_offset_analysis(self, record_data: List[Note], replay_data: List[Note]) -> List[Dict[str, Any]]:
+        """
+        获取无效音符的偏移对齐分析
+        
+        Args:
+            record_data: 录制数据
+            replay_data: 播放数据
+            
+        Returns:
+            List[Dict[str, Any]]: 无效音符偏移分析数据
+        """
+        invalid_offset_data = []
+        
+        # 获取已匹配的音符索引
+        matched_record_indices = set(pair[0] for pair in self.matched_pairs)
+        matched_replay_indices = set(pair[1] for pair in self.matched_pairs)
+        
+        # 分析录制数据中的无效音符（未匹配的音符）
+        for i, note in enumerate(record_data):
+            if i not in matched_record_indices:  # 未匹配的音符
+                try:
+                    keyon_time = note.after_touch.index[0] + note.offset if len(note.after_touch) > 0 else note.hammers.index[0] + note.offset
+                    keyoff_time = note.after_touch.index[-1] + note.offset if len(note.after_touch) > 0 else note.hammers.index[0] + note.offset
+                    
+                    invalid_offset_data.append({
+                        'data_type': 'record',
+                        'note_index': i,
+                        'key_id': note.id,
+                        'keyon_time': keyon_time,
+                        'keyoff_time': keyoff_time,
+                        'offset': note.offset,
+                        'status': 'unmatched'
+                    })
+                except (IndexError, AttributeError) as e:
+                    # 处理数据异常的情况
+                    invalid_offset_data.append({
+                        'data_type': 'record',
+                        'note_index': i,
+                        'key_id': note.id,
+                        'keyon_time': 0.0,
+                        'keyoff_time': 0.0,
+                        'offset': note.offset,
+                        'status': 'data_error'
+                    })
+        
+        # 分析播放数据中的无效音符（未匹配的音符）
+        for i, note in enumerate(replay_data):
+            if i not in matched_replay_indices:  # 未匹配的音符
+                try:
+                    keyon_time = note.after_touch.index[0] + note.offset if len(note.after_touch) > 0 else note.hammers.index[0] + note.offset
+                    keyoff_time = note.after_touch.index[-1] + note.offset if len(note.after_touch) > 0 else note.hammers.index[0] + note.offset
+                    
+                    invalid_offset_data.append({
+                        'data_type': 'replay',
+                        'note_index': i,
+                        'key_id': note.id,
+                        'keyon_time': keyon_time,
+                        'keyoff_time': keyoff_time,
+                        'offset': note.offset,
+                        'status': 'unmatched'
+                    })
+                except (IndexError, AttributeError) as e:
+                    # 处理数据异常的情况
+                    invalid_offset_data.append({
+                        'data_type': 'replay',
+                        'note_index': i,
+                        'key_id': note.id,
+                        'keyon_time': 0.0,
+                        'keyoff_time': 0.0,
+                        'offset': note.offset,
+                        'status': 'data_error'
+                    })
+        
+        return invalid_offset_data
+    
+    def get_offset_statistics(self) -> Dict[str, Any]:
+        """
+        获取偏移统计信息
+        
+        Returns:
+            Dict[str, Any]: 偏移统计信息
+        """
+        if not self.matched_pairs:
+            return {
+                'total_pairs': 0,
+                'keyon_offset_stats': {'average': 0.0, 'max': 0.0, 'min': 0.0, 'std': 0.0},
+                'keyoff_offset_stats': {'average': 0.0, 'max': 0.0, 'min': 0.0, 'std': 0.0},
+                'overall_offset_stats': {'average': 0.0, 'max': 0.0, 'min': 0.0, 'std': 0.0}
+            }
+        
+        # 获取偏移数据
+        offset_data = self.get_offset_alignment_data()
+        
+        # 提取偏移值
+        keyon_offsets = [item['keyon_offset'] for item in offset_data]
+        keyoff_offsets = [item['keyoff_offset'] for item in offset_data]
+        all_offsets = keyon_offsets + keyoff_offsets
+        
+        return {
+            'total_pairs': len(self.matched_pairs),
+            'keyon_offset_stats': self._calculate_offset_stats(keyon_offsets),
+            'keyoff_offset_stats': self._calculate_offset_stats(keyoff_offsets),
+            'overall_offset_stats': self._calculate_offset_stats(all_offsets)
+        }
+    
+    def _calculate_offset_stats(self, offsets: List[float]) -> Dict[str, float]:
+        """
+        计算偏移统计信息
+        
+        Args:
+            offsets: 偏移值列表
+            
+        Returns:
+            Dict[str, float]: 统计信息
+        """
+        if not offsets:
+            return {'average': 0.0, 'max': 0.0, 'min': 0.0, 'std': 0.0}
+        
+        average = sum(offsets) / len(offsets)
+        max_val = max(offsets)
+        min_val = min(offsets)
+        
+        # 计算标准差
+        if len(offsets) <= 1:
+            std = 0.0
+        else:
+            variance = sum((x - average) ** 2 for x in offsets) / (len(offsets) - 1)
+            std = variance ** 0.5
+        
+        return {
+            'average': average,
+            'max': max_val,
+            'min': min_val,
+            'std': std
+        }
 
 
 def find_best_matching_notes(notes_list: List[Note], target_keyon: float, target_keyoff: float, target_key_id: int) -> int:

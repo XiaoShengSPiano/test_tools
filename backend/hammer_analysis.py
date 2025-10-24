@@ -6,7 +6,6 @@ import os
 from utils.logger import Logger
 
 import plotly.io as pio
-# pio.renderers.default = "browser"
 
 logger = Logger.get_logger()
 

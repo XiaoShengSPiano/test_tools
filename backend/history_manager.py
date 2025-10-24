@@ -4,6 +4,8 @@ from datetime import datetime
 import threading
 import os
 import json
+import hashlib
+import traceback
 from utils.logger import Logger
 
 logger = Logger.get_logger()
@@ -21,6 +23,7 @@ class HistoryManager:
 
         self._lock = threading.RLock()
         self.init_database()
+        logger.info("✅ HistoryManager初始化完成")
 
     def init_database(self):
         """初始化数据库表结构 - 根据实际表结构"""
@@ -97,7 +100,6 @@ class HistoryManager:
 
     def save_analysis_result(self, filename, backend, upload_id=None, file_content=None):
         """保存分析结果到数据库 - 修复文件内容保存逻辑"""
-        import hashlib
 
         with self._lock:
             conn = sqlite3.connect(self.db_path)
@@ -169,7 +171,6 @@ class HistoryManager:
 
             except Exception as e:
                 logger.info(f"❌ 保存分析结果失败: {e}")
-                import traceback
                 traceback.print_exc()
                 conn.rollback()  # 添加回滚操作
                 return None
@@ -219,7 +220,6 @@ class HistoryManager:
 
             except Exception as e:
                 logger.info(f"❌ 获取记录详情失败: {e}")
-                import traceback
                 traceback.print_exc()
                 return None
             finally:
@@ -264,7 +264,6 @@ class HistoryManager:
 
             except Exception as e:
                 logger.info(f"❌ 获取历史记录列表失败: {e}")
-                import traceback
                 traceback.print_exc()
                 return []
             finally:
@@ -272,7 +271,6 @@ class HistoryManager:
 
     def add_record(self, filename, file_content, analysis_result, analysis_duration=0, notes=""):
         """添加SPMID文件记录 - 根据实际表结构"""
-        import hashlib
 
         file_hash = hashlib.md5(file_content).hexdigest()
 
@@ -306,7 +304,6 @@ class HistoryManager:
 
             except Exception as e:
                 logger.info(f"❌ 添加历史记录失败: {e}")
-                import traceback
                 traceback.print_exc()
                 return None
             finally:
@@ -355,3 +352,120 @@ class HistoryManager:
                 return 0
             finally:
                 conn.close()
+    
+    # ==================== 历史记录处理相关方法 ====================
+    
+    def process_history_selection(self, history_id, backend):
+        """
+        处理历史记录选择 - 从数据库加载历史记录并初始化backend状态
+        
+        Args:
+            history_id: 历史记录ID
+            backend: 后端实例
+            
+        Returns:
+            tuple: (success, result_data, error_msg)
+                   - success: 是否处理成功
+                   - result_data: 成功时的结果数据（包含filename、main_record等）
+                   - error_msg: 失败时的错误信息
+        """
+        try:
+            logger.info(f"🔄 处理历史记录选择: {history_id}")
+            
+            # 获取历史记录详情
+            record_details = self.get_record_details(history_id)
+            if not record_details:
+                return False, None, "历史记录不存在"
+            
+            # 解析历史记录信息
+            filename, main_record = self._parse_history_record(record_details)
+            
+            # 初始化历史记录状态
+            self._initialize_history_state(backend, history_id, filename)
+            
+            # 处理历史记录
+            if 'file_content' in record_details and record_details['file_content']:
+                success = self._load_history_file_content(backend, record_details['file_content'])
+                if success:
+                    result_data = {
+                        'filename': filename,
+                        'history_id': history_id,
+                        'main_record': main_record,
+                        'has_file_content': True,
+                        'record_count': len(backend.data_manager.spmid_loader.get_record_data()),
+                        'replay_count': len(backend.data_manager.spmid_loader.get_replay_data())
+                    }
+                    return True, result_data, None
+                else:
+                    return False, None, "历史文件分析失败"
+            else:
+                result_data = {
+                    'filename': filename,
+                    'history_id': history_id,
+                    'main_record': main_record,
+                    'has_file_content': False
+                }
+                return True, result_data, None
+                
+        except Exception as e:
+            logger.error(f"❌ 历史记录处理错误: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False, None, str(e)
+    
+    def save_upload_result(self, filename, backend):
+        """
+        保存上传结果到历史记录
+        
+        Args:
+            filename: 文件名
+            backend: 后端实例
+            
+        Returns:
+            str: 历史记录ID
+        """
+        history_id = self.save_analysis_result(filename, backend)
+        self._log_upload_success(filename, backend, history_id)
+        return history_id
+    
+    # ==================== 私有方法 ====================
+    
+    def _initialize_history_state(self, backend, history_id, filename):
+        """初始化历史记录状态"""
+        # 清理数据状态
+        backend.data_manager.clear_data_state()
+        
+        # 设置历史记录数据源信息
+        backend.data_manager.set_history_data_source(history_id, filename)
+        backend._data_source = 'history'
+        backend._current_history_id = history_id
+    
+    def _load_history_file_content(self, backend, file_content):
+        """加载历史记录文件内容"""
+        logger.info("🔄 从数据库重新分析历史文件...")
+        
+        # 解码并加载文件内容 - 直接使用SPMIDLoader
+        decoded_bytes = base64.b64decode(file_content)
+        success = backend.data_manager.spmid_loader.load_spmid_data(decoded_bytes)
+        
+        if success:
+            logger.info("✅ 历史记录重新分析完成")
+            logger.info(f"📊 数据统计: 录制 {len(backend.data_manager.spmid_loader.get_record_data())} 个音符, 播放 {len(backend.data_manager.spmid_loader.get_replay_data())} 个音符")
+        
+        return success
+    
+    def _log_upload_success(self, filename, backend, history_id):
+        """记录文件上传成功信息"""
+        logger.info(f"✅ 文件上传处理完成 - {filename}")
+        logger.info(f"📊 数据统计: 录制 {len(backend.data_manager.spmid_loader.get_record_data())} 个音符, 播放 {len(backend.data_manager.spmid_loader.get_replay_data())} 个音符")
+        logger.info(f"💾 历史记录ID: {history_id}")
+    
+    def _parse_history_record(self, record_details):
+        """解析历史记录信息"""
+        main_record = record_details['main_record']
+        # main_record是一个tuple，格式为: (id, filename, upload_time, multi_hammers_count, drop_hammers_count, total_errors, file_hash, file_size, file_content)
+        if isinstance(main_record, tuple) and len(main_record) >= 2:
+            filename = main_record[1] if main_record[1] else '未知文件'
+        else:
+            filename = '未知文件'
+        return filename, main_record

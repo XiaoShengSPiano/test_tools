@@ -386,22 +386,22 @@ class PDFReportGenerator:
 
         # 总检测数量卡片
         self._create_enhanced_stat_card(ax_main, 0.25, first_row_y, card_width, card_height,
-                               summary["total_notes"], '总检测数量', '#2b6cb0')
+                               summary["detailed_stats"]["total_notes"], '总检测数量', '#2b6cb0')
 
         # 检测准确率卡片
         self._create_enhanced_stat_card(ax_main, 0.75, first_row_y, card_width, card_height,
-                               f'{summary["accuracy"]:.1f}%', '检测���确率', '#38a169')
+                               f'{summary["accuracy"]:.1f}%', '检测准确率', '#38a169')
 
         # 第二行卡片 - 优化位置
         second_row_y = 0.52
 
         # 多锤异常卡片
         self._create_enhanced_stat_card(ax_main, 0.25, second_row_y, card_width, card_height,
-                               summary["multi_hammers"], '多锤异常', '#d69e2e')
+                               summary["detailed_stats"]["multi_hammers"], '多锤异常', '#d69e2e')
 
         # 丢锤异常卡片
         self._create_enhanced_stat_card(ax_main, 0.75, second_row_y, card_width, card_height,
-                               summary["drop_hammers"], '丢锤异常', '#e53e3e')
+                               summary["detailed_stats"]["drop_hammers"], '丢锤异常', '#e53e3e')
 
         # 中间分割线 - 调整位置
         ax_main.plot([0.1, 0.9], [0.32, 0.32], color='#e2e8f0', linewidth=1)

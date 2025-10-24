@@ -432,7 +432,8 @@ def create_main_layout():
 def create_report_layout(backend):
     """创建完整的报告分析布局"""
     summary = backend.get_summary_info()
-    data_source = backend.current_filename or "未知数据源"
+    source_info = backend.get_data_source_info()
+    data_source = source_info.get('filename') or "未知数据源"
 
     return html.Div([
         # 下载组件 - 隐藏但必需
@@ -467,60 +468,33 @@ def create_report_layout(backend):
                             ], className="mb-0")
                         ]),
                         dbc.CardBody([
+                            # 简化统计：只显示关键指标
                             dbc.Row([
                                 dbc.Col([
                                     html.Div([
-                                        html.H3(f"{summary['total_notes']}", className="text-primary mb-1"),
-                                        html.P("总检测数量", className="text-muted mb-0")
-                                    ], className="text-center")
-                                ], width=2),
-                                dbc.Col([
-                                    html.Div([
-                                        html.H3(f"{summary['valid_notes']}", className="text-info mb-1"),
-                                        html.P("有效音符", className="text-muted mb-0")
-                                    ], className="text-center")
-                                ], width=2),
-                                dbc.Col([
-                                    html.Div([
-                                        html.H3(f"{summary['invalid_notes']}", className="text-secondary mb-1"),
-                                        html.P("无效音符", className="text-muted mb-0")
-                                    ], className="text-center")
-                                ], width=2),
-                                dbc.Col([
-                                    html.Div([
-                                        html.H3(f"{summary['multi_hammers']}", className="text-warning mb-1"),
-                                        html.P("多锤异常", className="text-muted mb-0")
-                                    ], className="text-center")
-                                ], width=2),
-                                dbc.Col([
-                                    html.Div([
-                                        html.H3(f"{summary['drop_hammers']}", className="text-danger mb-1"),
-                                        html.P("丢锤异常", className="text-muted mb-0")
-                                    ], className="text-center")
-                                ], width=2),
-                                dbc.Col([
-                                    html.Div([
                                         html.H3(f"{summary['accuracy']:.1f}%", className="text-success mb-1"),
-                                        html.P("准确率", className="text-muted mb-0")
+                                        html.P("准确率", className="text-muted mb-0"),
+                                        html.Small("成功匹配音符数/总有效音符数", className="text-muted", style={'fontSize': '10px'})
                                     ], className="text-center")
-                                ], width=2)
+                                ], width=4),
+                                dbc.Col([
+                                    html.Div([
+                                        html.H3(f"{summary['drop_hammers']}", className="text-warning mb-1"),
+                                        html.P("丢锤数", className="text-muted mb-0"),
+                                        html.Small("录制有但播放没有", className="text-muted", style={'fontSize': '10px'})
+                                    ], className="text-center")
+                                ], width=4),
+                                dbc.Col([
+                                    html.Div([
+                                        html.H3(f"{summary['multi_hammers']}", className="text-info mb-1"),
+                                        html.P("多锤数", className="text-muted mb-0"),
+                                        html.Small("播放有但录制没有", className="text-muted", style={'fontSize': '10px'})
+                                    ], className="text-center")
+                                ], width=4)
                             ])
                         ])
                     ], className="shadow-sm mb-4")
                 ])
-            ]),
-
-            # 统计信息一行显示
-            dbc.Row([
-                dbc.Col([
-                    html.Div(
-                        f"多锤问题: {summary['multi_hammers_count']} 个  |  丢锤问题: {summary['drop_hammers_count']} 个  |  不发声锤子: {summary['silent_hammers_count']} 个  |  总计异常: {summary['total_errors']} 个",
-                        className="text-center mb-3",
-                        style={'fontSize': '16px', 'fontWeight': 'bold', 'color': '#495057',
-                              'backgroundColor': '#f8f9fa', 'padding': '10px', 'borderRadius': '5px',
-                              'border': '1px solid #dee2e6'}
-                    )
-                ], width=12)
             ]),
 
             # 主要内容区域
@@ -691,6 +665,7 @@ def create_report_layout(backend):
                                 {"name": "持续时间过短", "id": "duration_too_short"},
                                 {"name": "触后力度过弱", "id": "after_touch_too_weak"},
                                 {"name": "数据为空", "id": "empty_data"},
+                                {"name": "不发声音符", "id": "silent_notes"},
                                 {"name": "其他错误", "id": "other_errors"}
                             ],
                             data=backend.get_invalid_notes_table_data(),
@@ -756,7 +731,8 @@ def create_report_layout(backend):
                                 {"name": "配对数", "id": "count"},
                                 {"name": "中位数(ms)", "id": "median"},
                                 {"name": "均值(ms)", "id": "mean"},
-                                {"name": "标准差(ms)", "id": "std"}
+                                {"name": "标准差(ms)", "id": "std"},
+                                {"name": "状态", "id": "status"}
                             ],
                             # todo
                             data=backend.get_offset_alignment_data(),
@@ -770,11 +746,12 @@ def create_report_layout(backend):
                                 'textOverflow': 'ellipsis',
                             },
                             style_cell_conditional=[
-                                {'if': {'column_id': 'key_id'}, 'width': '20%'},
-                                {'if': {'column_id': 'count'}, 'width': '20%'},
-                                {'if': {'column_id': 'median'}, 'width': '20%'},
-                                {'if': {'column_id': 'mean'}, 'width': '20%'},
-                                {'if': {'column_id': 'std'}, 'width': '20%'},
+                                {'if': {'column_id': 'key_id'}, 'width': '15%'},
+                                {'if': {'column_id': 'count'}, 'width': '15%'},
+                                {'if': {'column_id': 'median'}, 'width': '15%'},
+                                {'if': {'column_id': 'mean'}, 'width': '15%'},
+                                {'if': {'column_id': 'std'}, 'width': '15%'},
+                                {'if': {'column_id': 'status'}, 'width': '25%'},
                             ],
                             style_header={
                                 'backgroundColor': '#e2d9f3',
@@ -794,10 +771,87 @@ def create_report_layout(backend):
                                     'backgroundColor': '#f8f9fa',
                                     'color': '#6f42c1',
                                     'fontWeight': 'bold'
+                                },
+                                {
+                                    'if': {'filter_query': '{status} = matched'},
+                                    'backgroundColor': '#d4edda',
+                                    'color': '#155724'
+                                },
+                                {
+                                    'if': {'filter_query': '{status} contains invalid'},
+                                    'backgroundColor': '#f8d7da',
+                                    'color': '#721c24'
                                 }
                             ],
                             sort_action="native",
                             style_table={'height': 'calc(30vh - 100px)', 'overflowY': 'auto', 'border': '1px solid #dee2e6', 'borderRadius': '5px'}
+                        ),
+                    ], className="mb-3", style={'backgroundColor': '#ffffff', 'padding': '15px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
+                    
+                    # 错误偏移数据表格
+                    html.Div([
+                        dbc.Row([
+                            dbc.Col([
+                                html.H6("错误偏移分析", className="mb-2",
+                                       style={'color': '#dc3545', 'fontWeight': 'bold', 'borderBottom': '2px solid #dc3545', 'paddingBottom': '5px'}),
+                            ], width=12)
+                        ]),
+                        dash_table.DataTable(
+                            id='error-offset-table',
+                            columns=[
+                                {"name": "数据类型", "id": "data_type"},
+                                {"name": "音符索引", "id": "note_index"},
+                                {"name": "键位ID", "id": "key_id"},
+                                {"name": "按键开始时间", "id": "keyon_time"},
+                                {"name": "按键结束时间", "id": "keyoff_time"},
+                                {"name": "偏移量", "id": "offset"},
+                                {"name": "状态", "id": "status"}
+                            ],
+                            data=backend.get_error_offset_data(),
+                            page_size=10,
+                            style_cell={
+                                'textAlign': 'center',
+                                'fontSize': '10px',
+                                'fontFamily': 'Arial',
+                                'padding': '6px',
+                                'overflow': 'hidden',
+                                'textOverflow': 'ellipsis',
+                            },
+                            style_cell_conditional=[
+                                {'if': {'column_id': 'data_type'}, 'width': '15%'},
+                                {'if': {'column_id': 'note_index'}, 'width': '10%'},
+                                {'if': {'column_id': 'key_id'}, 'width': '10%'},
+                                {'if': {'column_id': 'keyon_time'}, 'width': '20%'},
+                                {'if': {'column_id': 'keyoff_time'}, 'width': '20%'},
+                                {'if': {'column_id': 'offset'}, 'width': '15%'},
+                                {'if': {'column_id': 'status'}, 'width': '10%'},
+                            ],
+                            style_header={
+                                'backgroundColor': '#f8d7da',
+                                'fontWeight': 'bold',
+                                'border': '1px solid #dee2e6',
+                                'fontSize': '10px',
+                                'color': '#dc3545',
+                                'textAlign': 'center'
+                            },
+                            style_data={
+                                'border': '1px solid #dee2e6',
+                                'fontSize': '9px'
+                            },
+                            style_data_conditional=[
+                                {
+                                    'if': {'filter_query': '{data_type} = record'},
+                                    'backgroundColor': '#fff5f5',
+                                    'color': '#dc3545'
+                                },
+                                {
+                                    'if': {'filter_query': '{data_type} = replay'},
+                                    'backgroundColor': '#f0f8ff',
+                                    'color': '#007bff'
+                                }
+                            ],
+                            sort_action="native",
+                            style_table={'height': 'calc(25vh - 100px)', 'overflowY': 'auto', 'border': '1px solid #dee2e6', 'borderRadius': '5px'}
                         ),
                     ], className="mb-3", style={'backgroundColor': '#ffffff', 'padding': '15px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
                 ], width=6),
