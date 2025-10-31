@@ -27,9 +27,9 @@ class ErrorDetector:
         初始化异常检测器
         
         Args:
-            global_time_offset: 全局时间偏移量
+            global_time_offset: 全局时间偏移量（已废弃，固定为0）
         """
-        self.global_time_offset = global_time_offset
+        self.global_time_offset = 0.0  # 固定为0，不再使用全局偏移
         self.multi_hammers: List[ErrorNote] = []
         self.drop_hammers: List[ErrorNote] = []
         self.silent_hammers: List[ErrorNote] = []
@@ -177,11 +177,3 @@ class ErrorDetector:
         """
         return self.silent_hammers.copy()
     
-    def update_global_time_offset(self, global_time_offset: float) -> None:
-        """
-        更新全局时间偏移量
-        
-        Args:
-            global_time_offset: 新的全局时间偏移量
-        """
-        self.global_time_offset = global_time_offset

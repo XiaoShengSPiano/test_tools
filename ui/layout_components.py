@@ -223,16 +223,8 @@ def create_main_layout():
                                     'marginBottom': '10px',
                                     'fontSize': '16px'
                                 }),
-                                dbc.ButtonGroup([
-                                    dbc.Button([
-                                        html.I(className="fas fa-chart-bar", style={'marginRight': '8px'}),
-                                        "生成瀑布图"
-                                    ], id='btn-waterfall', color='primary', size='lg'),
-                                    dbc.Button([
-                                        html.I(className="fas fa-file-alt", style={'marginRight': '8px'}),
-                                        "生成报告"
-                                    ], id='btn-report', color='success', size='lg')
-                                ], style={'width': '100%'})
+                                # 自动生成瀑布图和报告，无需按钮
+                                html.Div(style={'height': '10px'})
                             ])
                         ], width=6)
                     ])
@@ -350,7 +342,7 @@ def create_main_layout():
                                     }),
                                     dcc.Graph(
                                         id='detail-plot-combined',
-                                        style={'height': '800px'},  # 两个图表的总高度
+                                        style={'height': '1200px'},  # 两个图表的总高度
                                         config={
                                             'displayModeBar': True,
                                             'displaylogo': False,
@@ -435,6 +427,14 @@ def create_report_layout(backend):
     source_info = backend.get_data_source_info()
     data_source = source_info.get('filename') or "未知数据源"
 
+    # 计算整首曲子的平均时延（ms）
+    try:
+        # 后端返回单位为0.1ms，这里转换为ms仅用于显示
+        average_delay_0_1ms = backend.get_global_average_delay()
+        average_delay_ms = average_delay_0_1ms / 10
+    except Exception:
+        average_delay_ms = 0.0
+
     return html.Div([
         # 下载组件 - 隐藏但必需
         dcc.Download(id='download-pdf'),
@@ -476,27 +476,81 @@ def create_report_layout(backend):
                                         html.P("准确率", className="text-muted mb-0"),
                                         html.Small("成功匹配音符数/总有效音符数", className="text-muted", style={'fontSize': '10px'})
                                     ], className="text-center")
-                                ], width=4),
+                                ], width=3),
                                 dbc.Col([
                                     html.Div([
                                         html.H3(f"{summary['drop_hammers']}", className="text-warning mb-1"),
                                         html.P("丢锤数", className="text-muted mb-0"),
                                         html.Small("录制有但播放没有", className="text-muted", style={'fontSize': '10px'})
                                     ], className="text-center")
-                                ], width=4),
+                                ], width=3),
                                 dbc.Col([
                                     html.Div([
                                         html.H3(f"{summary['multi_hammers']}", className="text-info mb-1"),
                                         html.P("多锤数", className="text-muted mb-0"),
                                         html.Small("播放有但录制没有", className="text-muted", style={'fontSize': '10px'})
                                     ], className="text-center")
-                                ], width=4)
+                                ], width=3),
+                                dbc.Col([
+                                    html.Div([
+                                        html.H3(f"{average_delay_ms:.2f} ms", className="text-primary mb-1"),
+                                        html.P("平均时延", className="text-muted mb-0"),
+                                        html.Small("基于已配对按键的keyon偏移", className="text-muted", style={'fontSize': '10px'})
+                                    ], className="text-center")
+                                ], width=3)
                             ])
                         ])
                     ], className="shadow-sm mb-4")
                 ])
             ]),
 
+            # 额外统计：已配对音符对数
+            dbc.Row([
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardBody([
+                            html.Div([
+                                html.H3(f"{summary.get('matching_analysis', {}).get('matched_pairs', 0)}", className="text-secondary mb-1"),
+                                html.P("已配对音符对数", className="text-muted mb-0"),
+                                html.Small("成功匹配的record-play配对数量", className="text-muted", style={'fontSize': '10px'})
+                            ], className="text-center")
+                        ])
+                    ], className="shadow-sm mb-4")
+                ], width=12)
+            ]),
+
+        
+        # 柱状图分析区域 - 独立全宽区域
+        dbc.Row([
+            dbc.Col([
+                # 偏移对齐分析柱状图
+                html.Div([
+                    dbc.Row([
+                        dbc.Col([
+                            html.H6("偏移对齐分析柱状图", className="mb-2",
+                                   style={'color': '#6f42c1', 'fontWeight': 'bold', 'borderBottom': '2px solid #6f42c1', 'paddingBottom': '5px'}),
+                        ], width=8),
+                        dbc.Col([
+                            dbc.Button(
+                                "生成柱状图",
+                                id="btn-generate-alignment-plot",
+                                color="primary",
+                                size="lg",
+                                className="mb-2",
+                                style={'fontSize': '14px'}
+                            ),
+                        ], width=4, className="text-end")
+                    ]),
+                    dcc.Graph(
+                        id='offset-alignment-plot',
+                        figure={},
+                        style={'height': '1200px'}
+                    ),
+                ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
+                
+            ], width=12)
+        ]),
+            
             # 主要内容区域
             dbc.Row([
                 # 左侧：表格区域
@@ -515,10 +569,10 @@ def create_report_layout(backend):
                                 {"name": "问题类型", "id": "problem_type"},
                                 {"name": "数据类型", "id": "data_type"},
                                 {"name": "键位ID", "id": "keyId"},
-                                {"name": "键名", "id": "keyName"},
                                 {"name": "按下时间", "id": "keyOn"},
                                 {"name": "释放时间", "id": "keyOff"},
                                 {"name": "index", "id": "index"},
+                                {"name": "未匹配原因", "id": "analysis_reason"},
                             ],
                             data=backend.get_error_table_data('丢锤'),
                             page_size=10,
@@ -531,12 +585,11 @@ def create_report_layout(backend):
                                 'textOverflow': 'ellipsis',
                             },
                             style_cell_conditional=[
-                                {'if': {'column_id': 'problem_type'}, 'width': '16%'},
-                                {'if': {'column_id': 'data_type'}, 'width': '12%'},
-                                {'if': {'column_id': 'keyId'}, 'width': '12%'},
-                                {'if': {'column_id': 'keyName'}, 'width': '12%'},
-                                {'if': {'column_id': 'keyOn'}, 'width': '24%'},
-                                {'if': {'column_id': 'keyOff'}, 'width': '24%'},
+                                {'if': {'column_id': 'problem_type'}, 'width': '18%'},
+                                {'if': {'column_id': 'data_type'}, 'width': '14%'},
+                                {'if': {'column_id': 'keyId'}, 'width': '14%'},
+                                {'if': {'column_id': 'keyOn'}, 'width': '27%'},
+                                {'if': {'column_id': 'keyOff'}, 'width': '27%'},
                             ],
                             style_header={
                                 'backgroundColor': '#f8d7da',
@@ -588,10 +641,10 @@ def create_report_layout(backend):
                                 {"name": "问题类型", "id": "problem_type"},
                                 {"name": "数据类型", "id": "data_type"},
                                 {"name": "键位ID", "id": "keyId"},
-                                {"name": "键名", "id": "keyName"},
                                 {"name": "按下时间", "id": "keyOn"},
                                 {"name": "释放时间", "id": "keyOff"},
-                                {"name": "index", "id": "index"}
+                                {"name": "index", "id": "index"},
+                                {"name": "未匹配原因", "id": "analysis_reason"},
                             ],
                             data=backend.get_error_table_data('多锤'),
                             page_size=10,
@@ -604,12 +657,11 @@ def create_report_layout(backend):
                                 'textOverflow': 'ellipsis',
                             },
                             style_cell_conditional=[
-                                {'if': {'column_id': 'problem_type'}, 'width': '16%'},
-                                {'if': {'column_id': 'data_type'}, 'width': '12%'},
-                                {'if': {'column_id': 'keyId'}, 'width': '12%'},
-                                {'if': {'column_id': 'keyName'}, 'width': '12%'},
-                                {'if': {'column_id': 'keyOn'}, 'width': '24%'},
-                                {'if': {'column_id': 'keyOff'}, 'width': '24%'},
+                                {'if': {'column_id': 'problem_type'}, 'width': '18%'},
+                                {'if': {'column_id': 'data_type'}, 'width': '14%'},
+                                {'if': {'column_id': 'keyId'}, 'width': '14%'},
+                                {'if': {'column_id': 'keyOn'}, 'width': '27%'},
+                                {'if': {'column_id': 'keyOff'}, 'width': '27%'},
                             ],
                             style_header={
                                 'backgroundColor': '#fff3cd',
@@ -663,7 +715,6 @@ def create_report_layout(backend):
                                 {"name": "有效音符", "id": "valid_notes"},
                                 {"name": "无效音符", "id": "invalid_notes"},
                                 {"name": "持续时间过短", "id": "duration_too_short"},
-                                {"name": "触后力度过弱", "id": "after_touch_too_weak"},
                                 {"name": "数据为空", "id": "empty_data"},
                                 {"name": "不发声音符", "id": "silent_notes"},
                                 {"name": "其他错误", "id": "other_errors"}
@@ -680,13 +731,13 @@ def create_report_layout(backend):
                             },
                             style_cell_conditional=[
                                 {'if': {'column_id': 'data_type'}, 'width': '15%'},
-                                {'if': {'column_id': 'total_notes'}, 'width': '12%'},
-                                {'if': {'column_id': 'valid_notes'}, 'width': '12%'},
-                                {'if': {'column_id': 'invalid_notes'}, 'width': '12%'},
+                                {'if': {'column_id': 'total_notes'}, 'width': '13%'},
+                                {'if': {'column_id': 'valid_notes'}, 'width': '13%'},
+                                {'if': {'column_id': 'invalid_notes'}, 'width': '13%'},
                                 {'if': {'column_id': 'duration_too_short'}, 'width': '15%'},
-                                {'if': {'column_id': 'after_touch_too_weak'}, 'width': '15%'},
-                                {'if': {'column_id': 'empty_data'}, 'width': '10%'},
-                                {'if': {'column_id': 'other_errors'}, 'width': '9%'},
+                                {'if': {'column_id': 'empty_data'}, 'width': '12%'},
+                                {'if': {'column_id': 'silent_notes'}, 'width': '12%'},
+                                {'if': {'column_id': 'other_errors'}, 'width': '10%'},
                             ],
                             style_header={
                                 'backgroundColor': '#e9ecef',
@@ -788,72 +839,7 @@ def create_report_layout(backend):
                         ),
                     ], className="mb-3", style={'backgroundColor': '#ffffff', 'padding': '15px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
                     
-                    # 错误偏移数据表格
-                    html.Div([
-                        dbc.Row([
-                            dbc.Col([
-                                html.H6("错误偏移分析", className="mb-2",
-                                       style={'color': '#dc3545', 'fontWeight': 'bold', 'borderBottom': '2px solid #dc3545', 'paddingBottom': '5px'}),
-                            ], width=12)
-                        ]),
-                        dash_table.DataTable(
-                            id='error-offset-table',
-                            columns=[
-                                {"name": "数据类型", "id": "data_type"},
-                                {"name": "音符索引", "id": "note_index"},
-                                {"name": "键位ID", "id": "key_id"},
-                                {"name": "按键开始时间", "id": "keyon_time"},
-                                {"name": "按键结束时间", "id": "keyoff_time"},
-                                {"name": "偏移量", "id": "offset"},
-                                {"name": "状态", "id": "status"}
-                            ],
-                            data=backend.get_error_offset_data(),
-                            page_size=10,
-                            style_cell={
-                                'textAlign': 'center',
-                                'fontSize': '10px',
-                                'fontFamily': 'Arial',
-                                'padding': '6px',
-                                'overflow': 'hidden',
-                                'textOverflow': 'ellipsis',
-                            },
-                            style_cell_conditional=[
-                                {'if': {'column_id': 'data_type'}, 'width': '15%'},
-                                {'if': {'column_id': 'note_index'}, 'width': '10%'},
-                                {'if': {'column_id': 'key_id'}, 'width': '10%'},
-                                {'if': {'column_id': 'keyon_time'}, 'width': '20%'},
-                                {'if': {'column_id': 'keyoff_time'}, 'width': '20%'},
-                                {'if': {'column_id': 'offset'}, 'width': '15%'},
-                                {'if': {'column_id': 'status'}, 'width': '10%'},
-                            ],
-                            style_header={
-                                'backgroundColor': '#f8d7da',
-                                'fontWeight': 'bold',
-                                'border': '1px solid #dee2e6',
-                                'fontSize': '10px',
-                                'color': '#dc3545',
-                                'textAlign': 'center'
-                            },
-                            style_data={
-                                'border': '1px solid #dee2e6',
-                                'fontSize': '9px'
-                            },
-                            style_data_conditional=[
-                                {
-                                    'if': {'filter_query': '{data_type} = record'},
-                                    'backgroundColor': '#fff5f5',
-                                    'color': '#dc3545'
-                                },
-                                {
-                                    'if': {'filter_query': '{data_type} = replay'},
-                                    'backgroundColor': '#f0f8ff',
-                                    'color': '#007bff'
-                                }
-                            ],
-                            sort_action="native",
-                            style_table={'height': 'calc(25vh - 100px)', 'overflowY': 'auto', 'border': '1px solid #dee2e6', 'borderRadius': '5px'}
-                        ),
-                    ], className="mb-3", style={'backgroundColor': '#ffffff', 'padding': '15px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
+                    
                 ], width=6),
 
                 # 右侧：图表和详情区域

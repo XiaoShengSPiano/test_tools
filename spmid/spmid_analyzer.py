@@ -13,11 +13,9 @@ SPMID数据分析器
 
 from matplotlib import figure
 from .spmid_reader import Note
-from .note_matcher import find_best_matching_notes
 from .types import NoteInfo, Diffs, ErrorNote
 from .motor_threshold_checker import MotorThresholdChecker
 from .data_filter import DataFilter
-from .time_aligner import TimeAligner
 from .note_matcher import NoteMatcher
 from .error_detector import ErrorDetector
 from typing import List, Tuple, Optional, Dict, Any
@@ -42,7 +40,6 @@ class SPMIDAnalyzer:
         """初始化分析器"""
         # 初始化各个组件
         self.data_filter: Optional[DataFilter] = None
-        self.time_aligner: Optional[TimeAligner] = None
         self.note_matcher: Optional[NoteMatcher] = None
         self.error_detector: Optional[ErrorDetector] = None
         
@@ -89,16 +86,10 @@ class SPMIDAnalyzer:
         self.initial_valid_record_data = self.valid_record_data.copy()
         self.initial_valid_replay_data = self.valid_replay_data.copy()
         
-        # 步骤3：计算全局时间偏移量
-        global_offset = self.time_aligner.calculate_global_time_offset(self.valid_record_data, self.valid_replay_data)
-        logger.info(f"计算得到的全局时间偏移量: {global_offset}")
-        
-        # 步骤4：执行按键匹配
-        self.note_matcher.update_global_time_offset(global_offset)
+        # 步骤3：执行按键匹配
         self.matched_pairs = self.note_matcher.find_all_matched_pairs(self.valid_record_data, self.valid_replay_data)
         
-        # 步骤5：分析异常
-        self.error_detector.update_global_time_offset(global_offset)
+        # 步骤4：分析异常
         self.drop_hammers, self.multi_hammers = self.error_detector.analyze_hammer_issues(
             self.valid_record_data, self.valid_replay_data, self.matched_pairs
         )
@@ -118,8 +109,8 @@ class SPMIDAnalyzer:
         # 步骤8：生成无效音符表格数据
         self.invalid_notes_table_data = self.data_filter.generate_invalid_notes_table_data(invalid_counts)
         
-        # 步骤9：不发声的音符已被过滤掉，返回空列表
-        self.silent_hammers = []
+        # 步骤9：从无效音符统计中提取不发声音符详细信息
+        self.silent_hammers = self._extract_silent_hammers_from_invalid_counts(invalid_counts)
         
         # 步骤10：生成分析统计
         self._generate_analysis_stats()
@@ -137,7 +128,7 @@ class SPMIDAnalyzer:
         
         # 初始化各个组件
         self.data_filter = DataFilter(threshold_checker)
-        self.time_aligner = TimeAligner()
+        # self.time_aligner = TimeAligner()  # 已删除时序对齐功能
         self.note_matcher = NoteMatcher()
         self.error_detector = ErrorDetector()
         
@@ -156,6 +147,50 @@ class SPMIDAnalyzer:
             logger.error(f"初始化电机阈值检查器失败: {e}")
             raise RuntimeError("电机阈值检查器初始化失败，无法进行SPMID数据分析")
     
+    def _extract_silent_hammers_from_invalid_counts(self, invalid_counts: Dict[str, Any]) -> List[ErrorNote]:
+        """
+        从无效音符统计中提取不发声音符的详细信息
+        
+        Args:
+            invalid_counts: 无效音符统计信息
+            
+        Returns:
+            List[ErrorNote]: 不发声音符的ErrorNote列表
+        """
+        from .types import NoteInfo
+        
+        silent_hammers = []
+        
+        # 获取录制和播放数据中的不发声音符详细信息
+        record_silent_details = invalid_counts.get('record_data', {}).get('silent_notes_details', [])
+        replay_silent_details = invalid_counts.get('replay_data', {}).get('silent_notes_details', [])
+        
+        # 合并处理所有不发声音符
+        for item in record_silent_details + replay_silent_details:
+            note = item['note']
+            index = item['index']
+            
+            # 计算时间信息
+            keyon_time = note.after_touch.index[0] + note.offset if len(note.after_touch) > 0 else 0
+            keyoff_time = note.after_touch.index[-1] + note.offset if len(note.after_touch) > 0 else 0
+            
+            error_note = ErrorNote(
+                infos=[NoteInfo(
+                    index=index,
+                    keyId=note.id,
+                    keyOn=keyon_time,
+                    keyOff=keyoff_time
+                )],
+                diffs=[],
+                error_type="不发声",
+                global_index=index
+            )
+            silent_hammers.append(error_note)
+        
+        logger.info(f"✅ 提取不发声音符: 录制{len(record_silent_details)}个, 播放{len(replay_silent_details)}个, 总计{len(silent_hammers)}个")
+        
+        return silent_hammers
+    
     def _log_invalid_notes_statistics(self, record_data: List[Note], replay_data: List[Note], invalid_counts: Dict[str, Any]) -> None:
         """记录无效音符统计信息"""
         logger.info("📊 音符过滤统计:")
@@ -170,7 +205,7 @@ class SPMIDAnalyzer:
             'matched_pairs': len(self.matched_pairs),
             'drop_hammers': len(self.drop_hammers),
             'multi_hammers': len(self.multi_hammers),
-            'global_time_offset': self.time_aligner.get_global_time_offset() if self.time_aligner else 0.0
+            'global_time_offset': 0.0  # 已删除时序对齐功能，固定为0
         }
     
     def get_analysis_stats(self) -> Dict[str, Any]:
@@ -181,19 +216,17 @@ class SPMIDAnalyzer:
         """获取匹配对信息"""
         return self.matched_pairs.copy()
     
-    def get_global_time_offset(self) -> float:
-        """获取全局时间偏移量"""
-        if self.time_aligner:
-            return self.time_aligner.get_global_time_offset()
-        return 0.0
+    # def get_global_time_offset(self) -> float:
+    #     """获取全局时间偏移量（已删除时序对齐功能，固定返回0）"""
+    #     return 0.0
     
     def get_data_filter(self) -> Optional[DataFilter]:
         """获取数据过滤器实例"""
         return self.data_filter
     
-    def get_time_aligner(self) -> Optional[TimeAligner]:
-        """获取时序对齐器实例"""
-        return self.time_aligner
+    # def get_time_aligner(self) -> Optional[TimeAligner]:
+    #     """获取时序对齐器实例"""
+    #     return self.time_aligner
     
     def get_note_matcher(self) -> Optional[NoteMatcher]:
         """获取音符匹配器实例"""
@@ -263,6 +296,17 @@ class SPMIDAnalyzer:
             )
         return []
     
+    def get_global_average_delay(self) -> float:
+        """
+        获取整首曲子的平均时延（基于已配对数据）
+        
+        Returns:
+            float: 平均时延（0.1ms单位）
+        """
+        if self.note_matcher:
+            return self.note_matcher.get_global_average_delay()
+        return 0.0
+    
     def get_offset_statistics(self) -> Dict[str, Any]:
         """
         获取偏移统计信息
@@ -272,23 +316,12 @@ class SPMIDAnalyzer:
         """
         if self.note_matcher:
             return self.note_matcher.get_offset_statistics()
-        return {
-            'total_pairs': 0,
-            'keyon_offset_stats': {'average': 0.0, 'max': 0.0, 'min': 0.0, 'std': 0.0},
-            'keyoff_offset_stats': {'average': 0.0, 'max': 0.0, 'min': 0.0, 'std': 0.0},
-            'overall_offset_stats': {'average': 0.0, 'max': 0.0, 'min': 0.0, 'std': 0.0}
-        }
-
-
-# 为了保持向后兼容性，提供函数接口
-def spmid_analysis(record_data: List[Note], replay_data: List[Note]) -> Tuple[List[ErrorNote], List[ErrorNote], List[ErrorNote], List[Note], List[Note], dict, List[Tuple[int, int, Note, Note]]]:
-    """
-    向后兼容的函数接口
-    
-    使用SPMIDAnalyzer类执行分析
-    """
-    analyzer = SPMIDAnalyzer()
-    return analyzer.analyze(record_data, replay_data)
+            return {
+                'total_pairs': 0,
+                'keyon_offset_stats': {'average': 0.0, 'max': 0.0, 'min': 0.0, 'std': 0.0},
+                'duration_offset_stats': {'average': 0.0, 'max': 0.0, 'min': 0.0, 'std': 0.0},
+                'overall_offset_stats': {'average': 0.0, 'max': 0.0, 'min': 0.0, 'std': 0.0}
+            }
 
 
 # 其他工具函数保持不变

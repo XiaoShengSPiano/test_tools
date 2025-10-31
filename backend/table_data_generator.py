@@ -41,15 +41,6 @@ class TableDataGenerator:
         self.matched_pairs = matched_pairs or []
         self.analyzer = analyzer
     
-    def _get_key_name(self, key_id: int) -> str:
-        """获取键位名称"""
-        if key_id == 89:
-            return "右踏板"
-        elif key_id == 90:
-            return "左踏板"
-        else:
-            return f"键位{key_id}"
-
     
     def _build_error_table_rows(self, target_error_type: str) -> List[Dict[str, Any]]:
         """
@@ -70,21 +61,32 @@ class TableDataGenerator:
         elif target_error_type == '多锤':
             target_errors = self.multi_hammers
         
+        # 获取note_matcher的匹配失败原因（用于更详细的分析）
+        failure_reasons = {}
+        if self.analyzer and hasattr(self.analyzer, 'note_matcher'):
+            failure_reasons = getattr(self.analyzer.note_matcher, 'failure_reasons', {})
+        
         for error_note in target_errors:
             # 根据错误类型决定显示逻辑
             if target_error_type == '丢锤':
                 # 丢锤：录制有，播放没有
                 if len(error_note.infos) > 0:
                     rec = error_note.infos[0]
+                    
+                # 获取详细的匹配失败原因
+                analysis_reason = '丢锤（录制有，播放无）'
+                if ('record', rec.index) in failure_reasons:
+                    analysis_reason = failure_reasons[('record', rec.index)]
+                
                 table_data.append({
                     'global_index': error_note.global_index,
                     'problem_type': error_note.error_type,
                     'data_type': 'record',
                     'keyId': rec.keyId,
-                    'keyName': self._get_key_name(rec.keyId),
-                    'keyOn': rec.keyOn,
-                    'keyOff': rec.keyOff,
-                    'index': rec.index
+                    'keyOn': f"{rec.keyOn/10:.2f}ms",
+                    'keyOff': f"{rec.keyOff/10:.2f}ms",
+                    'index': rec.index,
+                    'analysis_reason': analysis_reason
                 })
                 # 播放行显示"无匹配"
                 table_data.append({
@@ -92,26 +94,30 @@ class TableDataGenerator:
                     'problem_type': '',
                     'data_type': 'play',
                     'keyId': '无匹配',
-                    'keyName': '无匹配',
                     'keyOn': '无匹配',
                     'keyOff': '无匹配',
-                    'index': '无匹配'
+                    'index': '无匹配',
+                    'analysis_reason': ''
                 })
             
             elif target_error_type == '多锤':
                 # 多锤：播放有，录制没有
                 if len(error_note.infos) > 0:
                     play = error_note.infos[0]
+                    
+                # 多锤的分析原因
+                analysis_reason = '多锤（播放有，录制无）'
+                
                 # 录制行显示"无匹配"
                 table_data.append({
                     'global_index': error_note.global_index,
                     'problem_type': error_note.error_type,
                     'data_type': 'record',
                     'keyId': '无匹配',
-                    'keyName': '无匹配',
                     'keyOn': '无匹配',
                     'keyOff': '无匹配',
-                    'index': '无匹配'
+                    'index': '无匹配',
+                    'analysis_reason': ''
                 })
                 # 播放行显示实际数据
                 table_data.append({
@@ -119,10 +125,10 @@ class TableDataGenerator:
                     'problem_type': '',
                     'data_type': 'play',
                     'keyId': play.keyId,
-                    'keyName': self._get_key_name(play.keyId),
-                    'keyOn': play.keyOn,
-                    'keyOff': play.keyOff,
-                    'index': play.index
+                    'keyOn': f"{play.keyOn/10:.2f}ms",
+                    'keyOff': f"{play.keyOff/10:.2f}ms",
+                    'index': play.index,
+                    'analysis_reason': analysis_reason
                 })
         
         return table_data
@@ -273,7 +279,6 @@ class TableDataGenerator:
                         'valid_notes': 0,
                         'invalid_notes': 0,
                         'duration_too_short': 0,
-                        'after_touch_too_weak': 0,
                         'empty_data': 0,
                         'silent_notes': 0,
                         'other_errors': 0
@@ -284,7 +289,6 @@ class TableDataGenerator:
                         'valid_notes': 0,
                         'invalid_notes': 0,
                         'duration_too_short': 0,
-                        'after_touch_too_weak': 0,
                         'empty_data': 0,
                         'silent_notes': 0,
                         'other_errors': 0
@@ -303,7 +307,6 @@ class TableDataGenerator:
                 'valid_notes': record_data.get('valid_notes', 0),
                 'invalid_notes': record_data.get('invalid_notes', 0),
                 'duration_too_short': invalid_reasons.get('duration_too_short', 0),
-                'after_touch_too_weak': invalid_reasons.get('after_touch_too_weak', 0),
                 'empty_data': invalid_reasons.get('empty_data', 0),
                 'silent_notes': invalid_reasons.get('silent_notes', 0),
                 'other_errors': invalid_reasons.get('other_errors', 0)
@@ -318,7 +321,6 @@ class TableDataGenerator:
                 'valid_notes': replay_data.get('valid_notes', 0),
                 'invalid_notes': replay_data.get('invalid_notes', 0),
                 'duration_too_short': replay_invalid_reasons.get('duration_too_short', 0),
-                'after_touch_too_weak': replay_invalid_reasons.get('after_touch_too_weak', 0),
                 'empty_data': replay_invalid_reasons.get('empty_data', 0),
                 'silent_notes': replay_invalid_reasons.get('silent_notes', 0),
                 'other_errors': replay_invalid_reasons.get('other_errors', 0)
@@ -335,8 +337,8 @@ class TableDataGenerator:
                     'valid_notes': 0,
                     'invalid_notes': 0,
                     'duration_too_short': 0,
-                    'after_touch_too_weak': 0,
                     'empty_data': 0,
+                    'silent_notes': 0,
                     'other_errors': 0
                 },
                 {
@@ -345,48 +347,9 @@ class TableDataGenerator:
                     'valid_notes': 0,
                     'invalid_notes': 0,
                     'duration_too_short': 0,
-                    'after_touch_too_weak': 0,
                     'empty_data': 0,
+                    'silent_notes': 0,
                     'other_errors': 0
                 }
             ]
     
-    def get_offset_alignment_data(self) -> Dict[str, Any]:
-        """
-        获取偏移对齐数据 - 调用SPMIDAnalyzer的API
-        
-        Returns:
-            Dict[str, Any]: 偏移对齐数据
-        """
-        try:
-            if not self.analyzer:
-                return {
-                    'success': False,
-                    'message': '没有可用的分析器实例',
-                    'data': [],
-                    'statistics': {}
-                }
-            
-            # 调用SPMIDAnalyzer的API获取偏移数据
-            offset_data = self.analyzer.get_offset_alignment_data()
-            statistics = self.analyzer.get_offset_statistics()
-            
-            # 为数据添加按键名称
-            for item in offset_data:
-                item['key_name'] = self._get_key_name(item['key_id'])
-            
-            return {
-                'success': True,
-                'message': f'成功获取{len(offset_data)}个匹配对的偏移对齐数据',
-                'data': offset_data,
-                'statistics': statistics
-            }
-            
-        except Exception as e:
-            logger.error(f"获取偏移对齐数据失败: {e}")
-            return {
-                'success': False,
-                'message': f'获取偏移对齐数据失败: {str(e)}',
-                'data': [],
-                'statistics': {}
-            }

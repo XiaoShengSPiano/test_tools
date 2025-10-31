@@ -41,8 +41,8 @@ class PianoAnalysisBackend:
         
         # 初始化各个模块
         self.data_manager = DataManager()
-        self.plot_generator = PlotGenerator()
         self.data_filter = DataFilter()
+        self.plot_generator = PlotGenerator(self.data_filter)
         self.time_filter = TimeFilter()
         self.table_generator = TableDataGenerator()
         
@@ -54,6 +54,7 @@ class PianoAnalysisBackend:
         
         
         logger.info(f"✅ PianoAnalysisBackend初始化完成 (Session: {session_id})")
+
     
     # ==================== 数据管理相关方法 ====================
     
@@ -140,7 +141,8 @@ class PianoAnalysisBackend:
         
         # 同步到各个模块
         self.plot_generator.set_data(valid_record_data, valid_replay_data, analyzer=self.analyzer)
-        self.data_filter.set_data(record_data, replay_data, valid_record_data, valid_replay_data)
+        self.data_filter.set_data(valid_record_data, valid_replay_data)
+        self.time_filter.set_data(valid_record_data, valid_replay_data)
         
         # 如果有分析器，同步分析结果
         if self.analyzer:
@@ -176,6 +178,9 @@ class PianoAnalysisBackend:
             
             self.plot_generator.set_data(valid_record_data, valid_replay_data, matched_pairs, analyzer=self.analyzer)
             
+            # 同步到TimeFilter
+            self.time_filter.set_data(valid_record_data, valid_replay_data)
+            
             self.table_generator.set_data(
                 valid_record_data=valid_record_data,
                 valid_replay_data=valid_replay_data,
@@ -195,33 +200,48 @@ class PianoAnalysisBackend:
     
     # ==================== 时间对齐分析相关方法 ====================
     
-    def spmid_offset_alignment(self) -> Tuple[pd.DataFrame, np.ndarray]:
-        """执行SPMID偏移量对齐分析"""
+    # def spmid_offset_alignment(self) -> Tuple[pd.DataFrame, np.ndarray]:
+    #     """执行SPMID偏移量对齐分析"""
+    #     if not self.analyzer:
+    #         logger.error("没有可用的分析器实例")
+    #         return pd.DataFrame(), np.array([])
+        
+    #     # 从分析器获取偏移统计信息
+    #     offset_stats = self.analyzer.get_offset_statistics()
+        
+    #     # 创建DataFrame
+    #     df_stats = pd.DataFrame([{
+    #         'total_pairs': offset_stats.get('total_pairs', 0),
+    #         'keyon_avg_offset': offset_stats.get('keyon_offset_stats', {}).get('average', 0.0),
+    #         'keyon_max_offset': offset_stats.get('keyon_offset_stats', {}).get('max', 0.0),
+    #         'keyon_min_offset': offset_stats.get('keyon_offset_stats', {}).get('min', 0.0),
+    #         'keyon_std_offset': offset_stats.get('keyon_offset_stats', {}).get('std', 0.0),
+    #         'keyoff_avg_offset': offset_stats.get('keyoff_offset_stats', {}).get('average', 0.0),
+    #         'keyoff_max_offset': offset_stats.get('keyoff_offset_stats', {}).get('max', 0.0),
+    #         'keyoff_min_offset': offset_stats.get('keyoff_offset_stats', {}).get('min', 0.0),
+    #         'keyoff_std_offset': offset_stats.get('keyoff_offset_stats', {}).get('std', 0.0)
+    #     }])
+        
+    #     # 创建偏移数组
+    #     offset_data = self.analyzer.get_offset_alignment_data()
+    #     all_offsets_array = np.array([item['average_offset'] for item in offset_data])
+        
+    #     return df_stats, all_offsets_array
+    
+    # TODO
+    def get_global_average_delay(self) -> float:
+        """
+        获取整首曲子的平均时延（基于已配对数据）
+        
+        Returns:
+            float: 平均时延（0.1ms单位）
+        """
         if not self.analyzer:
-            logger.error("没有可用的分析器实例")
-            return pd.DataFrame(), np.array([])
+            return 0.0
         
-        # 从分析器获取偏移统计信息
-        offset_stats = self.analyzer.get_offset_statistics()
-        
-        # 创建DataFrame
-        df_stats = pd.DataFrame([{
-            'total_pairs': offset_stats.get('total_pairs', 0),
-            'keyon_avg_offset': offset_stats.get('keyon_offset_stats', {}).get('average', 0.0),
-            'keyon_max_offset': offset_stats.get('keyon_offset_stats', {}).get('max', 0.0),
-            'keyon_min_offset': offset_stats.get('keyon_offset_stats', {}).get('min', 0.0),
-            'keyon_std_offset': offset_stats.get('keyon_offset_stats', {}).get('std', 0.0),
-            'keyoff_avg_offset': offset_stats.get('keyoff_offset_stats', {}).get('average', 0.0),
-            'keyoff_max_offset': offset_stats.get('keyoff_offset_stats', {}).get('max', 0.0),
-            'keyoff_min_offset': offset_stats.get('keyoff_offset_stats', {}).get('min', 0.0),
-            'keyoff_std_offset': offset_stats.get('keyoff_offset_stats', {}).get('std', 0.0)
-        }])
-        
-        # 创建偏移数组
-        offset_data = self.analyzer.get_offset_alignment_data()
-        all_offsets_array = np.array([item['average_offset'] for item in offset_data])
-        
-        return df_stats, all_offsets_array
+        # 保持内部单位为0.1ms，由UI层负责显示时换算为ms
+        average_delay_0_1ms = self.analyzer.get_global_average_delay()
+        return average_delay_0_1ms
     
     def get_offset_alignment_data(self) -> List[Dict[str, Any]]:
         """获取偏移对齐数据 - 转换为DataTable格式，包含无效音符分析"""
@@ -235,12 +255,12 @@ class PianoAnalysisBackend:
             from collections import defaultdict
             import numpy as np
             
-            # 按按键ID分组有效匹配的偏移数据
+            # 按按键ID分组有效匹配的偏移数据（只使用keyon_offset）
             key_groups = defaultdict(list)
             for item in offset_data:
                 key_id = item.get('key_id', 'N/A')
-                avg_offset = item.get('average_offset', 0)
-                key_groups[key_id].append(avg_offset)
+                keyon_offset_abs = abs(item.get('keyon_offset', 0))  # 只使用keyon_offset
+                key_groups[key_id].append(keyon_offset_abs)
             
             # 按按键ID分组无效音符数据
             invalid_key_groups = defaultdict(list)
@@ -258,12 +278,12 @@ class PianoAnalysisBackend:
                     mean_val = np.mean(offsets)
                     std_val = np.std(offsets)
                     
-                    table_data.append({
+                table_data.append({
                         'key_id': key_id,
                         'count': len(offsets),
-                        'median': f"{median_val:.2f}",
-                        'mean': f"{mean_val:.2f}",
-                        'std': f"{std_val:.2f}",
+                        'median': f"{median_val/10:.2f}ms",
+                        'mean': f"{mean_val/10:.2f}ms",
+                        'std': f"{std_val/10:.2f}ms",
                         'status': 'matched'
                     })
             
@@ -305,40 +325,233 @@ class PianoAnalysisBackend:
                 'status': 'error'
             }]
     
-    def get_error_offset_data(self) -> List[Dict[str, Any]]:
-        """获取错误偏移数据 - 用于错误偏移分析表格"""
+    
+    def generate_offset_alignment_plot(self) -> Any:
+        """生成偏移对齐分析柱状图 - 键位为横坐标，中位数、均值、标准差为纵坐标，分3个子图显示"""
         
         try:
-            # 从分析器获取无效音符偏移数据
-            invalid_offset_data = self.analyzer.get_invalid_notes_offset_analysis()
+            # 获取偏移对齐分析数据
+            alignment_data = self.get_offset_alignment_data()
             
-            if not invalid_offset_data:
-                return []
+            if not alignment_data:
+                logger.warning("⚠️ 没有偏移对齐分析数据，无法生成柱状图")
+                return self.plot_generator._create_empty_plot("没有偏移对齐分析数据")
             
-            # 转换为DataTable格式
-            table_data = []
-            for item in invalid_offset_data:
-                table_data.append({
-                    'data_type': '录制数据' if item.get('data_type') == 'record' else '播放数据',
-                    'note_index': item.get('note_index', 0),
-                    'key_id': item.get('key_id', 'N/A'),
-                    'keyon_time': f"{item.get('keyon_time', 0):.2f}",
-                    'keyoff_time': f"{item.get('keyoff_time', 0):.2f}",
-                    'offset': f"{item.get('offset', 0):.2f}",
-                    'status': item.get('status', 'unmatched')
-                })
+            # 提取数据用于绘图
+            key_ids = []
+            median_values = []
+            mean_values = []
+            std_values = []
+            status_list = []
             
-            return table_data
+            for item in alignment_data:
+                key_id = item['key_id']
+                # 从字符串中提取数值，去除单位
+                median_str = item['median'].replace('ms', '') if isinstance(item['median'], str) else str(item['median'])
+                mean_str = item['mean'].replace('ms', '') if isinstance(item['mean'], str) else str(item['mean'])
+                std_str = item['std'].replace('ms', '') if isinstance(item['std'], str) else str(item['std'])
+                status = item['status']
+                
+                try:
+                    # 跳过无效的key_id
+                    if key_id == '无数据' or key_id == '错误' or not str(key_id).isdigit():
+                        continue
+                    
+                    key_ids.append(int(key_id))
+                    median_values.append(float(median_str))
+                    mean_values.append(float(mean_str))
+                    std_values.append(float(std_str))
+                    status_list.append(status)
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"⚠️ 跳过无效数据: {e}")
+                    continue
+            
+            if not key_ids:
+                logger.warning("⚠️ 没有有效的偏移对齐数据，无法生成柱状图")
+                return self.plot_generator._create_empty_plot("没有有效的偏移对齐数据")
+            
+            # 创建Plotly图表 - 3个子图分别显示柱状图
+            import plotly.graph_objects as go
+            from plotly.subplots import make_subplots
+            
+            fig = make_subplots(
+                rows=3, cols=1,
+                subplot_titles=('中位数偏移', '均值偏移', '标准差'),
+                vertical_spacing=0.08,
+                row_heights=[0.33, 0.33, 0.34]
+            )
+            
+            # 根据状态设置不同的颜色
+            matched_indices = [i for i, status in enumerate(status_list) if status == 'matched']
+            unmatched_indices = [i for i, status in enumerate(status_list) if status == 'unmatched']
+            
+            # 添加匹配数据的中位数柱状图
+            if matched_indices:
+                matched_key_ids = [key_ids[i] for i in matched_indices]
+                matched_median = [median_values[i] for i in matched_indices]
+                matched_mean = [mean_values[i] for i in matched_indices]
+                matched_std = [std_values[i] for i in matched_indices]
+                
+                fig.add_trace(
+                    go.Bar(
+                        x=matched_key_ids,
+                        y=matched_median,
+                        name='匹配-中位数',
+                        marker_color='#1f77b4',
+                        opacity=0.8,
+                        width=1.0,
+                        text=[f'{val:.2f}' for val in matched_median],
+                        textposition='outside',
+                        textfont=dict(size=20),
+                        hovertemplate='键位: %{x}<br>中位数: %{y:.2f}ms<br>状态: 匹配<extra></extra>',
+                        showlegend=False
+                    ),
+                    row=1, col=1
+                )
+                
+                fig.add_trace(
+                    go.Bar(
+                        x=matched_key_ids,
+                        y=matched_mean,
+                        name='匹配-均值',
+                        marker_color='#ff7f0e',
+                        opacity=0.8,
+                        width=1.0,
+                        text=[f'{val:.2f}' for val in matched_mean],
+                        textposition='outside',
+                        textfont=dict(size=20),
+                        hovertemplate='键位: %{x}<br>均值: %{y:.2f}ms<br>状态: 匹配<extra></extra>',
+                        showlegend=False
+                    ),
+                    row=2, col=1
+                )
+                
+                fig.add_trace(
+                    go.Bar(
+                        x=matched_key_ids,
+                        y=matched_std,
+                        name='匹配-标准差',
+                        marker_color='#2ca02c',
+                        opacity=0.8,
+                        width=1.0,
+                        text=[f'{val:.2f}' for val in matched_std],
+                        textposition='outside',
+                        textfont=dict(size=20),
+                        hovertemplate='键位: %{x}<br>标准差: %{y:.2f}ms<br>状态: 匹配<extra></extra>',
+                        showlegend=False
+                    ),
+                    row=3, col=1
+                )
+            
+            # 添加未匹配数据的中位数柱状图
+            if unmatched_indices:
+                unmatched_key_ids = [key_ids[i] for i in unmatched_indices]
+                unmatched_median = [median_values[i] for i in unmatched_indices]
+                unmatched_mean = [mean_values[i] for i in unmatched_indices]
+                unmatched_std = [std_values[i] for i in unmatched_indices]
+                
+                fig.add_trace(
+                    go.Bar(
+                        x=unmatched_key_ids,
+                        y=unmatched_median,
+                        name='未匹配-中位数',
+                        marker_color='#d62728',
+                        opacity=0.8,
+                        width=1.0,
+                        text=[f'{val:.2f}' for val in unmatched_median],
+                        textposition='outside',
+                        textfont=dict(size=20),
+                        hovertemplate='键位: %{x}<br>中位数: %{y:.2f}ms<br>状态: 未匹配<extra></extra>',
+                        showlegend=False
+                    ),
+                    row=1, col=1
+                )
+                
+                fig.add_trace(
+                    go.Bar(
+                        x=unmatched_key_ids,
+                        y=unmatched_mean,
+                        name='未匹配-均值',
+                        marker_color='#9467bd',
+                        opacity=0.8,
+                        width=1.0,
+                        text=[f'{val:.2f}' for val in unmatched_mean],
+                        textposition='outside',
+                        textfont=dict(size=20),
+                        hovertemplate='键位: %{x}<br>均值: %{y:.2f}ms<br>状态: 未匹配<extra></extra>',
+                        showlegend=False
+                    ),
+                    row=2, col=1
+                )
+                
+                fig.add_trace(
+                    go.Bar(
+                        x=unmatched_key_ids,
+                        y=unmatched_std,
+                        name='未匹配-标准差',
+                        marker_color='#8c564b',
+                        opacity=0.8,
+                        width=1.0,
+                        text=[f'{val:.2f}' for val in unmatched_std],
+                        textposition='outside',
+                        textfont=dict(size=20),
+                        hovertemplate='键位: %{x}<br>标准差: %{y:.2f}ms<br>状态: 未匹配<extra></extra>',
+                        showlegend=False
+                    ),
+                    row=3, col=1
+                )
+            
+            # 更新布局
+            fig.update_layout(
+                title={
+                    'text': '偏移对齐分析柱状图',
+                    'x': 0.5,
+                    'xanchor': 'center',
+                    'font': {'size': 28}
+                },
+                height=1200,
+                showlegend=False,
+                margin=dict(l=100, r=100, t=150, b=120)
+            )
+            
+            # 更新坐标轴
+            fig.update_xaxes(title_text="键位ID", row=3, col=1)
+            fig.update_yaxes(title_text="中位数偏移 (ms)", row=1, col=1)
+            fig.update_yaxes(title_text="均值偏移 (ms)", row=2, col=1)
+            fig.update_yaxes(title_text="标准差 (ms)", row=3, col=1)
+            
+            logger.info(f"✅ 偏移对齐分析柱状图生成成功，包含 {len(key_ids)} 个键位（匹配: {len(matched_indices)}, 未匹配: {len(unmatched_indices)}）")
+            return fig
             
         except Exception as e:
-            logger.error(f"获取错误偏移数据失败: {e}")
-            return []
+            logger.error(f"❌ 生成偏移对齐分析柱状图失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return self.plot_generator._create_empty_plot(f"生成柱状图失败: {str(e)}")
 
     # ==================== 绘图相关方法 ====================
     
     def generate_waterfall_plot(self) -> Any:
         """生成瀑布图"""
-        return self.plot_generator.generate_waterfall_plot()
+        # 检查是否有分析结果
+        if not self.analyzer:
+            logger.error("分析器不存在，无法生成瀑布图")
+            return self.plot_generator._create_empty_plot("分析器不存在")
+        
+        # 检查是否有有效数据
+        has_valid_data = (hasattr(self.analyzer, 'valid_record_data') and self.analyzer.valid_record_data and
+                         hasattr(self.analyzer, 'valid_replay_data') and self.analyzer.valid_replay_data)
+        
+        if not has_valid_data:
+            logger.error("没有有效的分析数据，无法生成瀑布图")
+            return self.plot_generator._create_empty_plot("没有有效的分析数据")
+        
+        # 确保数据已同步到PlotGenerator
+        if not self.plot_generator.valid_record_data or not self.plot_generator.valid_replay_data:
+            logger.info("🔄 同步数据到PlotGenerator")
+            self._sync_analysis_results()
+        
+        return self.plot_generator.generate_waterfall_plot(self.time_filter)
     
     def generate_watefall_conbine_plot(self, key_on: float, key_off: float, key_id: int) -> Tuple[Any, Any, Any]:
         """生成瀑布图对比图"""
@@ -374,7 +587,7 @@ class PianoAnalysisBackend:
         """获取时间过滤状态"""
         return self.time_filter.get_time_filter_status()
     
-    def get_time_range(self) -> Dict[str, Any]:
+    def get_time_range(self) -> Tuple[float, float]:
         """获取时间范围信息"""
         return self.time_filter.get_time_range()
     
@@ -382,9 +595,13 @@ class PianoAnalysisBackend:
         """获取显示时间范围"""
         return self.time_filter.get_display_time_range()
     
-    def update_time_range_from_input(self, start_time: float, end_time: float) -> bool:
+    def update_time_range_from_input(self, start_time: float, end_time: float) -> Tuple[bool, str]:
         """从输入更新时间范围"""
-        return self.time_filter.update_time_range_from_input(start_time, end_time)
+        success = self.time_filter.update_time_range_from_input(start_time, end_time)
+        if success:
+            return True, "时间范围更新成功"
+        else:
+            return False, "时间范围更新失败"
     
     def get_time_range_info(self) -> Dict[str, Any]:
         """获取时间范围详细信息"""

@@ -89,12 +89,3 @@ class DataFilter:
             'total_available_keys': len(self.available_keys),
             'available_keys': sorted(list(self.available_keys))
         }
-    
-    def _get_key_name(self, key_id: int) -> str:
-        """获取键位名称"""
-        if key_id == 89:
-            return "右踏板"
-        elif key_id == 90:
-            return "左踏板"
-        else:
-            return f"键位{key_id}"

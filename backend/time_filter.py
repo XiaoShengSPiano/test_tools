@@ -27,6 +27,41 @@ class TimeFilter:
         """设置有效数据"""
         self.valid_record_data = valid_record_data
         self.valid_replay_data = valid_replay_data
+        # 更新时间范围
+        self._update_time_range()
+    
+    def _update_time_range(self):
+        """更新数据的时间范围"""
+        all_times = []
+        
+        # 收集录制和播放数据中的所有时间戳
+        for track_data in [self.valid_record_data, self.valid_replay_data]:
+            if track_data:
+                for note in track_data:
+                    # 直接使用after_touch时间戳，如果无法获取则跳过
+                    if not (hasattr(note, 'after_touch') and note.after_touch is not None and not note.after_touch.empty):
+                        logger.warning(f"⚠️ 跳过缺少after_touch数据的音符，ID: {getattr(note, 'id', 'unknown')}")
+                        continue
+                    
+                    # 计算音符的开始和结束时间
+                    try:
+                        key_on = int(note.after_touch.index[0]) + int(note.offset)
+                        key_off = int(note.after_touch.index[-1]) + int(note.offset)
+                        all_times.extend([key_on, key_off])
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"⚠️ 跳过无效时间戳: {e}")
+                        continue
+        # TODO
+        if all_times:
+            time_min, time_max = min(all_times), max(all_times)
+            # 确保时间范围合理
+            if time_min == time_max:
+                time_max = time_min + 1000  # 添加默认范围
+            self.time_range = (time_min, time_max)
+            logger.info(f"⏰ 更新时间范围: {self.time_range[0]} - {self.time_range[1]} (0.1ms), 共收集 {len(all_times)} 个时间点")
+        else:
+            self.time_range = (0, 1000)  # 默认范围
+            logger.warning("⚠️ 没有找到有效的after_touch时间数据，使用默认时间范围")
     
     def set_time_filter(self, time_range: Optional[Tuple[float, float]]) -> None:
         """
@@ -63,20 +98,6 @@ class TimeFilter:
                 'duration': None
             }
     
-    def _get_time_range_from_notes(self, notes_data) -> Tuple[float, float]:
-        """从音符数据中获取时间范围"""
-        start_time = float('inf')
-        end_time = float('-inf')
-        
-        if notes_data:
-            for note in notes_data:
-                if len(note.hammers) > 0:
-                    note_start = note.hammers.index[0] + note.offset
-                    note_end = note.after_touch.index[-1] + note.offset if len(note.after_touch) > 0 else note.hammers.index[0] + note.offset
-                    start_time = min(start_time, note_start)
-                    end_time = max(end_time, note_end)
-        
-        return start_time, end_time
     
     def _get_original_time_range(self) -> Tuple[float, float]:
         """
@@ -85,27 +106,28 @@ class TimeFilter:
         Returns:
             Tuple[float, float]: (开始时间, 结束时间)
         """
-        # 从有效录制数据中获取时间范围
-        record_start, record_end = self._get_time_range_from_notes(self.valid_record_data)
+        # 如果还没有计算过时间范围，先计算
+        if not hasattr(self, 'time_range') or self.time_range is None:
+            self._update_time_range()
         
-        # 从有效播放数据中获取时间范围
-        replay_start, replay_end = self._get_time_range_from_notes(self.valid_replay_data)
-        
-        # 合并两个时间范围
-        start_time = min(record_start, replay_start)
-        end_time = max(record_end, replay_end)
-        
-        # 处理空数据情况
-        if start_time == float('inf'):
-            start_time = 0
-        if end_time == float('-inf'):
-            end_time = 0
-        
-        return start_time, end_time
+        # 返回计算好的时间范围
+        if self.time_range:
+            return self.time_range
+        else:
+            return (0, 1000)  # 默认范围
     
-    def get_time_range(self) -> Dict[str, Any]:
+    def get_time_range(self) -> Tuple[float, float]:
         """
         获取时间范围信息
+        
+        Returns:
+            Tuple[float, float]: (开始时间, 结束时间)
+        """
+        return self._get_original_time_range()
+    
+    def get_time_range_info(self) -> Dict[str, Any]:
+        """
+        获取时间范围详细信息
         
         Returns:
             Dict[str, Any]: 时间范围信息
@@ -153,6 +175,12 @@ class TimeFilter:
             # 获取原始时间范围
             original_start, original_end = self._get_original_time_range()
             
+            # 如果没有有效数据（使用默认范围），则允许设置任意时间范围
+            if original_start == 0 and original_end == 1000:
+                logger.info(f"📝 没有有效数据，允许设置任意时间范围: {start_time:.2f}ms - {end_time:.2f}ms")
+                self.set_time_filter((start_time, end_time))
+                return True
+            
             # 验证时间范围是否在有效范围内
             if start_time < original_start or end_time > original_end:
                 logger.error(f"时间范围超出有效范围: {original_start:.2f}ms - {original_end:.2f}ms")
@@ -166,28 +194,6 @@ class TimeFilter:
             logger.error(f"更新时间范围失败: {e}")
             return False
     
-    def get_time_range_info(self) -> Dict[str, Any]:
-        """
-        获取时间范围详细信息
-        
-        Returns:
-            Dict[str, Any]: 时间范围信息
-        """
-        time_range = self.get_time_range()
-        
-        return {
-            'original_range': {
-                'start': time_range['original_start'],
-                'end': time_range['original_end'],
-                'duration': time_range['original_duration']
-            },
-            'current_range': {
-                'start': time_range['filter_start'],
-                'end': time_range['filter_end'],
-                'duration': time_range['filter_duration']
-            },
-            'filter_enabled': self.time_range is not None
-        }
     
     def reset_display_time_range(self) -> None:
         """重置显示时间范围"""
@@ -207,15 +213,21 @@ class TimeFilter:
         if not self.time_range:
             return True
         
-        # 获取音符的时间范围
-        start_time, end_time = self._get_time_range_from_notes([note])
-        if start_time == float('inf') or end_time == float('-inf'):
+        # 直接使用after_touch数据计算音符时间范围
+        if not (hasattr(note, 'after_touch') and note.after_touch is not None and not note.after_touch.empty):
+            return False
+        
+        try:
+            # 计算音符的开始和结束时间
+            note_start = int(note.after_touch.index[0]) + int(note.offset)
+            note_end = int(note.after_touch.index[-1]) + int(note.offset)
+        except (ValueError, TypeError):
             return False
         
         filter_start, filter_end = self.time_range
         
         # 检查音符时间范围是否与过滤时间范围有重叠
-        return not (end_time < filter_start or start_time > filter_end)
+        return not (note_end < filter_start or note_start > filter_end)
     
     def get_filtered_data(self) -> Tuple[List, List]:
         """

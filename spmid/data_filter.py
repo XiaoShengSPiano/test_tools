@@ -34,7 +34,7 @@ class DataFilter:
         """
         过滤有效音符数据
         
-        对录制数据和播放数据进行有效性检查，过滤掉无效的音符（如锤速为0、持续时间过短、触后力度过弱等）
+        对录制数据和播放数据进行有效性检查，过滤掉无效的音符（如锤速为0、持续时间过短等）
         
         Args:
             record_data: 录制数据，包含所有录制的音符
@@ -90,20 +90,21 @@ class DataFilter:
                     - invalid_notes: 无效音符数量
                     - invalid_reasons: 无效原因分类统计，包含：
                         - duration_too_short: 持续时间过短的数量
-                        - after_touch_too_weak: 触后力度过弱的数量
                         - empty_data: 数据为空的数量
+                        - silent_notes: 不发声音符的数量
                         - other_errors: 其他错误的数量
+                    - silent_notes_details: 不发声音符的详细列表
         """
         valid_notes = []
         invalid_reasons = {
             'duration_too_short': 0,
-            'after_touch_too_weak': 0,
             'empty_data': 0,
             'silent_notes': 0,  # 不发声音符（阈值检查失败）
             'other_errors': 0
         }
+        silent_notes_details = []  # 保存不发声音符的详细信息
         
-        for note in notes:
+        for i, note in enumerate(notes):
             is_valid, reason = self._is_note_valid_with_reason(note)
             if is_valid:
                 valid_notes.append(note)
@@ -111,9 +112,14 @@ class DataFilter:
                 # 根据具体原因统计
                 if reason in invalid_reasons:
                     invalid_reasons[reason] += 1
-                    # 调试：记录silent_notes的统计
+                    # 保存不发声音符的详细信息
                     if reason == 'silent_notes':
                         logger.info(f"🔇 发现不发声音符: 音符ID={note.id}, 锤速={note.hammers.values[0] if len(note.hammers) > 0 else 'N/A'}")
+                        silent_notes_details.append({
+                            'index': i,
+                            'note': note,
+                            'data_type': data_type
+                        })
                 else:
                     invalid_reasons['other_errors'] += 1
         
@@ -121,7 +127,8 @@ class DataFilter:
             'total_notes': len(notes),
             'valid_notes': len(valid_notes),
             'invalid_notes': len(notes) - len(valid_notes),
-            'invalid_reasons': invalid_reasons
+            'invalid_reasons': invalid_reasons,
+            'silent_notes_details': silent_notes_details  # 保存不发声音符的详细信息
         }
         
         # 调试：打印统计结果
@@ -131,7 +138,6 @@ class DataFilter:
         logger.info(f"  无效音符数: {len(notes) - len(valid_notes)}")
         logger.info(f"  不发声音符数: {invalid_reasons['silent_notes']}")
         logger.info(f"  持续时间过短: {invalid_reasons['duration_too_short']}")
-        logger.info(f"  触后力度过弱: {invalid_reasons['after_touch_too_weak']}")
         logger.info(f"  数据为空: {invalid_reasons['empty_data']}")
         logger.info(f"  其他错误: {invalid_reasons['other_errors']}")
         
@@ -141,7 +147,7 @@ class DataFilter:
         """
         检查音符是否有效
         
-        对单个音符进行全面的有效性检查，包括数据完整性、锤速、持续时间、触后力度等条件
+        对单个音符进行全面的有效性检查，包括数据完整性、锤速、持续时间等条件
         
         Args:
             note: 待检查的音符对象，包含hammers、after_touch等数据
@@ -154,8 +160,7 @@ class DataFilter:
         检查条件包括：
             - 数据完整性：after_touch和hammers数据不能为空
             - 锤速检查：第一个锤子的速度不能为0
-            - 持续时间：音符持续时间不能少于300ms
-            - 触后力度：最大触后力度不能少于500
+            - 持续时间：音符持续时间不能少于30ms（内部单位0.1ms）
             - 阈值检查：通过电机阈值检查器验证是否能够发声
             Tuple[bool, str]: (是否有效, 无效原因)
         """
@@ -175,16 +180,12 @@ class DataFilter:
                 return False, 'silent_notes'  # 锤速为0视为不发声音符
             
             # 检查音符的基本条件
-            chazhi = note.after_touch.index[-1] - note.after_touch.index[0]
-            max_after_touch = max(note.after_touch.values)
+            difference_value = note.after_touch.index[-1] - note.after_touch.index[0]
             
-            if chazhi < 300:
-                self._log_invalid_note_details(note, "持续时间过短", f"持续时间={chazhi}ms (<300ms)")
+            # 最短持续时间阈值：30ms（内部单位0.1ms）
+            if difference_value < 300:
+                self._log_invalid_note_details(note, "持续时间过短", f"持续时间={difference_value/10:.2f}ms (<30ms)")
                 return False, 'duration_too_short'
-                
-            if max_after_touch < 500:
-                self._log_invalid_note_details(note, "触后力度过弱", f"最大触后力度={max_after_touch} (<500)")
-                return False, 'after_touch_too_weak'
             
             # 使用电机阈值检查器判断是否发声
             if self.threshold_checker:

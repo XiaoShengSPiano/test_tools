@@ -24,12 +24,13 @@ logger = Logger.get_logger()
 class PlotGenerator:
     """绘图生成器 - 负责各种图表的生成"""
     
-    def __init__(self):
+    def __init__(self, data_filter=None):
         """初始化绘图生成器"""
         self.valid_record_data = None
         self.valid_replay_data = None
         self.matched_pairs = None
         self.analyzer = None  # SPMIDAnalyzer实例
+        self.data_filter = data_filter  # DataFilter实例
         self._setup_chinese_font()
     
     def set_data(self, valid_record_data=None, valid_replay_data=None, matched_pairs=None, analyzer=None):
@@ -91,25 +92,76 @@ class PlotGenerator:
             logger.debug(f"⚠️ 字体检查失败: {font_name}, 错误: {e}")
             return False
     
-    def generate_waterfall_plot(self) -> Any:
+    # TODO
+    def generate_waterfall_plot(self, time_filter=None) -> Any:
         """
         生成瀑布图 - 调用SPMIDAnalyzer获取有效数据
+        
+        Args:
+            time_filter: 时间过滤器实例，用于获取过滤后的数据
         
         Returns:
             Any: 瀑布图对象
         """
         try:
-            if not self.analyzer:
-                logger.error("没有可用的分析器实例，无法生成瀑布图")
-                return self._create_empty_plot("分析器不存在")
+            # 检查是否有可用的数据源
+            has_data = (self.valid_record_data and self.valid_replay_data) or self.analyzer
+            if not has_data:
+                logger.error("没有可用的数据源，无法生成瀑布图")
+                return self._create_empty_plot("数据源不存在")
             
-            # 调用SPMIDAnalyzer的analyze方法获取有效数据
-            valid_record_data = self.analyzer.get_valid_record_data()
-            valid_replay_data = self.analyzer.get_valid_replay_data()
+            # 获取数据
+            if time_filter:
+                # 使用时间过滤后的数据
+                filtered_record_data, filtered_replay_data = time_filter.get_filtered_data()
+                logger.info(f"⏰ 时间过滤结果: 录制{len(filtered_record_data)}个音符, 播放{len(filtered_replay_data)}个音符")
+                
+                # 如果时间过滤返回了有效数据，使用过滤后的数据
+                if filtered_record_data and filtered_replay_data:
+                    valid_record_data = filtered_record_data
+                    valid_replay_data = filtered_replay_data
+                    logger.info(f"✅ 使用时间过滤后的数据")
+                else:
+                    # 时间过滤返回空数据，回退到原始数据
+                    logger.warning("⚠️ 时间过滤返回空数据，回退到原始数据")
+                    if self.valid_record_data and self.valid_replay_data:
+                        valid_record_data = self.valid_record_data
+                        valid_replay_data = self.valid_replay_data
+                        logger.info(f"📊 使用PlotGenerator存储的数据: 录制{len(valid_record_data)}个音符, 播放{len(valid_replay_data)}个音符")
+                    elif self.analyzer:
+                        valid_record_data = self.analyzer.get_valid_record_data()
+                        valid_replay_data = self.analyzer.get_valid_replay_data()
+                        logger.info(f"📊 使用Analyzer数据: 录制{len(valid_record_data)}个音符, 播放{len(valid_replay_data)}个音符")
+                    else:
+                        valid_record_data = None
+                        valid_replay_data = None
+                        logger.warning("⚠️ 没有可用的数据源")
+            else:
+                # 优先使用PlotGenerator自己存储的数据
+                if self.valid_record_data and self.valid_replay_data:
+                    valid_record_data = self.valid_record_data
+                    valid_replay_data = self.valid_replay_data
+                    logger.info(f"📊 使用PlotGenerator存储的数据: 录制{len(valid_record_data)}个音符, 播放{len(valid_replay_data)}个音符")
+                elif self.analyzer:
+                    # 备选方案：从analyzer获取数据
+                    valid_record_data = self.analyzer.get_valid_record_data()
+                    valid_replay_data = self.analyzer.get_valid_replay_data()
+                    logger.info(f"📊 使用Analyzer数据: 录制{len(valid_record_data)}个音符, 播放{len(valid_replay_data)}个音符")
+                else:
+                    valid_record_data = None
+                    valid_replay_data = None
+                    logger.warning("⚠️ 没有可用的数据源")
             
             if not valid_record_data or not valid_replay_data:
                 logger.error("有效数据不存在，无法生成瀑布图")
                 return self._create_empty_plot("数据不存在")
+            
+            # 应用按键过滤
+            if self.data_filter and self.data_filter.key_filter:
+                logger.info(f"🔍 应用按键过滤: {sorted(list(self.data_filter.key_filter))}")
+                valid_record_data = self._apply_key_filter(valid_record_data, self.data_filter.key_filter)
+                valid_replay_data = self._apply_key_filter(valid_replay_data, self.data_filter.key_filter)
+                logger.info(f"📊 按键过滤后: 录制{len(valid_record_data)}个音符, 播放{len(valid_replay_data)}个音符")
             
             # 使用spmid模块生成瀑布图
             fig = spmid.plot_bar_plotly(valid_record_data, valid_replay_data)
@@ -122,6 +174,27 @@ class PlotGenerator:
             import traceback
             logger.error(traceback.format_exc())
             return self._create_empty_plot(f"生成瀑布图失败: {str(e)}")
+    
+    def _apply_key_filter(self, notes_data, key_filter: set):
+        """
+        应用按键过滤
+        
+        Args:
+            notes_data: 音符数据列表
+            key_filter: 要保留的按键ID集合
+            
+        Returns:
+            过滤后的音符数据列表
+        """
+        if not notes_data or not key_filter:
+            return notes_data
+        
+        filtered_notes = []
+        for note in notes_data:
+            if hasattr(note, 'id') and note.id in key_filter:
+                filtered_notes.append(note)
+        
+        return filtered_notes
     
     def generate_watefall_conbine_plot(self, key_on: float, key_off: float, key_id: int) -> Tuple[Any, Any, Any]:
         """

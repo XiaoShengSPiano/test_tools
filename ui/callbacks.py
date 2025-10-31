@@ -126,11 +126,7 @@ def _detect_trigger_from_context(ctx, current_state, previous_state, backend, cu
     elif 'history-dropdown' in recent_trigger:
         return _handle_history_trigger(current_state, previous_state, backend, current_time)
     
-    # 检查按钮点击触发
-    elif 'btn-waterfall' in recent_trigger:
-        return 'waterfall'
-    elif 'btn-report' in recent_trigger:
-        return 'report'
+    # 移除瀑布图和报告按钮，改为自动生成
     
     return None
 
@@ -221,6 +217,7 @@ def _handle_file_upload(contents, filename, backend, key_filter):
         else:
             backend.set_key_filter(None)
         
+        # 自动生成瀑布图和报告
         fig = backend.generate_waterfall_plot()
         report_content = create_report_layout(backend)
         
@@ -228,7 +225,8 @@ def _handle_file_upload(contents, filename, backend, key_filter):
         # 历史记录选项由专门的初始化和搜索回调管理
         
         # 获取键ID和时间筛选相关数据
-        key_options = backend.get_available_keys()
+        available_keys = backend.get_available_keys()
+        key_options = [{'label': f'键位 {key_id}', 'value': key_id} for key_id in available_keys]
         key_status = backend.get_key_filter_status()
         
         # 将key_status转换为可渲染的字符串
@@ -247,7 +245,8 @@ def _handle_file_upload(contents, filename, backend, key_filter):
             time_status_text = "显示全部时间范围"
         
         logger.info("✅ 文件上传处理完成，清空历史记录选择，显示新文件数据")
-        return fig, report_content, no_update, key_options, key_status_text, no_update, no_update, no_update, time_status_text
+        current_value = key_filter if key_filter else []
+        return fig, report_content, no_update, key_options, key_status_text, current_value, no_update, no_update, no_update, time_status_text
     else:
         # 处理上传错误
         if error_content:
@@ -255,14 +254,15 @@ def _handle_file_upload(contents, filename, backend, key_filter):
                 fig = _create_empty_figure_for_callback("❌ SPMID文件只包含 1 个轨道，需要至少2个轨道（录制+播放）才能进行分析")
             else:
                 fig = _create_empty_figure_for_callback("文件类型不符")
-            return fig, error_content, no_update, [], "显示全部键位", 0, 1000, [0, 1000], "显示全部时间范围"
+            # 顺序: fig, report, history_options, key_options, key_status, key_value, time_min, time_max, time_value, time_status
+            return fig, error_content, no_update, [], "显示全部键位", [], 0, 1000, [0, 1000], "显示全部时间范围"
         else:
             fig = _create_empty_figure_for_callback("文件上传失败")
             error_div = html.Div([
                 html.H4("文件上传失败", className="text-center text-danger"),
                 html.P("请检查文件格式或联系管理员。", className="text-center")
             ])
-            return fig, error_div, no_update, [], "显示全部键位", 0, 1000, [0, 1000], "显示全部时间范围"
+            return fig, error_div, no_update, [], "显示全部键位", [], 0, 1000, [0, 1000], "显示全部时间范围"
 
 
 def _handle_history_selection(history_id, backend):
@@ -280,8 +280,8 @@ def _handle_history_selection(history_id, backend):
             # 执行数据分析
             backend._perform_error_analysis()
             
-            # 有文件内容，生成瀑布图和报告
-            waterfall_fig = ui_processor.generate_history_waterfall(backend, result_data['filename'], result_data['main_record'])
+            # 自动生成瀑布图和报告
+            waterfall_fig = backend.generate_waterfall_plot()
             report_content = ui_processor.generate_history_report(backend, result_data['filename'], result_data['history_id'])
         else:
             # 没有文件内容，只显示基本信息
@@ -295,7 +295,8 @@ def _handle_history_selection(history_id, backend):
         logger.info("✅ 历史记录加载完成，返回瀑布图和报告")
         
         # 获取键ID筛选相关数据
-        key_options = backend.get_available_keys()
+        available_keys = backend.get_available_keys()
+        key_options = [{'label': f'键位 {key_id}', 'value': key_id} for key_id in available_keys]
         key_status = backend.get_key_filter_status()
         
         # 将key_status转换为可渲染的字符串
@@ -313,7 +314,10 @@ def _handle_history_selection(history_id, backend):
         else:
             time_status_text = "显示全部时间范围"
         
-        return waterfall_fig, report_content, no_update, key_options, key_status_text, no_update, no_update, no_update, time_status_text
+        # 历史记录情况下，当前筛选值取后端已设置的filtered_keys
+        kstatus = backend.get_key_filter_status()
+        current_value = kstatus.get('filtered_keys', []) if kstatus else []
+        return waterfall_fig, report_content, no_update, key_options, key_status_text, current_value, no_update, no_update, no_update, time_status_text
     else:
         logger.error("❌ 历史记录加载失败")
         empty_fig = _create_empty_figure_for_callback("历史记录加载失败")
@@ -321,7 +325,7 @@ def _handle_history_selection(history_id, backend):
             html.H4("历史记录加载失败", className="text-center text-danger"),
             html.P("请尝试选择其他历史记录", className="text-center")
         ])
-        return empty_fig, error_content, no_update, [], "显示全部键位", 0, 1000, [0, 1000], "显示全部时间范围"
+        return empty_fig, error_content, no_update, [], "显示全部键位", 0, 1000, [0, 1000], "显示全部时间范围", no_update
 
 
 def _handle_waterfall_button(backend):
@@ -329,16 +333,51 @@ def _handle_waterfall_button(backend):
     current_data_source = getattr(backend, '_data_source', 'none') if backend else 'none'
     logger.info(f"🔄 生成瀑布图（数据源: {current_data_source}）")
     
-    # 检查是否有已加载的数据
-    if hasattr(backend, 'all_error_notes') and backend.all_error_notes:
+    # 检查是否有已加载的数据 - 改为检查更基本的数据状态
+    has_data = (backend.analyzer and 
+                (backend.plot_generator.valid_record_data or backend.plot_generator.valid_replay_data or
+                 (hasattr(backend.analyzer, 'valid_record_data') and backend.analyzer.valid_record_data) or
+                 (hasattr(backend.analyzer, 'valid_replay_data') and backend.analyzer.valid_replay_data)))
+    
+    if has_data:
         fig = backend.generate_waterfall_plot()
-        return fig, no_update, no_update, [], "显示全部键位", 0, 1000, [0, 1000], "显示全部时间范围"
+        
+        # 获取实际的时间范围并更新滑动条
+        try:
+            time_range = backend.get_time_range()
+            time_min, time_max = time_range
+            
+            # 确保时间范围是有效的
+            if isinstance(time_min, (int, float)) and isinstance(time_max, (int, float)) and time_min < time_max:
+                # 创建合理的标记点
+                range_size = time_max - time_min
+                if range_size <= 1000:
+                    step = max(1, range_size // 5)
+                elif range_size <= 10000:
+                    step = max(10, range_size // 10)
+                else:
+                    step = max(100, range_size // 20)
+                
+                marks = {}
+                for i in range(int(time_min), int(time_max) + 1, step):
+                    if i == time_min or i == time_max or (i - time_min) % (step * 2) == 0:
+                        marks[i] = str(i)
+                
+                logger.info(f"⏰ 瀑布图按钮更新滑动条: min={time_min}, max={time_max}, 范围={range_size}")
+                # key_value 不在此回调中更新
+                return fig, no_update, no_update, [], "显示全部键位", no_update, time_min, time_max, [time_min, time_max], "显示全部时间范围"
+            else:
+                logger.warning(f"⚠️ 时间范围无效: {time_range}")
+                return fig, no_update, no_update, [], "显示全部键位", no_update, 0, 1000, [0, 1000], "显示全部时间范围"
+        except Exception as e:
+            logger.error(f"❌ 获取时间范围失败: {e}")
+            return fig, no_update, no_update, [], "显示全部键位", 0, 1000, [0, 1000], "显示全部时间范围", no_update
     else:
         if current_data_source == 'history':
             empty_fig = _create_empty_figure_for_callback("请选择历史记录或上传新文件")
         else:
             empty_fig = _create_empty_figure_for_callback("请先上传SPMID文件")
-        return empty_fig, no_update, no_update, [], "显示全部键位", 0, 1000, [0, 1000], "显示全部时间范围"
+            return empty_fig, no_update, no_update, [], "显示全部键位", no_update, 0, 1000, [0, 1000], "显示全部时间范围"
 
 
 def _handle_report_button(backend):
@@ -349,7 +388,7 @@ def _handle_report_button(backend):
     # 检查是否有已加载的数据
     if hasattr(backend, 'all_error_notes') and backend.all_error_notes:
         report_content = create_report_layout(backend)
-        return no_update, report_content, no_update, no_update, no_update, no_update, no_update, no_update, no_update
+        return no_update, report_content, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
     else:
         if current_data_source == 'history':
             error_content = html.Div([
@@ -361,7 +400,7 @@ def _handle_report_button(backend):
                 html.H4("请先上传SPMID文件", className="text-center text-warning"),
                 html.P("需要先上传并分析SPMID文件才能生成报告", className="text-center")
             ])
-        return no_update, error_content, no_update, no_update, no_update, no_update, no_update, no_update, no_update
+        return no_update, error_content, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
 
 
 def _handle_fallback_logic(contents, filename, history_id, backend):
@@ -375,7 +414,7 @@ def _handle_fallback_logic(contents, filename, history_id, backend):
         report_content = create_report_layout(backend)
         
         # 不在这里更新历史记录选项，避免循环调用
-        return fig, report_content, no_update, [], "显示全部键位", 0, 1000, [0, 1000], "显示全部时间范围"
+        return fig, report_content, no_update, [], "显示全部键位", [], 0, 1000, [0, 1000], "显示全部时间范围"
         
     elif history_id:
         logger.info(f"🔄 兜底处理历史记录: {history_id}")
@@ -398,18 +437,18 @@ def _handle_fallback_logic(contents, filename, history_id, backend):
             waterfall_fig = ui_processor.create_empty_figure("历史记录加载失败")
             report_content = ui_processor.create_error_content("历史记录加载失败", error_msg)
         if waterfall_fig and report_content:
-            return waterfall_fig, report_content, no_update, [], "显示全部键位", 0, 1000, [0, 1000], "显示全部时间范围"
+            return waterfall_fig, report_content, no_update, [], "显示全部键位", [], 0, 1000, [0, 1000], "显示全部时间范围"
         else:
             empty_fig = _create_empty_figure_for_callback("历史记录加载失败")
             error_content = html.Div([
                 html.H4("历史记录加载失败", className="text-center text-danger"),
                 html.P("请尝试选择其他历史记录", className="text-center")
             ])
-            return empty_fig, error_content, no_update, [], "显示全部键位", 0, 1000, [0, 1000], "显示全部时间范围"
+            return empty_fig, error_content, no_update, [], "显示全部键位", 0, 1000, [0, 1000], "显示全部时间范围", no_update
 
     # 最终兜底：无上传、无历史选择、无触发
     placeholder_fig = _create_empty_figure_for_callback("等待操作：请上传文件或选择历史记录")
-    return placeholder_fig, no_update, no_update, [], "显示全部键位", 0, 1000, [0, 1000], "显示全部时间范围"
+    return placeholder_fig, no_update, no_update, [], "显示全部键位", [], 0, 1000, [0, 1000], "显示全部时间范围"
 
 
 def register_callbacks(app, backends, history_manager):
@@ -433,13 +472,12 @@ def register_callbacks(app, backends, history_manager):
          Output('history-dropdown', 'options'),
          Output('key-filter-dropdown', 'options'),
          Output('key-filter-status', 'children'),
+         Output('key-filter-dropdown', 'value'),
          Output('time-filter-slider', 'min'),
          Output('time-filter-slider', 'max'),
          Output('time-filter-slider', 'value'),
          Output('time-filter-status', 'children')],
         [Input('upload-spmid-data', 'contents'),
-         Input('btn-waterfall', 'n_clicks'),
-         Input('btn-report', 'n_clicks'),
          Input('history-dropdown', 'value'),
          Input('key-filter-dropdown', 'value'),
          Input('btn-show-all-keys', 'n_clicks')],
@@ -447,7 +485,7 @@ def register_callbacks(app, backends, history_manager):
          State('session-id', 'data')],
         prevent_initial_call=True
     )
-    def process_data(contents, waterfall_clicks, report_clicks, history_id, key_filter, show_all_keys, filename, session_id):
+    def process_data(contents, history_id, key_filter, show_all_keys, filename, session_id):
         """处理数据的主要回调函数"""
 
         # 获取触发上下文
@@ -463,7 +501,7 @@ def register_callbacks(app, backends, history_manager):
             trigger_source = _detect_trigger_source(ctx, backend, contents, filename, history_id)
             
             if trigger_source == 'skip':
-                return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
+                return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
 
             # 根据触发源分发处理
             if trigger_source == 'upload' and contents and filename:
@@ -471,12 +509,6 @@ def register_callbacks(app, backends, history_manager):
                 
             elif trigger_source == 'history' and history_id:
                 return _handle_history_selection(history_id, backend)
-                
-            elif trigger_source == 'waterfall':
-                return _handle_waterfall_button(backend)
-                
-            elif trigger_source == 'report':
-                return _handle_report_button(backend)
                 
             else:
                 # 兜底逻辑
@@ -493,7 +525,7 @@ def register_callbacks(app, backends, history_manager):
                 html.H4("处理失败", className="text-center text-danger"),
                 html.P(f"错误信息: {str(e)}", className="text-center")
             ])
-            return error_fig, error_content, no_update, [], "显示全部键位", 0, 1000, [0, 1000], "显示全部时间范围"
+            return error_fig, error_content, no_update, [], "显示全部键位", [], 0, 1000, [0, 1000], "显示全部时间范围", no_update
 
 
     # 只在报告页面存在时注册表格回调
@@ -995,7 +1027,8 @@ def register_callbacks(app, backends, history_manager):
     @app.callback(
         [Output('main-plot', 'figure', allow_duplicate=True),
          Output('key-filter-status', 'children', allow_duplicate=True),
-         Output('key-filter-dropdown', 'options', allow_duplicate=True)],
+         Output('key-filter-dropdown', 'options', allow_duplicate=True),
+         Output('key-filter-dropdown', 'value', allow_duplicate=True)],
         [Input('key-filter-dropdown', 'value'),
          Input('btn-show-all-keys', 'n_clicks')],
         [State('session-id', 'data')],
@@ -1004,18 +1037,18 @@ def register_callbacks(app, backends, history_manager):
     def handle_key_filter(key_filter, show_all_clicks, session_id):
         """处理键ID筛选"""
         if not session_id or session_id not in backends:
-            return no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update
         
         backend = backends[session_id]
         
-        # 检查是否有数据
-        if not backend.record_data and not backend.replay_data:
-            return no_update, no_update, no_update
+        # 检查是否有数据（通过DataManager的getter）
+        if not backend.data_manager.get_record_data() and not backend.data_manager.get_replay_data():
+            return no_update, no_update, no_update, no_update
         
         # 获取触发上下文
         ctx = callback_context
         if not ctx.triggered:
-            return no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update
         
         trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
         
@@ -1033,7 +1066,7 @@ def register_callbacks(app, backends, history_manager):
                 backend.set_key_filter(None)
                 logger.info("🔍 清除键ID筛选")
         else:
-            return no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update
         
         # 重新生成瀑布图
         fig = backend.generate_waterfall_plot()
@@ -1047,10 +1080,12 @@ def register_callbacks(app, backends, history_manager):
         
         logger.info(f"🔍 键ID筛选状态: {key_status}")
         
-        # 获取键ID选项
-        key_options = backend.get_available_keys()
+        # 获取键ID选项并转换为Dash Dropdown格式
+        available_keys = backend.get_available_keys()
+        key_options = [{'label': f'键位 {key_id}', 'value': key_id} for key_id in available_keys]
         
-        return fig, key_status_text, key_options
+        # 返回当前选中的value，确保UI回显
+        return fig, key_status_text, key_options, (key_filter or [])
 
     # 时间轴筛选回调函数
     @app.callback(
@@ -1160,31 +1195,58 @@ def register_callbacks(app, backends, history_manager):
     )
     def handle_time_range_input_confirmation(n_clicks, session_id, start_time, end_time):
         """处理时间范围输入确认"""
+        logger.info(f"🔄 时间范围输入确认回调被触发: n_clicks={n_clicks}, start_time={start_time}, end_time={end_time}")
+        
         if not n_clicks or n_clicks <= 0:
+            logger.info("⚠️ 按钮未点击，跳过处理")
             return no_update, no_update, no_update, no_update, no_update, no_update
         
         if not session_id or session_id not in backends:
             logger.warning("⚠️ 无效的会话ID")
             return no_update, "无效的会话ID", no_update, no_update, no_update, no_update
         
+        if start_time is None or end_time is None:
+            logger.warning("⚠️ 时间范围输入为空")
+            return no_update, "请输入有效的时间范围", no_update, no_update, no_update, no_update
+        
         backend = backends[session_id]
         
         try:
+            logger.info(f"🔄 调用后端更新时间范围: start_time={start_time}, end_time={end_time}")
             # 调用后端方法更新时间范围
             success, message = backend.update_time_range_from_input(start_time, end_time)
             
             if success:
+                logger.info(f"✅ 后端时间范围更新成功: {message}")
                 # 重新生成瀑布图（使用新的时间范围）
                 fig = backend.generate_waterfall_plot()
                 
-                # 只更新滑动条的当前值，不改变滑动条的范围和标记点
-                new_value = [int(start_time), int(end_time)]
+                # 更新滑动条的范围和当前值
+                new_min = int(start_time)
+                new_max = int(end_time)
+                new_value = [new_min, new_max]
+                
+                # 创建新的标记点
+                range_size = new_max - new_min
+                if range_size <= 1000:
+                    step = max(1, range_size // 5)
+                elif range_size <= 10000:
+                    step = max(10, range_size // 10)
+                else:
+                    step = max(100, range_size // 20)
+                
+                new_marks = {}
+                for i in range(new_min, new_max + 1, step):
+                    if i == new_min or i == new_max or (i - new_min) % (step * 2) == 0:
+                        new_marks[i] = str(i)
                 
                 logger.info(f"✅ 时间范围更新成功: {message}")
+                logger.info(f"⏰ 更新滑动条范围: min={new_min}, max={new_max}, value={new_value}")
+                logger.info(f"⏰ 新标记点: {new_marks}")
                 status_message = f"✅ {message}"
                 status_style = {'color': '#28a745', 'fontWeight': 'bold'}
                 
-                return fig, html.Span(status_message, style=status_style), no_update, no_update, new_value, no_update
+                return fig, html.Span(status_message, style=status_style), new_min, new_max, new_value, new_marks
             else:
                 logger.warning(f"⚠️ 时间范围更新失败: {message}")
                 status_message = f"❌ {message}"
@@ -1252,3 +1314,47 @@ def register_callbacks(app, backends, history_manager):
             error_style = {'color': '#dc3545', 'fontWeight': 'bold'}
             
             return no_update, html.Span(error_message, style=error_style), no_update, no_update, no_update, no_update
+
+
+    # 已移除全局延迟统计图表相关回调（使用数据统计概览中的平均时延替代）
+
+    # 偏移对齐分析柱状图生成回调函数
+    @app.callback(
+        Output('offset-alignment-plot', 'figure'),
+        Output('offset-alignment-table', 'data'),
+        [Input('btn-generate-alignment-plot', 'n_clicks')],
+        [State('session-id', 'data')],
+        prevent_initial_call=True
+    )
+    def handle_generate_alignment_plot(n_clicks, session_id):
+        """处理偏移对齐分析柱状图生成"""
+        if not n_clicks or n_clicks <= 0:
+            return no_update, no_update
+        
+        if not session_id or session_id not in backends:
+            logger.warning("⚠️ 无效的会话ID")
+            return no_update, no_update
+        
+        backend = backends[session_id]
+        
+        try:
+            # 检查是否有分析数据
+            if not backend.analyzer:
+                logger.warning("⚠️ 没有分析器，无法生成偏移对齐分析柱状图")
+                return backend.plot_generator._create_empty_plot("没有分析器")
+            
+            # 生成偏移对齐分析柱状图
+            fig = backend.generate_offset_alignment_plot()
+            # 同步更新偏移对齐表格数据
+            table_data = backend.get_offset_alignment_data()
+            
+            logger.info("✅ 偏移对齐分析柱状图生成成功")
+            return fig, table_data
+            
+        except Exception as e:
+            logger.error(f"❌ 生成偏移对齐分析柱状图失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            
+            return backend.plot_generator._create_empty_plot(f"生成柱状图失败: {str(e)}"), no_update
+
