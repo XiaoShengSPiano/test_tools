@@ -307,6 +307,63 @@ class SPMIDAnalyzer:
             return self.note_matcher.get_global_average_delay()
         return 0.0
     
+    def get_variance(self) -> float:
+        """
+        获取已配对按键的总体方差
+        
+        Returns:
+            float: 总体方差（(0.1ms)²单位）
+        """
+        if self.note_matcher:
+            return self.note_matcher.get_variance()
+        return 0.0
+    
+    def get_standard_deviation(self) -> float:
+        """
+        获取已配对按键的总体标准差
+        
+        Returns:
+            float: 总体标准差（0.1ms单位）
+        """
+        if self.note_matcher:
+            return self.note_matcher.get_standard_deviation()
+        return 0.0
+    
+    def get_mean_absolute_error(self) -> float:
+        """
+        获取已配对按键的平均绝对误差（MAE）
+        
+        Returns:
+            float: 平均绝对误差（0.1ms单位）
+        """
+        if self.note_matcher:
+            return self.note_matcher.get_mean_absolute_error()
+        return 0.0
+    
+    def get_mean_squared_error(self) -> float:
+        """
+        获取已配对按键的均方误差（MSE）
+        
+        Returns:
+            float: 均方误差（(0.1ms)²单位）
+        """
+        if self.note_matcher:
+            return self.note_matcher.get_mean_squared_error()
+        return 0.0
+
+    def get_mean_error(self) -> float:
+        """
+        获取已匹配按键对的平均误差（ME）
+        
+        Returns:
+            float: 平均误差ME（0.1ms单位）
+        """
+        if self.note_matcher:
+            return self.note_matcher.get_mean_error()
+        return 0.0
+    
+
+    
     def get_offset_statistics(self) -> Dict[str, Any]:
         """
         获取偏移统计信息

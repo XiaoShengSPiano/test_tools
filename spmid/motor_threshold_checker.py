@@ -84,6 +84,11 @@ class MotorThresholdChecker:
         
         返回:
         bool: True表示超过阈值（含误差范围），False表示未超过阈值
+        
+        注意：
+        - 只有当PWM值 >= (threshold - tolerance) 时，才判定为有效
+        - 如果PWM值 < (threshold - tolerance)，说明锤速太小，判定为无效
+        - 这样可以排除锤速较小的NoteID，避免误判
         """
         # 计算PWM值
         pwm_value = self.calculate_pwm(velocity, motor_name)
@@ -98,27 +103,27 @@ class MotorThresholdChecker:
         
         threshold = self.pwm_thresholds[motor_name]
         
-        # 计算误差范围
-        lower_bound = threshold - tolerance
-        upper_bound = threshold + tolerance
+        # 计算有效阈值下限（考虑误差容忍范围）
+        # 只有当PWM值 >= (threshold - tolerance) 时，才判定为有效
+        # 这样可以排除锤速较小的NoteID（对应的PWM值会远小于阈值）
+        effective_threshold = threshold - tolerance
         
-        # 判断是否在误差范围内
-        in_tolerance_range = lower_bound <= pwm_value <= upper_bound
-        exceeds_threshold = pwm_value >= threshold
-        
-        # 最终结果：超过阈值或在误差范围内都算作"超过"
-        result = exceeds_threshold or in_tolerance_range
+        # 判断PWM值是否达到有效阈值
+        result = pwm_value >= effective_threshold
         
         # 打印详细信息
         print(f"电机: {motor_name}")
         print(f"  速度值: {velocity}")
         print(f"  计算PWM值: {pwm_value:.4f}")
         print(f"  阈值PWM值: {threshold}")
-        print(f"  误差范围: [{lower_bound:.4f}, {upper_bound:.4f}] (容忍度: ±{tolerance})")
-        if in_tolerance_range and not exceeds_threshold:
-            print(f"  比较结果: 在误差范围内 (PWM={pwm_value:.4f} 在 [{lower_bound:.4f}, {upper_bound:.4f}] 内)")
+        print(f"  有效阈值下限: {effective_threshold:.4f} (阈值 - 容忍度: {threshold} - {tolerance})")
+        if result:
+            if pwm_value >= threshold:
+                print(f"  比较结果: 超过阈值 (PWM={pwm_value:.4f} >= {threshold:.4f})")
+            else:
+                print(f"  比较结果: 在误差范围内 (PWM={pwm_value:.4f} 在 [{effective_threshold:.4f}, {threshold:.4f}) 内)")
         else:
-            print(f"  比较结果: {'超过阈值' if exceeds_threshold else '未超过阈值'}")
+            print(f"  比较结果: 未达到有效阈值 (PWM={pwm_value:.4f} < {effective_threshold:.4f})，锤速过小")
         print("-" * 40)
         
         return result

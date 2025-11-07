@@ -452,10 +452,15 @@ class NoteMatcher:
         """
         计算整首曲子的平均时延（基于已配对数据）
         
-        只使用 keyon_offset 计算：全局平均时延 = mean(|keyon_offset|)
+        使用带符号的 keyon_offset 计算：全局平均时延 = mean(keyon_offset)
+        正值表示 replay 延迟，负值表示 replay 提前
+        
+        注意：此指标与平均误差（ME，get_mean_error()）在计算和概念上完全相同，
+        都是对所有 keyon_offset 求算术平均，反映整体的提前/滞后方向性。
+        如果需要不考虑方向的平均延时幅度，应使用平均绝对误差（MAE）。
         
         Returns:
-            float: 平均时延（0.1ms单位）
+            float: 平均时延（0.1ms单位，带符号）
         """
         if not self.matched_pairs:
             return 0.0
@@ -463,18 +468,155 @@ class NoteMatcher:
         # 获取偏移数据
         offset_data = self.get_offset_alignment_data()
         
-        # 只使用keyon_offset的绝对值
-        keyon_errors = [abs(item.get('keyon_offset', 0)) for item in offset_data if item.get('keyon_offset') is not None]
+        # 使用带符号的keyon_offset（不取绝对值）
+        keyon_offsets = [item.get('keyon_offset', 0) for item in offset_data if item.get('keyon_offset') is not None]
         
-        if not keyon_errors:
+        if not keyon_offsets:
             return 0.0
         
-        # 计算平均值（0.1ms单位）
-        average_delay = sum(keyon_errors) / len(keyon_errors)
+        # 计算平均值（0.1ms单位，带符号）
+        average_delay = sum(keyon_offsets) / len(keyon_offsets)
         
-        logger.info(f"📊 整首曲子平均时延(keyon): {average_delay/10:.2f}ms (基于{len(keyon_errors)}个匹配对)")
+        logger.info(f"📊 整首曲子平均时延(keyon): {average_delay/10:.2f}ms (基于{len(keyon_offsets)}个匹配对，带符号)")
         
         return average_delay
+    
+    def get_variance(self) -> float:
+        """
+        计算已匹配按键对的总体方差（Population Variance）
+        
+        说明：
+        - "匹配对"指的是matched_pairs中的每个元素，是一个(record_note, replay_note)的配对
+        - 对每个匹配对计算keyon_offset = replay_keyon - record_keyon
+        - 使用绝对值的keyon_offset计算方差，用于分析"时延与按键的关系"（关注误差大小而非方向）
+        - 与表格中每个按键的方差计算方式保持一致（都使用绝对值）
+        
+        标准数学公式：
+        σ² = (1/n) * Σ(|x_i| - μ_abs)²
+        其中 |x_i| 是绝对值的keyon_offset，μ_abs = (1/n) * Σ|x_i|（绝对值的均值）
+        
+        Returns:
+            float: 总体方差（单位：(0.1ms)²，转换为ms²需要除以100）
+        """
+        if not self.matched_pairs:
+            return 0.0
+        
+        # 获取偏移对齐数据
+        offset_data = self.get_offset_alignment_data()
+        
+        # 提取所有绝对值的keyon_offset（用于分析误差大小）
+        abs_offsets = []
+        for item in offset_data:
+            keyon_offset = item.get('keyon_offset', 0)
+            abs_offsets.append(abs(keyon_offset))  # 使用绝对值
+        
+        if len(abs_offsets) <= 1:
+            return 0.0
+        
+        # 计算总体方差（使用绝对值的方差公式，分母 n）
+        # 公式：σ² = (1/n) * Σ(|x_i| - μ_abs)²
+        # 其中 μ_abs = (1/n) * Σ|x_i|（绝对值的均值）
+        mean_abs = sum(abs_offsets) / len(abs_offsets)  # 绝对值的均值
+        variance = sum((x - mean_abs) ** 2 for x in abs_offsets) / len(abs_offsets)  # 总体方差使用 n
+        return variance
+    
+    def get_standard_deviation(self) -> float:
+        """
+        计算已配对按键的总体标准差（Population Standard Deviation）
+        对所有已匹配按键对的绝对值keyon_offset计算总体标准差
+        总体标准差 = sqrt(总体方差)
+        
+        按照标准数学公式：σ = √(σ²) = √((1/n) * Σ(|x_i| - μ_abs)²)
+        其中 |x_i| 是绝对值的keyon_offset，μ_abs 是绝对值的均值
+        
+        注意：此方法直接调用 get_variance() 然后开平方根，确保与方差计算的一致性
+        由于 get_variance() 使用绝对值计算，此方法也使用绝对值
+        
+        Returns:
+            float: 总体标准差（单位：0.1ms，转换为ms需要除以10）
+        """
+        variance = self.get_variance()
+        if variance < 0:
+            # 理论上不应该出现负数，但为了安全起见
+            logger.warning(f"⚠️ 总体方差为负数: {variance}，返回0")
+            return 0.0
+        std = variance ** 0.5
+        return std
+    
+    def get_mean_absolute_error(self) -> float:
+        """
+        计算已配对按键的平均绝对误差（MAE）
+        对所有已匹配按键对的延时绝对值求平均
+        
+        Returns:
+            float: 平均绝对误差（单位：0.1ms，转换为ms需要除以10）
+        """
+        if not self.matched_pairs:
+            return 0.0
+        
+        # 获取偏移对齐数据
+        offset_data = self.get_offset_alignment_data()
+        
+        # 提取所有延时的绝对值
+        abs_errors = []
+        for item in offset_data:
+            keyon_offset = item.get('keyon_offset', 0)
+            abs_error = abs(keyon_offset)
+            abs_errors.append(abs_error)
+        
+        # 计算平均绝对误差
+        if abs_errors:
+            mae = sum(abs_errors) / len(abs_errors)
+            return mae
+        else:
+            return 0.0
+    
+    def get_mean_squared_error(self) -> float:
+        """
+        计算已配对按键的均方误差（MSE）
+        对所有已匹配按键对的延时的平方求平均
+        
+        Returns:
+            float: 均方误差（单位：(0.1ms)²，转换为ms²需要除以100）
+        """
+        if not self.matched_pairs:
+            return 0.0
+        
+        # 获取偏移对齐数据
+        offset_data = self.get_offset_alignment_data()
+        
+        # 提取所有延时的平方值
+        squared_errors = []
+        for item in offset_data:
+            keyon_offset = item.get('keyon_offset', 0)
+            squared_error = keyon_offset ** 2  # 注意这里使用原始值（可能为负），平方后为正
+            squared_errors.append(squared_error)
+        
+        # 计算均方误差
+        if squared_errors:
+            mse = sum(squared_errors) / len(squared_errors)
+            return mse
+        else:
+            return 0.0
+
+    def get_mean_error(self) -> float:
+        """
+        计算已匹配按键对的平均误差（ME，带符号的平均偏差）
+        对所有匹配对的keyon_offset（replay_keyon - record_keyon）求算术平均。
+        
+        Returns:
+            float: 平均误差ME（单位：0.1ms，UI显示为ms需除以10）
+        """
+        if not self.matched_pairs:
+            return 0.0
+        
+        offset_data = self.get_offset_alignment_data()
+        offsets = [item.get('keyon_offset', 0) for item in offset_data]
+        if not offsets:
+            return 0.0
+        return sum(offsets) / len(offsets)
+    
+
     
     def get_offset_statistics(self) -> Dict[str, Any]:
         """

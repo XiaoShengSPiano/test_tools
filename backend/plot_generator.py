@@ -11,7 +11,7 @@ import matplotlib.font_manager as fm
 import base64
 import io
 import numpy as np
-from typing import Optional, Tuple, Any
+from typing import Optional, Tuple, Any, Dict
 from utils.logger import Logger
 
 # 绘图相关导入
@@ -321,6 +321,8 @@ class PlotGenerator:
             logger.error(f"创建空图表失败: {e}")
             return None
     
+    # 已移除：EDA抖动点图及其数据准备与统计方法，改用现有散点图方案
+    
     def _convert_plot_to_base64(self) -> str:
         """
         将matplotlib图表转换为Base64编码
@@ -367,3 +369,311 @@ class PlotGenerator:
         except Exception as e:
             logger.error(f"创建错误图像失败: {e}")
             return ""
+    
+    def generate_delay_by_key_boxplot(self, analysis_result: Dict[str, Any]) -> Any:
+        """
+        生成延时与按键关系的箱线图
+        
+        Args:
+            analysis_result: analyze_delay_by_key()的返回结果
+            
+        Returns:
+            Any: Plotly图表对象
+        """
+        try:
+            import plotly.graph_objects as go
+            
+            descriptive_stats = analysis_result.get('descriptive_stats', [])
+            if not descriptive_stats:
+                return self._create_empty_plot("没有描述性统计数据")
+            
+            # 准备数据
+            key_ids = [s['key_id'] for s in descriptive_stats]
+            means = [s['mean'] for s in descriptive_stats]
+            
+            # 创建箱线图
+            fig = go.Figure()
+            
+            # 添加箱线图
+            fig.add_trace(go.Box(
+                y=means,
+                x=[str(k) for k in key_ids],
+                name='平均延时',
+                boxmean='sd',
+                marker_color='#1976d2',
+                line=dict(color='#0d47a1', width=2)
+            ))
+            
+            # 添加均值线
+            overall_stats = analysis_result.get('overall_stats', {})
+            overall_mean = overall_stats.get('overall_mean', 0.0)
+            fig.add_hline(
+                y=overall_mean,
+                line_dash="dash",
+                line_color="red",
+                annotation_text=f"总体均值: {overall_mean:.2f}ms",
+                annotation_position="right"
+            )
+            
+            fig.update_layout(
+                title={
+                    'text': '延时与按键关系分析 - 箱线图',
+                    'x': 0.5,
+                    'xanchor': 'center',
+                    'font': {'size': 18, 'color': '#1976d2'}
+                },
+                xaxis_title='按键ID',
+                yaxis_title='延时 (ms)',
+                showlegend=True,
+                template='plotly_white',
+                height=500,
+                hovermode='closest'
+            )
+            
+            return fig
+            
+        except Exception as e:
+            logger.error(f"生成箱线图失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return self._create_empty_plot(f"生成箱线图失败: {str(e)}")
+    
+    def generate_delay_by_key_barplot(self, analysis_result: Dict[str, Any]) -> Any:
+        """
+        生成延时与按键关系的条形图（显示均值和标准差）
+        
+        Args:
+            analysis_result: analyze_delay_by_key()的返回结果
+            
+        Returns:
+            Any: Plotly图表对象
+        """
+        try:
+            import plotly.graph_objects as go
+            
+            descriptive_stats = analysis_result.get('descriptive_stats', [])
+            if not descriptive_stats:
+                return self._create_empty_plot("没有描述性统计数据")
+            
+            # 按按键ID排序
+            descriptive_stats.sort(key=lambda x: x['key_id'])
+            
+            key_ids = [s['key_id'] for s in descriptive_stats]
+            means = [s['mean'] for s in descriptive_stats]
+            stds = [s['std'] for s in descriptive_stats]
+            
+            # 创建条形图
+            fig = go.Figure()
+            
+            # 添加条形图（带误差线）
+            fig.add_trace(go.Bar(
+                x=[str(k) for k in key_ids],
+                y=means,
+                error_y=dict(
+                    type='data',
+                    array=stds,
+                    visible=True,
+                    symmetric=True,
+                    thickness=2,
+                    width=0  # 隐藏误差线顶部的横线（T型标记）
+                ),
+                name='平均延时',
+                marker_color='#1976d2',
+                text=[f"{m:.2f}ms" for m in means],
+                textposition='auto',
+                hovertemplate='按键ID: %{x}<br>平均延时: %{y:.2f}ms<br>标准差: %{customdata:.2f}ms<extra></extra>',
+                customdata=stds
+            ))
+            
+            # 添加总体均值线
+            overall_stats = analysis_result.get('overall_stats', {})
+            overall_mean = overall_stats.get('overall_mean', 0.0)
+            fig.add_hline(
+                y=overall_mean,
+                line_dash="dash",
+                line_color="red",
+                annotation_text=f"总体均值: {overall_mean:.2f}ms",
+                annotation_position="right"
+            )
+            
+            # 高亮异常按键
+            anomaly_keys = analysis_result.get('anomaly_keys', [])
+            if anomaly_keys:
+                anomaly_key_ids = [ak['key_id'] for ak in anomaly_keys]
+                for i, key_id in enumerate(key_ids):
+                    if key_id in anomaly_key_ids:
+                        # 添加异常按键标记
+                        fig.add_annotation(
+                            x=str(key_id),
+                            y=means[i] + stds[i] + 1,
+                            text="⚠️",
+                            showarrow=True,
+                            arrowhead=2,
+                            arrowcolor="red",
+                            font=dict(size=16, color="red")
+                        )
+            
+            fig.update_layout(
+                title={
+                    'text': '各按键平均延时对比（带标准差）',
+                    'x': 0.5,
+                    'xanchor': 'center',
+                    'font': {'size': 18, 'color': '#1976d2'}
+                },
+                xaxis_title='按键ID',
+                yaxis_title='延时 (ms)',
+                showlegend=False,
+                template='plotly_white',
+                height=500,
+                hovermode='closest'
+            )
+            
+            return fig
+            
+        except Exception as e:
+            logger.error(f"生成条形图失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return self._create_empty_plot(f"生成条形图失败: {str(e)}")
+    
+    def generate_delay_by_velocity_analysis_plot(self, analysis_result: Dict[str, Any]) -> Any:
+        """
+        生成延时与锤速关系的分析图表（散点图+回归线+分组统计）
+        
+        Args:
+            analysis_result: analyze_delay_by_velocity()的返回结果
+            
+        Returns:
+            Any: Plotly图表对象
+        """
+        try:
+            import plotly.graph_objects as go
+            import numpy as np
+            
+            scatter_data = analysis_result.get('scatter_data', {})
+            velocities = scatter_data.get('velocities', [])
+            delays = scatter_data.get('delays', [])
+            
+            if not velocities or not delays:
+                return self._create_empty_plot("没有散点图数据")
+            
+            fig = go.Figure()
+            
+            # 添加散点图
+            fig.add_trace(go.Scatter(
+                x=velocities,
+                y=delays,
+                mode='markers',
+                name='数据点',
+                marker=dict(
+                    size=6,
+                    color='#d32f2f',
+                    opacity=0.6,
+                    line=dict(width=1, color='#b71c1c')
+                ),
+                hovertemplate='锤速: %{x}<br>延时: %{y:.2f}ms<extra></extra>'
+            ))
+            
+            # 添加线性回归线
+            regression_result = analysis_result.get('regression_result', {})
+            linear_reg = regression_result.get('linear', {})
+            if linear_reg:
+                slope = linear_reg.get('slope', 0)
+                intercept = linear_reg.get('intercept', 0)
+                r_squared = linear_reg.get('r_squared', 0)
+                p_value = linear_reg.get('p_value', 1)
+                
+                # 计算回归线
+                x_line = np.linspace(min(velocities), max(velocities), 100)
+                y_line = slope * x_line + intercept
+                
+                fig.add_trace(go.Scatter(
+                    x=x_line,
+                    y=y_line,
+                    mode='lines',
+                    name=f'线性拟合 (R²={r_squared:.3f}, p={p_value:.4f})',
+                    line=dict(color='#1976d2', width=2, dash='dash')
+                ))
+            
+            # 添加分组统计（按锤速区间）
+            grouped_analysis = analysis_result.get('grouped_analysis', {})
+            groups = grouped_analysis.get('groups', [])
+            if groups:
+                for group in groups:
+                    v_min = group.get('velocity_min', 0)
+                    v_max = group.get('velocity_max', float('inf'))
+                    mean_delay = group.get('mean_delay', 0)
+                    mean_velocity = group.get('mean_velocity', 0)
+                    count = group.get('count', 0)
+                    label = group.get('range_label', '')
+                    
+                    if mean_velocity > 0:
+                        fig.add_trace(go.Scatter(
+                            x=[mean_velocity],
+                            y=[mean_delay],
+                            mode='markers',
+                            name=label,
+                            marker=dict(
+                                size=15,
+                                symbol='diamond',
+                                color='#7b1fa2',
+                                line=dict(width=2, color='#4a148c')
+                            ),
+                            hovertemplate=f'{label}<br>平均锤速: %{{x:.2f}}<br>平均延时: %{{y:.2f}}ms<br>样本数: {count}<extra></extra>'
+                        ))
+            
+            # 添加相关性信息文本
+            correlation_result = analysis_result.get('correlation_result', {})
+            pearson_r = correlation_result.get('pearson_r', None)
+            pearson_p = correlation_result.get('pearson_p', None)
+            pearson_significant = correlation_result.get('pearson_significant', False)
+            
+            if pearson_r is not None:
+                corr_text = f"皮尔逊相关系数: r={pearson_r:.4f}, p={pearson_p:.4f}"
+                if pearson_significant:
+                    corr_text += " (显著)"
+                else:
+                    corr_text += " (不显著)"
+                
+                fig.add_annotation(
+                    x=0.02,
+                    y=0.98,
+                    xref='paper',
+                    yref='paper',
+                    text=corr_text,
+                    showarrow=False,
+                    bgcolor='rgba(255,255,255,0.8)',
+                    bordercolor='#1976d2',
+                    borderwidth=2,
+                    font=dict(size=12, color='#2c3e50')
+                )
+            
+            fig.update_layout(
+                title={
+                    'text': '延时与锤速关系分析',
+                    'x': 0.5,
+                    'xanchor': 'center',
+                    'font': {'size': 18, 'color': '#d32f2f'}
+                },
+                xaxis_title='锤速',
+                yaxis_title='延时 (ms)',
+                showlegend=True,
+                template='plotly_white',
+                height=500,
+                hovermode='closest',
+                legend=dict(
+                    orientation="h",
+                    yanchor="bottom",
+                    y=1.02,
+                    xanchor="right",
+                    x=1
+                )
+            )
+            
+            return fig
+            
+        except Exception as e:
+            logger.error(f"生成延时与锤速分析图失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return self._create_empty_plot(f"生成分析图失败: {str(e)}")

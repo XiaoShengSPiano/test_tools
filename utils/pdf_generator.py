@@ -376,32 +376,68 @@ class PDFReportGenerator:
         # 顶部分割线
         ax_main.plot([0.1, 0.9], [0.98, 0.98], color='#e2e8f0', linewidth=2)
 
-        # 获取统计数据
+        # 获取统计数据（新的口径）
+        # 注意：get_summary_info 返回结构示例：
+        # {
+        #   'total_notes': int,
+        #   'valid_notes': int,
+        #   'invalid_notes': int,
+        #   'multi_hammers': int,
+        #   'drop_hammers': int,
+        #   'silent_hammers': int,
+        #   'accuracy': float,
+        #   'error_analysis': {...},
+        #   'matching_analysis': {'matched_pairs': int, 'match_rate': float},
+        #   ...
+        # }
         summary = self.backend.get_summary_info()
+        # 平均时延（0.1ms单位）仅使用 keyon_offset 的绝对值平均
+        try:
+            avg_delay_0_1ms = self.backend.get_global_average_delay()
+        except Exception:
+            avg_delay_0_1ms = 0.0
+        avg_delay_ms = (avg_delay_0_1ms or 0) / 10.0
 
-        # 第一行卡片 - 优化位置和比例
-        card_width = 0.32
+        # 第一行卡片 - 总览（总数 / 匹配对 / 平均时延）
+        card_width = 0.28
         card_height = 0.25
         first_row_y = 0.82
 
-        # 总检测数量卡片
-        self._create_enhanced_stat_card(ax_main, 0.25, first_row_y, card_width, card_height,
-                               summary["detailed_stats"]["total_notes"], '总检测数量', '#2b6cb0')
+        total_notes = summary.get('total_notes', 0)
+        matched_pairs = summary.get('matching_analysis', {}).get('matched_pairs', 0)
+        accuracy = summary.get('accuracy', 0.0)
 
-        # 检测准确率卡片
-        self._create_enhanced_stat_card(ax_main, 0.75, first_row_y, card_width, card_height,
-                               f'{summary["accuracy"]:.1f}%', '检测准确率', '#38a169')
+        self._create_enhanced_stat_card(
+            ax_main, 0.2, first_row_y, card_width, card_height,
+            total_notes, '总音符数（原始口径）', '#2b6cb0'
+        )
+        self._create_enhanced_stat_card(
+            ax_main, 0.5, first_row_y, card_width, card_height,
+            matched_pairs, '成功配对的音符对数', '#805ad5'
+        )
+        self._create_enhanced_stat_card(
+            ax_main, 0.8, first_row_y, card_width, card_height,
+            f'{avg_delay_ms:.2f}ms', '全曲平均时延（|keyon_offset|）', '#38a169'
+        )
 
-        # 第二行卡片 - 优化位置
+        # 第二行卡片 - 异常统计（多锤 / 丢锤 / 不发声）
         second_row_y = 0.52
+        multi_h = summary.get('error_analysis', {}).get('multi_hammers', summary.get('multi_hammers', 0))
+        drop_h = summary.get('error_analysis', {}).get('drop_hammers', summary.get('drop_hammers', 0))
+        silent_h = summary.get('silent_hammers', 0)
 
-        # 多锤异常卡片
-        self._create_enhanced_stat_card(ax_main, 0.25, second_row_y, card_width, card_height,
-                               summary["detailed_stats"]["multi_hammers"], '多锤异常', '#d69e2e')
-
-        # 丢锤异常卡片
-        self._create_enhanced_stat_card(ax_main, 0.75, second_row_y, card_width, card_height,
-                               summary["detailed_stats"]["drop_hammers"], '丢锤异常', '#e53e3e')
+        self._create_enhanced_stat_card(
+            ax_main, 0.2, second_row_y, card_width, card_height,
+            multi_h, '多锤数量', '#d69e2e'
+        )
+        self._create_enhanced_stat_card(
+            ax_main, 0.5, second_row_y, card_width, card_height,
+            drop_h, '丢锤数量', '#e53e3e'
+        )
+        self._create_enhanced_stat_card(
+            ax_main, 0.8, second_row_y, card_width, card_height,
+            silent_h, '不发声数量', '#3182ce'
+        )
 
         # 中间分割线 - 调整位置
         ax_main.plot([0.1, 0.9], [0.32, 0.32], color='#e2e8f0', linewidth=1)
@@ -417,10 +453,11 @@ class PDFReportGenerator:
 
         # 报告说明内容 - 优化布局和间距
         desc_items = [
-            '• 本报告分析了每个检测到的异常项',
-            '• 每个异常项单独成页，包含详细数据和对比图',
-            '• 多锤异常：录制与播放数据不匹配',
-            '• 丢锤异常：录制了但播放时缺失的音符'
+            '• 本报告基于最新口径生成：内部时间单位0.1ms，UI/报告显示为ms',
+            '• 全曲平均时延采用 |keyon_offset| 的算术平均（不含加权与duration差）',
+            '• 匹配算法为贪心一对一，仅使用 keyon_offset 进行候选评分与阈值判断',
+            '• 阈值范围30–50ms（base=500×0.1ms, factor=clamp(0.6, duration/500, 1.0)）',
+            '• 多锤：播放侧存在、录制侧缺失；丢锤：录制侧存在、播放侧缺失；不发声：锤速为0或电机阈值失败'
         ]
 
         # 内容布局 - 优化间距

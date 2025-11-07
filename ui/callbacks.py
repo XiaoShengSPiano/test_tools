@@ -9,7 +9,7 @@ import time
 from datetime import datetime
 from dash import Input, Output, State, callback_context, no_update, html, dcc
 import dash_bootstrap_components as dbc
-from ui.layout_components import create_report_layout, create_detail_content, empty_figure
+from ui.layout_components import create_report_layout, empty_figure
 from backend.piano_analysis_backend import PianoAnalysisBackend
 from backend.data_manager import DataManager
 from ui.ui_processor import UIProcessor
@@ -17,6 +17,162 @@ from utils.pdf_generator import PDFReportGenerator
 from utils.logger import Logger
 
 logger = Logger.get_logger()
+
+
+def _create_delay_by_key_stats_html(analysis_result):
+    """创建延时与按键分析的统计结果HTML"""
+    from typing import Dict, Any
+    
+    if analysis_result.get('status') != 'success':
+        return [html.P("分析失败或数据不足", className="text-danger")]
+    
+    children = []
+    
+    # ANOVA结果
+    anova_result = analysis_result.get('anova_result', {})
+    if anova_result:
+        f_stat = anova_result.get('f_statistic')
+        p_value = anova_result.get('p_value')
+        significant = anova_result.get('significant', False)
+        
+        if f_stat is not None and p_value is not None:
+            status_text = "存在显著差异" if significant else "不存在显著差异"
+            status_color = "success" if not significant else "warning"
+            
+            children.append(
+                dbc.Alert([
+                    html.H6("ANOVA检验结果", className="mb-2"),
+                    html.P(f"F统计量: {f_stat:.4f}", className="mb-1"),
+                    html.P(f"p值: {p_value:.4f}", className="mb-1"),
+                    html.P(f"结论: {status_text}", className="mb-0", style={'fontWeight': 'bold'})
+                ], color=status_color, className="mb-3")
+            )
+    
+    # 异常按键
+    anomaly_keys = analysis_result.get('anomaly_keys', [])
+    if anomaly_keys:
+        children.append(
+            html.Div([
+                html.H6("异常按键列表", className="mb-2"),
+                html.Ul([
+                    html.Li(f"按键ID {ak['key_id']}: 平均延时 {ak['mean_delay']:.2f}ms ({ak['anomaly_type']}), "
+                           f"偏差 {ak['deviation']:.2f}ms ({ak['deviation_std']:.2f}倍标准差)")
+                    for ak in anomaly_keys[:10]  # 只显示前10个
+                ])
+            ], className="mb-3")
+        )
+    
+    # 事后检验结果 - 已注释
+    # posthoc_result = analysis_result.get('posthoc_result')
+    # if posthoc_result and posthoc_result.get('significant_pairs'):
+    #     pairs = posthoc_result['significant_pairs']
+    #     if pairs:
+    #         # 先构建字符串列表，避免在f-string中使用反斜杠
+    #         pair_strings = [f'按键{int(p["key1"])}-按键{int(p["key2"])}' for p in pairs[:5]]
+    #         pair_text = ', '.join(pair_strings)
+    #         children.append(
+    #             html.Div([
+    #                 html.H6(f"显著差异按键对 ({len(pairs)}对)", className="mb-2"),
+    #                 html.P(f"前5对: {pair_text}")
+    #             ], className="mb-3")
+    #         )
+    
+    # 整体统计 - 已注释
+    # overall_stats = analysis_result.get('overall_stats', {})
+    # if overall_stats:
+    #     children.append(
+    #         dbc.Card([
+    #             dbc.CardBody([
+    #                 html.H6("整体统计信息", className="mb-2"),
+    #                 html.P(f"总体平均延时: {overall_stats.get('overall_mean', 0):.2f}ms", className="mb-1"),
+    #                 html.P(f"总体标准差: {overall_stats.get('overall_std', 0):.2f}ms", className="mb-1"),
+    #                 html.P(f"按键间平均延时极差: {overall_stats.get('key_mean_range_diff', 0):.2f}ms", className="mb-0")
+    #             ])
+    #         ], className="mb-3")
+    #     )
+    
+    return children if children else [html.P("暂无统计结果", className="text-muted")]
+
+
+def _create_delay_by_velocity_stats_html(analysis_result):
+    """创建延时与锤速分析的统计结果HTML"""
+    from typing import Dict, Any
+    
+    if analysis_result.get('status') != 'success':
+        return [html.P("分析失败或数据不足", className="text-danger")]
+    
+    children = []
+    
+    # 相关性分析
+    correlation_result = analysis_result.get('correlation_result', {})
+    if correlation_result:
+        pearson_r = correlation_result.get('pearson_r')
+        pearson_p = correlation_result.get('pearson_p')
+        pearson_significant = correlation_result.get('pearson_significant', False)
+        pearson_strength = correlation_result.get('pearson_strength', '')
+        
+        spearman_r = correlation_result.get('spearman_r')
+        spearman_p = correlation_result.get('spearman_p')
+        
+        if pearson_r is not None:
+            status_color = "success" if pearson_significant else "secondary"
+            children.append(
+                dbc.Alert([
+                    html.H6("相关性分析结果", className="mb-2"),
+                    html.P(f"皮尔逊相关系数: r = {pearson_r:.4f}, p = {pearson_p:.4f} ({pearson_strength})", className="mb-1"),
+                    html.P(f"斯皮尔曼相关系数: r = {spearman_r:.4f}, p = {spearman_p:.4f}" if spearman_r is not None else "", className="mb-0")
+                ], color=status_color, className="mb-3")
+            )
+    
+    # 回归分析
+    regression_result = analysis_result.get('regression_result', {})
+    linear_reg = regression_result.get('linear', {})
+    if linear_reg:
+        r_squared = linear_reg.get('r_squared', 0)
+        p_value = linear_reg.get('p_value', 1)
+        slope = linear_reg.get('slope', 0)
+        intercept = linear_reg.get('intercept', 0)
+        
+        children.append(
+            dbc.Card([
+                dbc.CardBody([
+                    html.H6("回归分析结果", className="mb-2"),
+                    html.P(f"线性回归方程: y = {slope:.4f}x + {intercept:.4f}", className="mb-1"),
+                    html.P(f"R² = {r_squared:.4f}, p = {p_value:.4f}", className="mb-0")
+                ])
+            ], className="mb-3")
+        )
+    
+    # 分组分析
+    grouped_analysis = analysis_result.get('grouped_analysis', {})
+    groups = grouped_analysis.get('groups', [])
+    if groups:
+        children.append(
+            html.Div([
+                html.H6("按锤速区间分组统计", className="mb-2"),
+                dbc.Table([
+                    html.Thead([
+                        html.Tr([
+                            html.Th("锤速区间"),
+                            html.Th("样本数"),
+                            html.Th("平均延时(ms)"),
+                            html.Th("标准差(ms)")
+                        ])
+                    ]),
+                    html.Tbody([
+                        html.Tr([
+                            html.Td(group.get('range_label', '')),
+                            html.Td(group.get('count', 0)),
+                            html.Td(f"{group.get('mean_delay', 0):.2f}"),
+                            html.Td(f"{group.get('std_delay', 0):.2f}")
+                        ])
+                        for group in groups
+                    ])
+                ], bordered=True, hover=True, className="mb-3")
+            ])
+        )
+    
+    return children if children else [html.P("暂无统计结果", className="text-muted")]
 
 
 def _create_empty_figure_for_callback(title):
@@ -528,123 +684,8 @@ def register_callbacks(app, backends, history_manager):
             return error_fig, error_content, no_update, [], "显示全部键位", [], 0, 1000, [0, 1000], "显示全部时间范围", no_update
 
 
-    # 只在报告页面存在时注册表格回调
-    @app.callback(
-        [Output('drop-hammers-table', 'selected_rows'),
-         Output('multi-hammers-table', 'selected_rows'),
-         Output('detail-info', 'children'),
-         Output('image-container', 'children')],
-        [Input('drop-hammers-table', 'selected_rows'),
-         Input('multi-hammers-table', 'selected_rows')],
-        [State('drop-hammers-table', 'data'),
-         State('multi-hammers-table', 'data'),
-         State('session-id', 'data')],
-        prevent_initial_call=True
-    )
-    def handle_table_selection(drop_selected, multi_selected, drop_data, multi_data, session_id):
-        """处理表格选择回调"""
-        try:
-            # 获取后端实例
-            if session_id not in backends:
-                detail_content, image_content = _create_default_placeholder_content()
-                return [], [], detail_content, image_content
-            backend = backends[session_id]
-            
-            # 确定触发源（表格选择）
-            trigger_id = None
-            if drop_selected:
-                trigger_id = 'drop-hammers-table'
-            elif multi_selected:
-                trigger_id = 'multi-hammers-table'
-            
-            # 处理选择逻辑
-            drop_rows, multi_rows, detail_content, image_content = _handle_table_selection(
-                trigger_id, drop_selected, multi_selected, drop_data, multi_data, backend
-            )
-            
-            return drop_rows, multi_rows, detail_content, image_content
-            
-        except Exception as e:
-            logger.error(f"表格选择回调处理失败: {e}")
-            detail_content, image_content = _create_default_placeholder_content()
-            return [], [], detail_content, image_content
-
-    def _create_default_placeholder_content(*args, **kwargs):
-        """创建默认的占位符内容"""
-        detail_content = html.Div([
-            html.I(className="fas fa-info-circle", style={'fontSize': '24px', 'color': '#6c757d', 'marginBottom': '8px'}),
-            html.P("请选择左侧表格中的条目查看对比图",
-                   className="text-muted text-center",
-                   style={'fontSize': '12px'})
-        ], className="d-flex flex-column align-items-center justify-content-center h-100")
-
-        image_content = html.Div([
-            html.I(className="fas fa-chart-line", style={'fontSize': '36px', 'color': '#6c757d', 'marginBottom': '10px'}),
-            html.P("请选择左侧表格中的条目来查看对比图",
-                   className="text-muted text-center",
-                   style={'fontSize': '12px'})
-        ], className="d-flex flex-column align-items-center justify-content-center h-100")
-
-        return detail_content, image_content
-
-    def _create_error_image_content(error_msg):
-        """创建错误图片内容"""
-        return html.Div([
-            html.I(className="fas fa-exclamation-triangle", style={'fontSize': '24px', 'color': '#dc3545', 'marginBottom': '8px'}),
-            html.P(f"图片加载失败: {error_msg}", className="text-danger text-center", style={'fontSize': '12px'})
-        ], className="d-flex flex-column align-items-center justify-content-center h-100")
-
-    def _generate_image_content(backend, global_index):
-        """生成图片内容"""
-        try:
-            image_base64 = backend.get_note_image_base64(global_index)
-            return dcc.Loading(
-                children=[html.Img(src=image_base64, style={'width': '100%', 'height': 'auto', 'maxHeight': '360px'})],
-                type="default"
-            )
-        except Exception as e:
-            return _create_error_image_content(str(e))
-
-    def _process_selected_row(selected_row, backend):
-        """处理选中的行数据"""
-        global_index = selected_row['global_index']
-        
-        if global_index < len(backend.all_error_notes):
-            error_note = backend.all_error_notes[global_index]
-            detail_content = create_detail_content(error_note)
-            image_content = _generate_image_content(backend, global_index)
-            return detail_content, image_content
-        
-        # 如果索引超出范围，返回默认内容
-        return _create_default_placeholder_content()
-
-    def _handle_table_selection(trigger_id, drop_selected, multi_selected, drop_data, multi_data, backend):
-        """处理表格选择逻辑"""
-        drop_rows = []
-        multi_rows = []
-        detail_content, image_content = _create_default_placeholder_content()
-
-        if trigger_id == 'drop-hammers-table' and drop_selected:
-            # 丢锤表格被选择，清除多锤表格选择
-            drop_rows = drop_selected
-            multi_rows = []
-            
-            if drop_data and drop_selected:
-                detail_content, image_content = _process_selected_row(
-                    drop_data[drop_selected[0]], backend
-                )
-
-        elif trigger_id == 'multi-hammers-table' and multi_selected:
-            # 多锤表格被选择，清除丢锤表格选择
-            drop_rows = []
-            multi_rows = multi_selected
-            
-            if multi_data and multi_selected:
-                detail_content, image_content = _process_selected_row(
-                    multi_data[multi_selected[0]], backend
-                )
-
-        return drop_rows, multi_rows, detail_content, image_content
+    # 表格选择回调和相关辅助函数已删除 - 因为已删除对比分析图和详细数据信息的UI组件，且表格已禁用行选择
+    # 原回调用于处理表格选择并更新对比分析图和详细数据信息，现已不再需要
 
 
     # 添加时间滑块初始化回调 - 当数据加载完成后自动设置合理的时间范围
@@ -896,7 +937,10 @@ def register_callbacks(app, backends, history_manager):
         prevent_initial_call=True
     )
     def show_pdf_loading(n_clicks, session_id):
-        """第一步：立即显示PDF生成加载动画"""
+        """第一步：立即显示PDF生成加载动画
+        说明：旧版要求存在 all_error_notes 才允许导出，导致“无异常时无法导出概览”。
+        现在放宽条件：只要存在有效数据（任一轨或有匹配对）即可生成PDF（概览页+可选异常页）。
+        """
         if not n_clicks:
             return no_update
 
@@ -905,8 +949,18 @@ def register_callbacks(app, backends, history_manager):
             return dbc.Alert("❌ 会话已过期，请刷新页面", color="warning", duration=3000)
 
         backend = backends[session_id]
-        if not backend or not hasattr(backend, 'all_error_notes') or not backend.all_error_notes:
-            return dbc.Alert("❌ 没有可导出的数据，请先上传SPMID文件并生成分析报告", color="warning", duration=4000)
+        # 放宽校验：存在任一数据或匹配结果即可导出
+        has_data = False
+        try:
+            dm = getattr(backend, 'data_manager', None)
+            record = dm.get_record_data() if dm else None
+            replay = dm.get_replay_data() if dm else None
+            has_pairs = bool(getattr(backend.analyzer, 'matched_pairs', [])) if hasattr(backend, 'analyzer') else False
+            has_data = bool(record) or bool(replay) or has_pairs
+        except Exception:
+            has_data = False
+        if not has_data:
+            return dbc.Alert("❌ 没有可导出的数据，请先上传SPMID文件并完成分析", color="warning", duration=4000)
 
         # 显示加载动画
         return dcc.Loading(
@@ -930,7 +984,9 @@ def register_callbacks(app, backends, history_manager):
         prevent_initial_call=True
     )
     def generate_pdf_after_loading(pdf_status, session_id, n_clicks):
-        """第二步：在显示加载动画后实际生成PDF"""
+        """第二步：在显示加载动画后实际生成PDF
+        说明：不再依赖 all_error_notes 存在与否；若无异常，仅输出概览页。
+        """
         # 只有当状态显示为加载中时才执行
         if not pdf_status or not n_clicks:
             return no_update
@@ -951,7 +1007,16 @@ def register_callbacks(app, backends, history_manager):
             return no_update
 
         backend = backends[session_id]
-        if not backend or not hasattr(backend, 'all_error_notes') or not backend.all_error_notes:
+        # 只要有有效数据即可生成（概览为主，异常页可为空）
+        try:
+            dm = getattr(backend, 'data_manager', None)
+            record = dm.get_record_data() if dm else None
+            replay = dm.get_replay_data() if dm else None
+            has_pairs = bool(getattr(backend.analyzer, 'matched_pairs', [])) if hasattr(backend, 'analyzer') else False
+            has_data = bool(record) or bool(replay) or has_pairs
+        except Exception:
+            has_data = False
+        if not has_data:
             return no_update
 
         try:
@@ -1018,7 +1083,8 @@ def register_callbacks(app, backends, history_manager):
         # 显示成功状态
         success_alert = dbc.Alert([
             html.I(className="fas fa-check-circle", style={'marginRight': '8px'}),
-            f"✅ PDF报告生成成功！包含 {len(backend.all_error_notes) if hasattr(backend, 'all_error_notes') else 0} 个异常的完整分析，已开始下载"
+            # 成功提示说明：根据实际异常数量提示；若为0则提示生成概览
+            f"✅ PDF报告生成成功！异常条目: {len(getattr(backend, 'all_error_notes', []) or [])}，已开始下载（如无异常则仅包含概览）"
         ], color="success", duration=5000)
 
         return [success_alert]
@@ -1318,43 +1384,231 @@ def register_callbacks(app, backends, history_manager):
 
     # 已移除全局延迟统计图表相关回调（使用数据统计概览中的平均时延替代）
 
-    # 偏移对齐分析柱状图生成回调函数
+    # 偏移对齐分析 - 页面加载时自动生成（无需点击按钮）
     @app.callback(
-        Output('offset-alignment-plot', 'figure'),
-        Output('offset-alignment-table', 'data'),
-        [Input('btn-generate-alignment-plot', 'n_clicks')],
+        Output('offset-alignment-plot', 'figure', allow_duplicate=True),
+        Output('offset-alignment-table', 'data', allow_duplicate=True),
+        [Input('report-content', 'children')],
         [State('session-id', 'data')],
         prevent_initial_call=True
     )
-    def handle_generate_alignment_plot(n_clicks, session_id):
-        """处理偏移对齐分析柱状图生成"""
-        if not n_clicks or n_clicks <= 0:
-            return no_update, no_update
-        
+    def auto_generate_alignment_on_load(report_content, session_id):
+        """报告内容加载时，自动生成偏移对齐柱状图与表格"""
         if not session_id or session_id not in backends:
-            logger.warning("⚠️ 无效的会话ID")
             return no_update, no_update
+
+        backend = backends[session_id]
+
+        try:
+            if not backend.analyzer:
+                logger.warning("⚠️ 没有分析器，无法生成偏移对齐分析")
+                empty = backend.plot_generator._create_empty_plot("没有分析器")
+                return empty, []
+
+            fig = backend.generate_offset_alignment_plot()
+            table_data = backend.get_offset_alignment_data()
+            logger.info("✅ 偏移对齐分析（自动）生成成功")
+            return fig, table_data
+
+        except Exception as e:
+            logger.error(f"❌ 自动生成偏移对齐分析失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            empty = backend.plot_generator._create_empty_plot(f"生成失败: {str(e)}")
+            return empty, no_update
+
+    # 按键与延时散点图自动生成回调函数 - 当报告内容加载时自动生成
+    @app.callback(
+        Output('key-delay-scatter-plot', 'figure'),
+        [Input('report-content', 'children')],
+        [State('session-id', 'data')],
+        prevent_initial_call=True
+    )
+    def handle_generate_scatter_plot(report_content, session_id):
+        """处理按键与延时散点图自动生成 - 当报告内容更新时触发"""
+        if not session_id or session_id not in backends:
+            return no_update
         
         backend = backends[session_id]
         
         try:
             # 检查是否有分析数据
             if not backend.analyzer:
-                logger.warning("⚠️ 没有分析器，无法生成偏移对齐分析柱状图")
+                logger.warning("⚠️ 没有分析器，无法生成散点图")
                 return backend.plot_generator._create_empty_plot("没有分析器")
             
-            # 生成偏移对齐分析柱状图
-            fig = backend.generate_offset_alignment_plot()
-            # 同步更新偏移对齐表格数据
-            table_data = backend.get_offset_alignment_data()
+            # 生成按键与延时散点图
+            fig = backend.generate_key_delay_scatter_plot()
             
-            logger.info("✅ 偏移对齐分析柱状图生成成功")
-            return fig, table_data
+            logger.info("✅ 按键与延时散点图生成成功")
+            return fig
             
         except Exception as e:
-            logger.error(f"❌ 生成偏移对齐分析柱状图失败: {e}")
+            logger.error(f"❌ 生成散点图失败: {e}")
             import traceback
             logger.error(traceback.format_exc())
             
-            return backend.plot_generator._create_empty_plot(f"生成柱状图失败: {str(e)}"), no_update
+            return backend.plot_generator._create_empty_plot(f"生成散点图失败: {str(e)}")
+
+    # 锤速与延时散点图自动生成回调函数 - 当报告内容加载时自动生成
+    @app.callback(
+        Output('hammer-velocity-delay-scatter-plot', 'figure'),
+        [Input('report-content', 'children')],
+        [State('session-id', 'data')],
+        prevent_initial_call=True
+    )
+    def handle_generate_hammer_velocity_scatter_plot(report_content, session_id):
+        """处理锤速与延时散点图自动生成 - 当报告内容更新时触发"""
+        if not session_id or session_id not in backends:
+            return no_update
+        
+        backend = backends[session_id]
+        
+        try:
+            # 检查是否有分析数据
+            if not backend.analyzer:
+                logger.warning("⚠️ 没有分析器，无法生成散点图")
+                return backend.plot_generator._create_empty_plot("没有分析器")
+            
+            # 生成锤速与延时散点图
+            fig = backend.generate_hammer_velocity_delay_scatter_plot()
+            
+            logger.info("✅ 锤速与延时散点图生成成功")
+            return fig
+            
+        except Exception as e:
+            logger.error(f"❌ 生成散点图失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            
+            return backend.plot_generator._create_empty_plot(f"生成散点图失败: {str(e)}")
+
+    # 延时与按键分析图表自动生成回调函数 - 已注释，因为箱线图与柱状图的均值子图重复
+    # @app.callback(
+    #     [Output('delay-by-key-boxplot', 'figure'),
+    #      Output('delay-by-key-analysis-stats', 'children')],
+    #     [Input('report-content', 'children')],
+    #     [State('session-id', 'data')],
+    #     prevent_initial_call=True
+    # )
+    # def handle_generate_delay_by_key_analysis(report_content, session_id):
+    #     """处理延时与按键关系分析图表生成"""
+    #     if not session_id or session_id not in backends:
+    #         return no_update, []
+    #     
+    #     backend = backends[session_id]
+    #     
+    #     try:
+    #         if not backend.analyzer:
+    #             logger.warning("⚠️ 没有分析器，无法生成分析图表")
+    #             empty_fig = backend.plot_generator._create_empty_plot("没有分析器")
+    #             return empty_fig, []
+    #         
+    #         # 生成图表和分析结果
+    #         plots_result = backend.generate_delay_by_key_analysis_plots()
+    #         analysis_result = plots_result.get('analysis_result', {})
+    #         
+    #         # 生成统计结果表格
+    #         stats_html = _create_delay_by_key_stats_html(analysis_result)
+    #         
+    #         logger.info("✅ 延时与按键关系分析图表生成成功")
+    #         return plots_result.get('boxplot', {}), stats_html
+    #         
+    #     except Exception as e:
+    #         logger.error(f"❌ 生成延时与按键分析图表失败: {e}")
+    #         import traceback
+    #         logger.error(traceback.format_exc())
+    #         empty_fig = backend.plot_generator._create_empty_plot(f"生成失败: {str(e)}")
+    #         return empty_fig, []
+
+    # 延时与锤速分析图表自动生成回调函数 - 已注释
+    # @app.callback(
+    #     [Output('delay-by-velocity-analysis-plot', 'figure'),
+    #      Output('delay-by-velocity-analysis-stats', 'children')],
+    #     [Input('report-content', 'children')],
+    #     [State('session-id', 'data')],
+    #     prevent_initial_call=True
+    # )
+    # def handle_generate_delay_by_velocity_analysis(report_content, session_id):
+    #     """处理延时与锤速关系分析图表生成"""
+    #     if not session_id or session_id not in backends:
+    #         return no_update, []
+    #     
+    #     backend = backends[session_id]
+    #     
+    #     try:
+    #         if not backend.analyzer:
+    #             logger.warning("⚠️ 没有分析器，无法生成分析图表")
+    #             empty_fig = backend.plot_generator._create_empty_plot("没有分析器")
+    #             return empty_fig, []
+    #         
+    #         # 生成图表
+    #         fig = backend.generate_delay_by_velocity_analysis_plot()
+    #         
+    #         # 获取分析结果并生成统计结果表格
+    #         analysis_result = backend.get_delay_by_velocity_analysis()
+    #         stats_html = _create_delay_by_velocity_stats_html(analysis_result)
+    #         
+    #         logger.info("✅ 延时与锤速关系分析图表生成成功")
+    #         return fig, stats_html
+    #         
+    #     except Exception as e:
+    #         logger.error(f"❌ 生成延时与锤速分析图表失败: {e}")
+    #         import traceback
+    #         logger.error(traceback.format_exc())
+    #         empty_fig = backend.plot_generator._create_empty_plot(f"生成失败: {str(e)}")
+    #         return empty_fig, []
+
+    # 按键与锤速散点图自动生成回调函数（颜色表示延时）- 当报告内容加载时自动生成
+    @app.callback(
+        Output('key-hammer-velocity-scatter-plot', 'figure'),
+        [Input('report-content', 'children')],
+        [State('session-id', 'data')],
+        prevent_initial_call=True
+    )
+    def handle_generate_key_hammer_velocity_scatter_plot(report_content, session_id):
+        """处理按键与锤速散点图自动生成（颜色表示延时）- 当报告内容更新时触发"""
+        if not session_id or session_id not in backends:
+            return no_update
+        
+        backend = backends[session_id]
+        
+        try:
+            # 检查是否有分析数据
+            if not backend.analyzer:
+                logger.warning("⚠️ 没有分析器，无法生成散点图")
+                return backend.plot_generator._create_empty_plot("没有分析器")
+            
+            # 生成按键与锤速散点图（颜色表示延时）
+            fig = backend.generate_key_hammer_velocity_scatter_plot()
+            
+            logger.info("✅ 按键与锤速散点图生成成功")
+            return fig
+            
+        except Exception as e:
+            logger.error(f"❌ 生成散点图失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            
+            return backend.plot_generator._create_empty_plot(f"生成散点图失败: {str(e)}")
+
+    # 延时分布直方图回调 - 报告内容加载时自动生成
+    @app.callback(
+        Output('delay-histogram-plot', 'figure'),
+        [Input('report-content', 'children')],
+        [State('session-id', 'data')],
+        prevent_initial_call=True
+    )
+    def handle_generate_delay_histogram(report_content, session_id):
+        if not session_id or session_id not in backends:
+            return no_update
+        backend = backends[session_id]
+        try:
+            fig = backend.generate_delay_histogram_plot()
+            return fig
+        except Exception as e:
+            logger.error(f"❌ 生成延时直方图失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return backend.plot_generator._create_empty_plot(f"生成直方图失败: {str(e)}")
 

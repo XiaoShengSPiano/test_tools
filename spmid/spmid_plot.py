@@ -27,6 +27,111 @@ def get_bar_segments2(track):
         index = index + 1
 
     return all_bars
+
+
+def _smart_sample_bars(all_bars, max_points):
+    """
+    智能采样数据点，按时间窗口分组，保留最有代表性的数据
+    
+    采样策略：
+    1. 按时间窗口（100ms）分组，确保时间分布均匀
+    2. 在每个窗口内，优先保留：
+       - 持续时间最长的音符（重要性高）
+       - 力度值最大/最小的音符（特征明显）
+       - 不同键ID的音符（保持键位多样性）
+    3. 采样后数据点数量控制在max_points以内
+    
+    Args:
+        all_bars: 所有数据点的列表，每个元素包含t_on, t_off, key_id, value, label, index
+        max_points: 最大数据点数
+    
+    Returns:
+        List: 采样后的数据点列表
+    """
+    if len(all_bars) <= max_points:
+        return all_bars
+    
+    # 计算时间范围（单位：0.1ms，转换为ms）
+    all_times = [b['t_on'] / 10.0 for b in all_bars] + [b['t_off'] / 10.0 for b in all_bars]
+    min_time = min(all_times)
+    max_time = max(all_times)
+    time_span = max_time - min_time
+    
+    # 时间窗口大小（100ms）- 可根据数据量调整
+    window_size_ms = 100.0
+    num_windows = max(1, int(time_span / window_size_ms) + 1)
+    
+    # 目标：每个窗口采样多少个点
+    points_per_window = max(1, max_points // num_windows)
+    
+    # 按时间窗口分组
+    windows = {}
+    for bar in all_bars:
+        # 计算音符的中心时间（ms）
+        center_time_ms = (bar['t_on'] / 10.0 + bar['t_off'] / 10.0) / 2.0
+        window_idx = int((center_time_ms - min_time) / window_size_ms)
+        window_key = min(window_idx, num_windows - 1)  # 确保索引不越界
+        
+        if window_key not in windows:
+            windows[window_key] = []
+        windows[window_key].append(bar)
+    
+    # 对每个窗口进行采样
+    sampled_bars = []
+    for window_key in sorted(windows.keys()):
+        window_bars = windows[window_key]
+        
+        if len(window_bars) <= points_per_window:
+            # 窗口内数据点不多，全部保留
+            sampled_bars.extend(window_bars)
+        else:
+            # 窗口内数据点过多，需要采样
+            # 策略：按重要性排序后选择前N个
+            
+            # 计算每个数据点的重要性得分
+            # 重要性 = 持续时间权重 + 力度值权重 + 键位多样性权重
+            scored_bars = []
+            key_ids_seen = set()
+            
+            for bar in window_bars:
+                duration_ms = (bar['t_off'] - bar['t_on']) / 10.0
+                value = bar['value']
+                
+                # 持续时间权重（归一化到0-1）
+                max_duration = max(b['t_off'] - b['t_on'] for b in window_bars) / 10.0
+                duration_score = duration_ms / max_duration if max_duration > 0 else 0.5
+                
+                # 力度值权重（归一化到0-1）
+                values = [b['value'] for b in window_bars]
+                v_min, v_max = min(values), max(values)
+                value_score = (value - v_min) / (v_max - v_min) if v_max > v_min else 0.5
+                
+                # 键位多样性权重（新键位加分）
+                key_id = int(bar['key_id'])
+                diversity_score = 1.0 if key_id not in key_ids_seen else 0.3
+                key_ids_seen.add(key_id)
+                
+                # 综合得分（可调整权重）
+                total_score = (
+                    duration_score * 0.4 +      # 持续时间权重40%
+                    value_score * 0.3 +          # 力度值权重30%
+                    diversity_score * 0.3       # 键位多样性权重30%
+                )
+                
+                scored_bars.append((total_score, bar))
+            
+            # 按得分降序排序，选择前points_per_window个
+            scored_bars.sort(key=lambda x: x[0], reverse=True)
+            sampled_bars.extend([bar for _, bar in scored_bars[:points_per_window]])
+    
+    # 如果采样后仍然超过max_points（边界情况），随机采样
+    if len(sampled_bars) > max_points:
+        import random
+        random.seed(42)  # 固定随机种子，保证结果可复现
+        sampled_bars = random.sample(sampled_bars, max_points)
+        logger.warning(f"⚠️ 采样后仍超过阈值，进行随机采样到{max_points}个点")
+    
+    return sampled_bars
         
 def plot_bar(record,play):
     fig, ax = plt.subplots(figsize=(16, 8))
@@ -95,14 +200,27 @@ def plot_bar(record,play):
 def plot_bar_plotly(record, play, time_range=None):
     """
     使用Plotly绘制钢琴按键事件瀑布图
+    
+    性能优化说明：
+    - 当数据点超过阈值（默认5000）时，自动进行智能采样
+    - 采样策略：按时间窗口分组，保留每个窗口中最有代表性的数据点
+    - 确保采样后仍能准确反映数据的时间分布和特征
+    
     Args:
         record: 录制数据
         play: 播放数据  
         time_range: 时间范围元组 (start_time, end_time)，用于设置x轴范围
+    
+    Returns:
+        go.Figure: Plotly图表对象，包含采样状态信息（如果进行了采样）
     """
     if record is None or play is None:
         logger.warning("DataFrames are not available.")
         return None
+    
+    # 性能优化：设置数据点阈值，超过该值将进行采样
+    MAX_DATA_POINTS = 5000  # 最大渲染数据点数，超过此值将触发采样
+    
     offsets = {
         'record': 0.0,
         'play': 0.2,
@@ -110,6 +228,7 @@ def plot_bar_plotly(record, play, time_range=None):
     }
     all_bars = []
 
+    # 收集所有数据点
     for df, label in [
         (record, 'record'),
         (play, 'play'),
@@ -128,6 +247,18 @@ def plot_bar_plotly(record, play, time_range=None):
                 'label': label,
                 'index': index
             })
+    
+    # 性能优化：如果数据点过多，进行智能采样
+    original_count = len(all_bars)
+    is_sampled = False
+    sampled_count = original_count  # 初始化，如果没有采样则等于原始数量
+    
+    if original_count > MAX_DATA_POINTS:
+        logger.info(f"⚠️ 数据点过多（{original_count}个），进行智能采样以减少到{MAX_DATA_POINTS}个以内")
+        all_bars = _smart_sample_bars(all_bars, MAX_DATA_POINTS)
+        is_sampled = True
+        sampled_count = len(all_bars)
+        logger.info(f"✅ 采样完成：{original_count} -> {sampled_count} 个数据点（保留率：{sampled_count/original_count*100:.1f}%）")
 
     # 归一化力度到0-1
     values = [b['value'] for b in all_bars]
@@ -193,8 +324,13 @@ def plot_bar_plotly(record, play, time_range=None):
         xaxis_config['range'] = [start_time, end_time]
         logger.info(f"⏰ 设置瀑布图x轴范围: {start_time} - {end_time} (ms)")
     
+    # 构建图表标题，包含采样状态提示
+    title = 'Piano Key/Pedal Events Waterfall (Bar = KeyOn~KeyOff, Color=Value)'
+    if is_sampled:
+        title += f'<br><span style="font-size:10px; color:#d69e2e;">⚠️ 性能优化：已智能采样（原始{original_count}个数据点 → 显示{sampled_count}个，保留率{sampled_count/original_count*100:.1f}%）</span>'
+    
     fig.update_layout(
-        title='Piano Key/Pedal Events Waterfall (Bar = KeyOn~KeyOff, Color=Value)',
+        title=title,
         xaxis=xaxis_config,
         yaxis_title='Key ID (1-88: keys, 89-90: pedals)',
         yaxis=dict(tickmode='array', tickvals=list(range(1, 91))),
@@ -208,6 +344,15 @@ def plot_bar_plotly(record, play, time_range=None):
         plot_bgcolor='rgba(0,0,0,0)',
         font=dict(size=12)
     )
+    
+    # 将采样信息附加到figure对象，方便后续使用
+    if is_sampled:
+        fig._sampling_info = {
+            'original_count': original_count,
+            'sampled_count': sampled_count,
+            'sampling_rate': sampled_count / original_count
+        }
+    
     return fig
 
 import plotly.graph_objects as go

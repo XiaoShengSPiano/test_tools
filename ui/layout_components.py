@@ -427,13 +427,55 @@ def create_report_layout(backend):
     source_info = backend.get_data_source_info()
     data_source = source_info.get('filename') or "未知数据源"
 
-    # 计算整首曲子的平均时延（ms）
+    # 计算延时误差统计指标（用于在数据概览下方显示）
     try:
-        # 后端返回单位为0.1ms，这里转换为ms仅用于显示
-        average_delay_0_1ms = backend.get_global_average_delay()
-        average_delay_ms = average_delay_0_1ms / 10
+        # 概览页的“平均延时”采用绝对值口径：使用 MAE 作为平均延时
+        mae_0_1ms_for_avg = backend.get_mean_absolute_error()
+        average_delay_ms = mae_0_1ms_for_avg / 10.0
     except Exception:
         average_delay_ms = 0.0
+    
+    # 计算已配对按键的方差（ms²）
+    try:
+        # 后端返回单位为(0.1ms)²，这里转换为ms²需要除以100
+        variance_0_1ms_squared = backend.get_variance()
+        variance_ms_squared = variance_0_1ms_squared / 100.0
+    except Exception:
+        variance_ms_squared = 0.0
+    
+    # 计算已配对按键的标准差（ms）
+    try:
+        # 后端返回单位为0.1ms，这里转换为ms需要除以10
+        std_0_1ms = backend.get_standard_deviation()
+        std_ms = std_0_1ms / 10.0
+    except Exception:
+        std_ms = 0.0
+    
+    # 计算平均绝对误差（MAE，ms）
+    try:
+        # 后端返回单位为0.1ms，这里转换为ms需要除以10
+        mae_0_1ms = backend.get_mean_absolute_error()
+        mae_ms = mae_0_1ms / 10.0
+    except Exception:
+        mae_ms = 0.0
+    
+    # 计算均方误差（MSE，ms²）
+    try:
+        # 后端返回单位为(0.1ms)²，这里转换为ms²需要除以100
+        mse_0_1ms_squared = backend.get_mean_squared_error()
+        mse_ms_squared = mse_0_1ms_squared / 100.0
+    except Exception:
+        mse_ms_squared = 0.0
+    
+    # 计算平均误差（ME，ms，带符号）
+    try:
+        # 后端返回单位为0.1ms，这里转换为ms需要除以10
+        me_0_1ms = backend.get_mean_error()
+        me_ms = me_0_1ms / 10.0
+    except Exception:
+        me_ms = 0.0
+    
+    
 
     return html.Div([
         # 下载组件 - 隐藏但必需
@@ -468,7 +510,7 @@ def create_report_layout(backend):
                             ], className="mb-0")
                         ]),
                         dbc.CardBody([
-                            # 简化统计：只显示关键指标
+                            # 第一行：基础统计指标（准确率、丢锤数、多锤数、已配对音符数）
                             dbc.Row([
                                 dbc.Col([
                                     html.Div([
@@ -493,9 +535,9 @@ def create_report_layout(backend):
                                 ], width=3),
                                 dbc.Col([
                                     html.Div([
-                                        html.H3(f"{average_delay_ms:.2f} ms", className="text-primary mb-1"),
-                                        html.P("平均时延", className="text-muted mb-0"),
-                                        html.Small("基于已配对按键的keyon偏移", className="text-muted", style={'fontSize': '10px'})
+                                        html.H3(f"{summary.get('matching_analysis', {}).get('matched_pairs', 0)}", className="text-secondary mb-1"),
+                                        html.P("已配对音符数", className="text-muted mb-0"),
+                                        html.Small("成功匹配的record-play配对数量", className="text-muted", style={'fontSize': '10px'})
                                     ], className="text-center")
                                 ], width=3)
                             ])
@@ -503,201 +545,450 @@ def create_report_layout(backend):
                     ], className="shadow-sm mb-4")
                 ])
             ]),
-
-            # 额外统计：已配对音符对数
-            dbc.Row([
-                dbc.Col([
-                    dbc.Card([
-                        dbc.CardBody([
-                            html.Div([
-                                html.H3(f"{summary.get('matching_analysis', {}).get('matched_pairs', 0)}", className="text-secondary mb-1"),
-                                html.P("已配对音符对数", className="text-muted mb-0"),
-                                html.Small("成功匹配的record-play配对数量", className="text-muted", style={'fontSize': '10px'})
-                            ], className="text-center")
+        
+        # 延时误差统计指标 - 在数据概览下方（之前删掉的数据）
+        dbc.Row([
+            dbc.Col([
+                dbc.Card([
+                    dbc.CardHeader([
+                        html.H4([
+                            html.I(className="fas fa-chart-bar", style={'marginRight': '10px', 'color': '#dc3545'}),
+                            "延时误差统计指标"
+                        ], className="mb-0")
+                    ]),
+                    dbc.CardBody([
+                        # 第一行：平均延时、总体方差、总体标准差、平均绝对误差
+                        dbc.Row([
+                            dbc.Col([
+                                html.Div([
+                                    html.H3(f"{average_delay_ms:.2f} ms", className="text-primary mb-1"),
+                                    html.P("平均延时（绝对值口径，等同MAE）", className="text-muted mb-0"),
+                                    html.Small("平均(|keyon_offset|)，用于衡量误差大小，避免正负抵消", className="text-muted", style={'fontSize': '10px'})
+                                ], className="text-center")
+                            ], width=3),
+                            dbc.Col([
+                                html.Div([
+                                    html.H3(f"{variance_ms_squared:.2f} ms²", className="text-danger mb-1"),
+                                    html.P("总体方差", className="text-muted mb-0"),
+                                    html.Small("所有已匹配按键对的keyon_offset的总体方差", className="text-muted", style={'fontSize': '10px'})
+                                ], className="text-center")
+                            ], width=3),
+                            dbc.Col([
+                                html.Div([
+                                    html.H3(f"{std_ms:.2f} ms", className="text-info mb-1"),
+                                    html.P("总体标准差", className="text-muted mb-0"),
+                                    html.Small("所有已匹配按键对的keyon_offset的总体标准差", className="text-muted", style={'fontSize': '10px'})
+                                ], className="text-center")
+                            ], width=3),
+                            dbc.Col([
+                                html.Div([
+                                    html.H3(f"{mae_ms:.2f} ms", className="text-warning mb-1"),
+                                    html.P("平均绝对误差(MAE)", className="text-muted mb-0"),
+                                    html.Small("已匹配按键对的延时绝对值的平均", className="text-muted", style={'fontSize': '10px'})
+                                ], className="text-center")
+                            ], width=3)
+                        ], className="mb-3"),
+                        
+                        # 第二行：均方误差、平均误差
+                        dbc.Row([
+                            dbc.Col([
+                                html.Div([
+                                    html.H3(f"{mse_ms_squared:.2f} ms²", className="text-info mb-1"),
+                                    html.P("均方误差(MSE)", className="text-muted mb-0"),
+                                    html.Small("所有匹配对延时平方的平均", className="text-muted", style={'fontSize': '10px'})
+                                ], className="text-center")
+                            ], width=3),
+                            dbc.Col([
+                                html.Div([
+                                    html.H3(f"{me_ms:.2f} ms", className="text-secondary mb-1"),
+                                    html.P("平均误差(ME)（带符号）", className="text-muted mb-0"),
+                                    html.Small("mean(keyon_offset)，反映系统性提前/滞后方向，不等同平均延时", className="text-muted", style={'fontSize': '10px'})
+                                ], className="text-center")
+                            ], width=3),
+                            dbc.Col([], width=6)  # 占位，保持布局平衡
                         ])
-                    ], className="shadow-sm mb-4")
-                ], width=12)
-            ]),
-
+                    ])
+                ], className="shadow-sm mb-4")
+            ], width=12)
+        ]),
+        
+        # 延时与按键差异分析区域（EDA）
+        dbc.Row([
+            dbc.Col([
+                dbc.Card([
+                    dbc.CardHeader([
+                        html.H4([
+                            html.I(className="fas fa-chart-line", style={'marginRight': '10px', 'color': '#1976d2'}),
+                            "延时与按键差异分析（EDA）"
+                        ], className="mb-0")
+                    ]),
+                    dbc.CardBody([
+                        # EDA分析区域（已移除抖动点图，使用散点图替代）
+                        html.Div([
+                            html.P("延时与按键差异分析请参考下方的散点图", className="text-muted", style={'fontSize': '14px', 'textAlign': 'center', 'padding': '20px'})
+                        ]),
+                    ])
+                ], className="shadow-sm mb-4")
+            ], width=12)
+        ]),
         
         # 柱状图分析区域 - 独立全宽区域
         dbc.Row([
             dbc.Col([
-                # 偏移对齐分析柱状图
+                # 偏移对齐分析柱状图（自动生成）
                 html.Div([
                     dbc.Row([
                         dbc.Col([
                             html.H6("偏移对齐分析柱状图", className="mb-2",
                                    style={'color': '#6f42c1', 'fontWeight': 'bold', 'borderBottom': '2px solid #6f42c1', 'paddingBottom': '5px'}),
-                        ], width=8),
-                        dbc.Col([
-                            dbc.Button(
-                                "生成柱状图",
-                                id="btn-generate-alignment-plot",
-                                color="primary",
-                                size="lg",
-                                className="mb-2",
-                                style={'fontSize': '14px'}
-                            ),
-                        ], width=4, className="text-end")
+                        ], width=12)
                     ]),
                     dcc.Graph(
                         id='offset-alignment-plot',
                         figure={},
-                        style={'height': '1200px'}
+                        style={'height': '2200px'}  # 增大高度以匹配后端图表高度
                     ),
                 ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
                 
             ], width=12)
         ]),
+        
+        # 按键与延时散点图区域 - 在柱状图下方，表格上方
+        dbc.Row([
+            dbc.Col([
+                html.Div([
+                    dbc.Row([
+                        dbc.Col([
+                            html.H6("按键与延时散点图", className="mb-2",
+                                   style={'color': '#1976d2', 'fontWeight': 'bold', 'borderBottom': '2px solid #1976d2', 'paddingBottom': '5px'}),
+                        ], width=12)
+                    ]),
+                    dcc.Graph(
+                        id='key-delay-scatter-plot',
+                        figure={},
+                        style={'height': '500px'}
+                    ),
+                ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
+                
+            ], width=12)
+        ]),
+        
+        # 锤速与延时散点图区域 - 在按键与延时散点图下方，表格上方
+        dbc.Row([
+            dbc.Col([
+                html.Div([
+                    dbc.Row([
+                        dbc.Col([
+                            html.H6("锤速与延时散点图", className="mb-2",
+                                   style={'color': '#d32f2f', 'fontWeight': 'bold', 'borderBottom': '2px solid #d32f2f', 'paddingBottom': '5px'}),
+                        ], width=12)
+                    ]),
+                    dcc.Graph(
+                        id='hammer-velocity-delay-scatter-plot',
+                        figure={},
+                        style={'height': '500px'}
+                    ),
+                ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
+                
+            ], width=12)
+        ]),
+        
+        # 按键与锤速散点图区域（颜色表示延时）- 在锤速与延时散点图下方，表格上方
+        dbc.Row([
+            dbc.Col([
+                html.Div([
+                    dbc.Row([
+                        dbc.Col([
+                            html.H6("按键与锤速散点图（颜色表示延时）", className="mb-2",
+                                   style={'color': '#7b1fa2', 'fontWeight': 'bold', 'borderBottom': '2px solid #7b1fa2', 'paddingBottom': '5px'}),
+                        ], width=12)
+                    ]),
+                    dcc.Graph(
+                        id='key-hammer-velocity-scatter-plot',
+                        figure={},
+                        style={'height': '500px'}
+                    ),
+                ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
+                
+            ], width=12)
+        ]),
+
+        # 延时分布直方图（附正态拟合曲线）- 在按键与锤速散点图下方，表格上方
+        dbc.Row([
+            dbc.Col([
+                html.Div([
+                    dbc.Row([
+                        dbc.Col([
+                            html.H6("延时分布直方图（附正态拟合曲线）", className="mb-2",
+                                   style={'color': '#2c3e50', 'fontWeight': 'bold', 'borderBottom': '2px solid #2c3e50', 'paddingBottom': '5px'}),
+                        ], width=12)
+                    ]),
+                    dcc.Graph(
+                        id='delay-histogram-plot',
+                        figure={},
+                        style={'height': '500px'}
+                    ),
+                ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
+                
+            ], width=12)
+        ]),
+        
+        # 延时与按键关系分析区域 - 已注释，因为箱线图与柱状图的均值子图重复
+        # dbc.Row([
+        #     dbc.Col([
+        #         html.Div([
+        #             dbc.Row([
+        #                 dbc.Col([
+        #                     html.H5("📊 延时与按键关系分析", className="mb-3",
+        #                            style={'color': '#1976d2', 'fontWeight': 'bold', 'fontSize': '20px', 'borderBottom': '3px solid #1976d2', 'paddingBottom': '10px'}),
+        #                 ], width=12)
+        #             ]),
+        #             # 箱线图
+        #             dbc.Row([
+        #                 dbc.Col([
+        #                     html.H6("各按键延时分布箱线图", className="mb-2",
+        #                            style={'color': '#1976d2', 'fontWeight': 'bold'}),
+        #                     dcc.Graph(
+        #                         id='delay-by-key-boxplot',
+        #                         figure={},
+        #                         style={'height': '500px'}
+        #                     ),
+        #                 ], width=12)
+        #             ], className="mb-3"),
+        #             # 统计分析结果表格
+        #             dbc.Row([
+        #                 dbc.Col([
+        #                     html.H6("统计分析结果", className="mb-2",
+        #                            style={'color': '#1976d2', 'fontWeight': 'bold'}),
+        #                     html.Div(id='delay-by-key-analysis-stats', children=[])
+        #                 ], width=12)
+        #             ])
+        #         ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
+        #     ], width=12)
+        # ]),
+        
+        # 延时与锤速关系分析区域 - 已注释
+        # dbc.Row([
+        #     dbc.Col([
+        #         html.Div([
+        #             dbc.Row([
+        #                 dbc.Col([
+        #                     html.H5("📈 延时与锤速关系分析", className="mb-3",
+        #                            style={'color': '#d32f2f', 'fontWeight': 'bold', 'fontSize': '20px', 'borderBottom': '3px solid #d32f2f', 'paddingBottom': '10px'}),
+        #                 ], width=12)
+        #             ]),
+        #             # 散点图+回归线
+        #             dbc.Row([
+        #                 dbc.Col([
+        #                     html.H6("延时与锤速散点图（含回归分析）", className="mb-2",
+        #                            style={'color': '#d32f2f', 'fontWeight': 'bold'}),
+        #                     dcc.Graph(
+        #                         id='delay-by-velocity-analysis-plot',
+        #                         figure={},
+        #                         style={'height': '500px'}
+        #                     ),
+        #                 ], width=12)
+        #             ], className="mb-3"),
+        #             # 统计分析结果
+        #             dbc.Row([
+        #                 dbc.Col([
+        #                     html.H6("相关性分析结果", className="mb-2",
+        #                            style={'color': '#d32f2f', 'fontWeight': 'bold'}),
+        #                     html.Div(id='delay-by-velocity-analysis-stats', children=[])
+        #                 ], width=12)
+        #             ])
+        #         ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
+        #     ], width=12)
+        # ]),
             
-            # 主要内容区域
+            # 主要内容区域：丢锤和多锤表格左右并排显示
             dbc.Row([
-                # 左侧：表格区域
+                # 左侧：丢锤问题表格
                 dbc.Col([
-                    # 丢锤问题表格
                     html.Div([
                         dbc.Row([
                             dbc.Col([
-                                html.H6("丢锤问题列表", className="mb-2",
-                                       style={'color': '#721c24', 'fontWeight': 'bold', 'borderBottom': '2px solid #721c24', 'paddingBottom': '5px'}),
+                                html.H5("丢锤问题列表", className="mb-3",
+                                       style={'color': '#721c24', 'fontWeight': 'bold', 'fontSize': '18px', 'borderBottom': '3px solid #721c24', 'paddingBottom': '8px'}),
                             ], width=12)
                         ]),
                         dash_table.DataTable(
                             id='drop-hammers-table',
                             columns=[
-                                {"name": "问题类型", "id": "problem_type"},
                                 {"name": "数据类型", "id": "data_type"},
                                 {"name": "键位ID", "id": "keyId"},
-                                {"name": "按下时间", "id": "keyOn"},
-                                {"name": "释放时间", "id": "keyOff"},
+                                {"name": "按下时间(ms)", "id": "keyOn"},
+                                {"name": "释放时间(ms)", "id": "keyOff"},
                                 {"name": "index", "id": "index"},
                                 {"name": "未匹配原因", "id": "analysis_reason"},
                             ],
                             data=backend.get_error_table_data('丢锤'),
-                            page_size=10,
+                            # 去掉分页，显示所有数据
+                            page_action='none',
                             style_cell={
                                 'textAlign': 'center',
-                                'fontSize': '10px',
-                                'fontFamily': 'Arial',
-                                'padding': '6px',
+                                'fontSize': '14px',  # 增大字体从10px到14px
+                                'fontFamily': 'Arial, sans-serif',
+                                'padding': '10px',  # 增大内边距从6px到10px
                                 'overflow': 'hidden',
                                 'textOverflow': 'ellipsis',
+                                'minWidth': '80px',
                             },
                             style_cell_conditional=[
-                                {'if': {'column_id': 'problem_type'}, 'width': '18%'},
-                                {'if': {'column_id': 'data_type'}, 'width': '14%'},
+                                {'if': {'column_id': 'data_type'}, 'width': '16%'},
                                 {'if': {'column_id': 'keyId'}, 'width': '14%'},
-                                {'if': {'column_id': 'keyOn'}, 'width': '27%'},
-                                {'if': {'column_id': 'keyOff'}, 'width': '27%'},
+                                {'if': {'column_id': 'keyOn'}, 'width': '18%'},
+                                {'if': {'column_id': 'keyOff'}, 'width': '18%'},
+                                {'if': {'column_id': 'index'}, 'width': '12%'},
+                                {'if': {'column_id': 'analysis_reason'}, 'width': '22%'},
                             ],
                             style_header={
                                 'backgroundColor': '#f8d7da',
                                 'fontWeight': 'bold',
-                                'border': '1px solid #dee2e6',
-                                'fontSize': '10px',
+                                'border': '2px solid #dee2e6',
+                                'fontSize': '15px',  # 增大表头字体从10px到15px
                                 'color': '#721c24',
-                                'textAlign': 'center'
+                                'textAlign': 'center',
+                                'padding': '12px',  # 增大表头内边距
+                                'whiteSpace': 'normal',
+                                'height': 'auto'
                             },
                             style_data={
                                 'border': '1px solid #dee2e6',
-                                'fontSize': '9px'
+                                'fontSize': '14px',  # 增大数据字体从9px到14px
+                                'padding': '10px'
                             },
                             style_data_conditional=[
                                 {
-                                    'if': {'filter_query': '{problem_type} = 丢锤'},
-                                    'backgroundColor': '#f8d7da',
-                                    'color': 'black',
+                                    'if': {'filter_query': '{data_type} = record'},
+                                    'fontWeight': 'bold',
+                                    'backgroundColor': '#ffeaea'
                                 },
                                 {
-                                    'if': {'filter_query': '{data_type} = record'},
-                                    'fontWeight': 'bold'
+                                    'if': {'filter_query': '{data_type} = play'},
+                                    'backgroundColor': '#fffafa'
                                 },
                                 {
                                     'if': {'filter_query': '{keyOn} = 无匹配'},
                                     'backgroundColor': '#f5f5f5',
                                     'color': '#6c757d',
                                     'fontStyle': 'italic'
+                                },
+                                {
+                                    'if': {'row_index': 'odd'},
+                                    'backgroundColor': '#fafafa'
                                 }
                             ],
-                            row_selectable="single",
-                            selected_rows=[],
+                            row_selectable=False,  # 禁用行选择，不显示选择列
                             sort_action="native",
-                            style_table={'height': 'calc(45vh - 120px)', 'overflowY': 'auto', 'border': '1px solid #dee2e6', 'borderRadius': '5px'}
+                            filter_action="none",  # 禁用筛选功能，不显示过滤行
+                            style_table={
+                                'height': 'calc(75vh - 200px)',  # 增大表格高度
+                                'overflowY': 'auto', 
+                                'overflowX': 'auto',
+                                'border': '2px solid #dee2e6', 
+                                'borderRadius': '8px',
+                                'minHeight': '400px'
+                            }
                         ),
-                    ], className="mb-3", style={'backgroundColor': '#ffffff', 'padding': '15px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
-
-                    # 多锤问题表格
+                    ], style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '10px', 'boxShadow': '0 4px 12px rgba(0,0,0,0.15)', 'height': '100%'}),
+                ], width=6, className="pr-2"),  # 左侧列，宽度50%
+                
+                # 右侧：多锤问题表格
+                dbc.Col([
                     html.Div([
                         dbc.Row([
                             dbc.Col([
-                                html.H6("多锤问题列表", className="mb-2",
-                                       style={'color': '#856404', 'fontWeight': 'bold', 'borderBottom': '2px solid #856404', 'paddingBottom': '5px'}),
+                                html.H5("多锤问题列表", className="mb-3",
+                                       style={'color': '#856404', 'fontWeight': 'bold', 'fontSize': '18px', 'borderBottom': '3px solid #856404', 'paddingBottom': '8px'}),
                             ], width=12)
                         ]),
                         dash_table.DataTable(
                             id='multi-hammers-table',
                             columns=[
-                                {"name": "问题类型", "id": "problem_type"},
                                 {"name": "数据类型", "id": "data_type"},
                                 {"name": "键位ID", "id": "keyId"},
-                                {"name": "按下时间", "id": "keyOn"},
-                                {"name": "释放时间", "id": "keyOff"},
+                                {"name": "按下时间(ms)", "id": "keyOn"},
+                                {"name": "释放时间(ms)", "id": "keyOff"},
                                 {"name": "index", "id": "index"},
                                 {"name": "未匹配原因", "id": "analysis_reason"},
                             ],
                             data=backend.get_error_table_data('多锤'),
-                            page_size=10,
+                            # 去掉分页，显示所有数据
+                            page_action='none',
                             style_cell={
                                 'textAlign': 'center',
-                                'fontSize': '10px',
-                                'fontFamily': 'Arial',
-                                'padding': '6px',
+                                'fontSize': '14px',  # 增大字体从10px到14px
+                                'fontFamily': 'Arial, sans-serif',
+                                'padding': '10px',  # 增大内边距从6px到10px
                                 'overflow': 'hidden',
                                 'textOverflow': 'ellipsis',
+                                'minWidth': '80px',
                             },
                             style_cell_conditional=[
-                                {'if': {'column_id': 'problem_type'}, 'width': '18%'},
-                                {'if': {'column_id': 'data_type'}, 'width': '14%'},
+                                {'if': {'column_id': 'data_type'}, 'width': '16%'},
                                 {'if': {'column_id': 'keyId'}, 'width': '14%'},
-                                {'if': {'column_id': 'keyOn'}, 'width': '27%'},
-                                {'if': {'column_id': 'keyOff'}, 'width': '27%'},
+                                {'if': {'column_id': 'keyOn'}, 'width': '18%'},
+                                {'if': {'column_id': 'keyOff'}, 'width': '18%'},
+                                {'if': {'column_id': 'index'}, 'width': '12%'},
+                                {'if': {'column_id': 'analysis_reason'}, 'width': '22%'},
                             ],
                             style_header={
                                 'backgroundColor': '#fff3cd',
                                 'fontWeight': 'bold',
-                                'border': '1px solid #dee2e6',
-                                'fontSize': '10px',
+                                'border': '2px solid #dee2e6',
+                                'fontSize': '15px',  # 增大表头字体从10px到15px
                                 'color': '#856404',
-                                'textAlign': 'center'
+                                'textAlign': 'center',
+                                'padding': '12px',  # 增大表头内边距
+                                'whiteSpace': 'normal',
+                                'height': 'auto'
                             },
                             style_data={
                                 'border': '1px solid #dee2e6',
-                                'fontSize': '9px'
+                                'fontSize': '14px',  # 增大数据字体从9px到14px
+                                'padding': '10px'
                             },
                             style_data_conditional=[
                                 {
-                                    'if': {'filter_query': '{problem_type} = 多锤'},
-                                    'backgroundColor': '#fff3cd',
-                                    'color': 'black',
+                                    'if': {'filter_query': '{data_type} = record'},
+                                    'fontWeight': 'bold',
+                                    'backgroundColor': '#fff8e1'
                                 },
                                 {
-                                    'if': {'filter_query': '{data_type} = record'},
-                                    'fontWeight': 'bold'
+                                    'if': {'filter_query': '{data_type} = play'},
+                                    'backgroundColor': '#fffef5'
                                 },
                                 {
                                     'if': {'filter_query': '{keyOn} = 无匹配'},
                                     'backgroundColor': '#f5f5f5',
                                     'color': '#6c757d',
                                     'fontStyle': 'italic'
+                                },
+                                {
+                                    'if': {'row_index': 'odd'},
+                                    'backgroundColor': '#fafafa'
                                 }
                             ],
-                            row_selectable="single",
-                            selected_rows=[],
+                            row_selectable=False,  # 禁用行选择，不显示选择列
                             sort_action="native",
-                            style_table={'height': 'calc(45vh - 120px)', 'overflowY': 'auto', 'border': '1px solid #dee2e6', 'borderRadius': '5px'}
+                            filter_action="none",  # 禁用筛选功能，不显示过滤行
+                            style_table={
+                                'height': 'calc(75vh - 200px)',  # 增大表格高度
+                                'overflowY': 'auto', 
+                                'overflowX': 'auto',
+                                'border': '2px solid #dee2e6', 
+                                'borderRadius': '8px',
+                                'minHeight': '400px'
+                            }
                         ),
-                    ], className="mb-3", style={'backgroundColor': '#ffffff', 'padding': '15px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
+                    ], style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '10px', 'boxShadow': '0 4px 12px rgba(0,0,0,0.15)', 'height': '100%'}),
+                ], width=6, className="pl-2"),  # 右侧列，宽度50%
+            ], className="mb-4"),
+            
+            # 无效音符统计表格（单独一行）
+            dbc.Row([
+                dbc.Col([
 
                     # 无效音符统计表格
                     html.Div([
@@ -720,14 +1011,15 @@ def create_report_layout(backend):
                                 {"name": "其他错误", "id": "other_errors"}
                             ],
                             data=backend.get_invalid_notes_table_data(),
-                            page_size=10,
+                            page_action='none',  # 去掉分页，显示所有数据
                             style_cell={
                                 'textAlign': 'center',
-                                'fontSize': '10px',
-                                'fontFamily': 'Arial',
-                                'padding': '6px',
+                                'fontSize': '14px',  # 增大字体从10px到14px
+                                'fontFamily': 'Arial, sans-serif',
+                                'padding': '10px',  # 增大内边距从6px到10px
                                 'overflow': 'hidden',
                                 'textOverflow': 'ellipsis',
+                                'minWidth': '100px',
                             },
                             style_cell_conditional=[
                                 {'if': {'column_id': 'data_type'}, 'width': '15%'},
@@ -742,14 +1034,18 @@ def create_report_layout(backend):
                             style_header={
                                 'backgroundColor': '#e9ecef',
                                 'fontWeight': 'bold',
-                                'border': '1px solid #dee2e6',
-                                'fontSize': '10px',
+                                'border': '2px solid #dee2e6',
+                                'fontSize': '15px',  # 增大表头字体从10px到15px
                                 'color': '#495057',
-                                'textAlign': 'center'
+                                'textAlign': 'center',
+                                'padding': '12px',  # 增大表头内边距
+                                'whiteSpace': 'normal',
+                                'height': 'auto'
                             },
                             style_data={
                                 'border': '1px solid #dee2e6',
-                                'fontSize': '9px'
+                                'fontSize': '14px',  # 增大数据字体从9px到14px
+                                'padding': '10px'
                             },
                             style_data_conditional=[
                                 {
@@ -760,10 +1056,22 @@ def create_report_layout(backend):
                                 {
                                     'if': {'filter_query': '{data_type} = 播放数据'},
                                     'backgroundColor': '#ffffff'
+                                },
+                                {
+                                    'if': {'row_index': 'odd'},
+                                    'backgroundColor': '#fafafa'
                                 }
                             ],
                             sort_action="native",
-                            style_table={'height': 'calc(30vh - 80px)', 'overflowY': 'auto', 'border': '1px solid #dee2e6', 'borderRadius': '5px'}
+                            filter_action="none",  # 禁用筛选功能，不显示过滤行
+                            style_table={
+                                'height': 'calc(40vh - 120px)',  # 增大表格高度
+                                'overflowY': 'auto', 
+                                'overflowX': 'auto',
+                                'border': '2px solid #dee2e6', 
+                                'borderRadius': '8px',
+                                'minHeight': '250px'
+                            }
                         ),
                     ], className="mb-3", style={'backgroundColor': '#ffffff', 'padding': '15px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
 
@@ -783,38 +1091,50 @@ def create_report_layout(backend):
                                 {"name": "中位数(ms)", "id": "median"},
                                 {"name": "均值(ms)", "id": "mean"},
                                 {"name": "标准差(ms)", "id": "std"},
+                                {"name": "方差(ms²)", "id": "variance"},
+                                {"name": "最小值(ms)", "id": "min"},
+                                {"name": "最大值(ms)", "id": "max"},
+                                {"name": "极差(ms)", "id": "range"},
                                 {"name": "状态", "id": "status"}
                             ],
-                            # todo
                             data=backend.get_offset_alignment_data(),
-                            page_size=15,
+                            page_action='none',  # 去掉分页，显示所有数据
                             style_cell={
                                 'textAlign': 'center',
-                                'fontSize': '10px',
-                                'fontFamily': 'Arial',
-                                'padding': '6px',
+                                'fontSize': '14px',  # 增大字体从10px到14px
+                                'fontFamily': 'Arial, sans-serif',
+                                'padding': '10px',  # 增大内边距从6px到10px
                                 'overflow': 'hidden',
                                 'textOverflow': 'ellipsis',
+                                'minWidth': '100px',
                             },
                             style_cell_conditional=[
-                                {'if': {'column_id': 'key_id'}, 'width': '15%'},
-                                {'if': {'column_id': 'count'}, 'width': '15%'},
-                                {'if': {'column_id': 'median'}, 'width': '15%'},
-                                {'if': {'column_id': 'mean'}, 'width': '15%'},
-                                {'if': {'column_id': 'std'}, 'width': '15%'},
-                                {'if': {'column_id': 'status'}, 'width': '25%'},
+                                {'if': {'column_id': 'key_id'}, 'width': '9%'},
+                                {'if': {'column_id': 'count'}, 'width': '9%'},
+                                {'if': {'column_id': 'median'}, 'width': '9%'},
+                                {'if': {'column_id': 'mean'}, 'width': '9%'},
+                                {'if': {'column_id': 'std'}, 'width': '9%'},
+                                {'if': {'column_id': 'variance'}, 'width': '10%'},
+                                {'if': {'column_id': 'min'}, 'width': '9%'},
+                                {'if': {'column_id': 'max'}, 'width': '9%'},
+                                {'if': {'column_id': 'range'}, 'width': '9%'},
+                                {'if': {'column_id': 'status'}, 'width': '18%'},
                             ],
                             style_header={
                                 'backgroundColor': '#e2d9f3',
                                 'fontWeight': 'bold',
-                                'border': '1px solid #dee2e6',
-                                'fontSize': '10px',
+                                'border': '2px solid #dee2e6',
+                                'fontSize': '15px',  # 增大表头字体从10px到15px
                                 'color': '#6f42c1',
-                                'textAlign': 'center'
+                                'textAlign': 'center',
+                                'padding': '12px',  # 增大表头内边距
+                                'whiteSpace': 'normal',
+                                'height': 'auto'
                             },
                             style_data={
                                 'border': '1px solid #dee2e6',
-                                'fontSize': '9px'
+                                'fontSize': '14px',  # 增大数据字体从9px到14px
+                                'padding': '10px'
                             },
                             style_data_conditional=[
                                 {
@@ -822,6 +1142,12 @@ def create_report_layout(backend):
                                     'backgroundColor': '#f8f9fa',
                                     'color': '#6f42c1',
                                     'fontWeight': 'bold'
+                                },
+                                {
+                                    'if': {'filter_query': '{key_id} = 汇总'},
+                                    'backgroundColor': '#e3f2fd',
+                                    'fontWeight': 'bold',
+                                    'color': '#1976d2'
                                 },
                                 {
                                     'if': {'filter_query': '{status} = matched'},
@@ -835,43 +1161,20 @@ def create_report_layout(backend):
                                 }
                             ],
                             sort_action="native",
-                            style_table={'height': 'calc(30vh - 100px)', 'overflowY': 'auto', 'border': '1px solid #dee2e6', 'borderRadius': '5px'}
+                            filter_action="none",  # 禁用筛选功能，不显示过滤行
+                            style_table={
+                                'height': 'calc(50vh - 150px)',  # 增大表格高度
+                                'overflowY': 'auto', 
+                                'overflowX': 'auto',
+                                'border': '2px solid #dee2e6', 
+                                'borderRadius': '8px',
+                                'minHeight': '300px'
+                            }
                         ),
                     ], className="mb-3", style={'backgroundColor': '#ffffff', 'padding': '15px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
                     
                     
-                ], width=6),
-
-                # 右侧：图表和详情区域
-                dbc.Col([
-                    # 对比分析图
-                    html.Div([
-                        html.H6("对比分析图", className="mb-2",
-                               style={'color': '#28a745', 'fontWeight': 'bold', 'borderBottom': '2px solid #28a745', 'paddingBottom': '5px'}),
-                        html.Div(id="image-container", children=[
-                            html.Div([
-                                html.I(className="fas fa-chart-line", style={'fontSize': '36px', 'color': '#6c757d', 'marginBottom': '10px'}),
-                                html.P("请选择左侧表格中的条目来查看对比图",
-                                       className="text-muted text-center",
-                                       style={'fontSize': '12px'})
-                            ], className="d-flex flex-column align-items-center justify-content-center h-100")
-                        ], style={'height': '380px', 'border': '2px dashed #dee2e6', 'borderRadius': '8px', 'backgroundColor': '#f8f9fa'})
-                    ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '15px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
-
-                    # 详细数据信息
-                    html.Div([
-                        html.H6("详细数据信息", className="mb-2",
-                               style={'color': '#17a2b8', 'fontWeight': 'bold', 'borderBottom': '2px solid #17a2b8', 'paddingBottom': '5px'}),
-                        html.Div(id="detail-info", children=[
-                            html.Div([
-                                html.I(className="fas fa-info-circle", style={'fontSize': '24px', 'color': '#6c757d', 'marginBottom': '8px'}),
-                                html.P("请选择左侧表格中的条目查看详细信息",
-                                       className="text-muted text-center",
-                                       style={'fontSize': '12px'})
-                            ], className="d-flex flex-column align-items-center justify-content-center h-100")
-                        ], style={'border': '1px solid #dee2e6', 'borderRadius': '8px', 'backgroundColor': '#ffffff', 'padding': '15px'})
-                    ], style={'backgroundColor': '#f8f9fa', 'padding': '15px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'})
-                ], width=6)
+                ], width=12)  # 改为占满整行，删除右侧的对比分析图和详细数据信息
             ])
         ], fluid=True, style={'padding': '20px', 'backgroundColor': '#f5f5f5', 'minHeight': '100vh'})
     ], id='report-layout-container')
