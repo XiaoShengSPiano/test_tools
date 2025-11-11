@@ -8,13 +8,17 @@ import os
 import time
 from datetime import datetime
 from dash import Input, Output, State, callback_context, no_update, html, dcc
+import dash.dependencies
 import dash_bootstrap_components as dbc
-from ui.layout_components import create_report_layout, empty_figure
+from ui.layout_components import create_report_layout, empty_figure, create_multi_algorithm_upload_area, create_multi_algorithm_management_area
 from backend.piano_analysis_backend import PianoAnalysisBackend
 from backend.data_manager import DataManager
+from backend.session_manager import SessionManager
 from ui.ui_processor import UIProcessor
+from ui.multi_file_upload_handler import MultiFileUploadHandler
 from utils.pdf_generator import PDFReportGenerator
 from utils.logger import Logger
+import plotly.graph_objects as go
 
 logger = Logger.get_logger()
 
@@ -607,81 +611,33 @@ def _handle_fallback_logic(contents, filename, history_id, backend):
     return placeholder_fig, no_update, no_update, [], "显示全部键位", [], 0, 1000, [0, 1000], "显示全部时间范围"
 
 
-def register_callbacks(app, backends, history_manager):
+def register_callbacks(app, session_manager: SessionManager, history_manager):
     """注册所有回调函数"""
 
+    # 初始化回调：自动启用多算法模式
     @app.callback(
         Output('session-id', 'data'),
         Input('session-id', 'data'),
-        prevent_initial_call=True
+        prevent_initial_call=False
     )
-    def init_session(session_data):
-        """初始化会话ID"""
+    def init_session_and_enable_multi_algorithm(session_data):
+        """初始化会话ID并自动启用多算法模式"""
         if session_data is None:
-            return str(uuid.uuid4())
-        return session_data
+            session_id = str(uuid.uuid4())
+        else:
+            session_id = session_data
+        
+        # 多算法模式始终启用
+        session_id, backend = session_manager.get_or_create_backend(session_id)
+        if backend:
+            # 确保multi_algorithm_manager已初始化
+            if not backend.multi_algorithm_manager:
+                backend._ensure_multi_algorithm_manager()
+            logger.info("✅ 多算法模式已就绪")
+        
+        return session_id
 
-    # 主要的数据处理回调
-    @app.callback(
-        [Output('main-plot', 'figure'),
-         Output('report-content', 'children'),
-         Output('history-dropdown', 'options'),
-         Output('key-filter-dropdown', 'options'),
-         Output('key-filter-status', 'children'),
-         Output('key-filter-dropdown', 'value'),
-         Output('time-filter-slider', 'min'),
-         Output('time-filter-slider', 'max'),
-         Output('time-filter-slider', 'value'),
-         Output('time-filter-status', 'children')],
-        [Input('upload-spmid-data', 'contents'),
-         Input('history-dropdown', 'value'),
-         Input('key-filter-dropdown', 'value'),
-         Input('btn-show-all-keys', 'n_clicks')],
-        [State('upload-spmid-data', 'filename'),
-         State('session-id', 'data')],
-        prevent_initial_call=True
-    )
-    def process_data(contents, history_id, key_filter, show_all_keys, filename, session_id):
-        """处理数据的主要回调函数"""
-
-        # 获取触发上下文
-        ctx = callback_context
-
-        # 初始化后端实例
-        if session_id not in backends:
-            backends[session_id] = PianoAnalysisBackend(session_id, history_manager)
-        backend = backends[session_id]
-
-        try:
-            # 检测触发源
-            trigger_source = _detect_trigger_source(ctx, backend, contents, filename, history_id)
-            
-            if trigger_source == 'skip':
-                return no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
-
-            # 根据触发源分发处理
-            if trigger_source == 'upload' and contents and filename:
-                return _handle_file_upload(contents, filename, backend, key_filter)
-                
-            elif trigger_source == 'history' and history_id:
-                return _handle_history_selection(history_id, backend)
-                
-            else:
-                # 兜底逻辑
-                return _handle_fallback_logic(contents, filename, history_id, backend)
-
-        except Exception as e:
-            logger.error(f"❌ 处理数据失败: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-
-            # 返回错误状态的figure和内容
-            error_fig = _create_empty_figure_for_callback(f"处理失败: {str(e)}")
-            error_content = html.Div([
-                html.H4("处理失败", className="text-center text-danger"),
-                html.P(f"错误信息: {str(e)}", className="text-center")
-            ])
-            return error_fig, error_content, no_update, [], "显示全部键位", [], 0, 1000, [0, 1000], "显示全部时间范围", no_update
+    # 单算法模式的数据处理回调已移除 - 现在只使用多算法模式
 
 
     # 表格选择回调和相关辅助函数已删除 - 因为已删除对比分析图和详细数据信息的UI组件，且表格已禁用行选择
@@ -700,10 +656,9 @@ def register_callbacks(app, backends, history_manager):
     )
     def initialize_time_slider_on_data_load(report_content, session_id):
         """当数据加载完成后初始化时间滑块"""
-        if not session_id or session_id not in backends:
+        backend = session_manager.get_backend(session_id)
+        if not backend:
             return no_update, no_update, no_update, no_update
-        
-        backend = backends[session_id]
         
         # 只有当有分析数据时才更新滑块
         if not hasattr(backend, 'all_error_notes') or not backend.all_error_notes:
@@ -841,34 +796,55 @@ def register_callbacks(app, backends, history_manager):
         # 点击plot的点显示详细图像
     @app.callback(
         [Output('detail-modal', 'style'),
-        Output('detail-plot', 'figure'),
-        Output('detail-plot2', 'figure'),
         Output('detail-plot-combined', 'figure')],
         [Input('main-plot', 'clickData'),
+        Input('key-delay-scatter-plot', 'clickData'),  # 添加散点图点击输入
+        Input('key-delay-zscore-scatter-plot', 'clickData'),  # 添加Z-Score标准化散点图点击输入
         Input('close-modal', 'n_clicks'),
-        Input('close-modal-btn', 'n_clicks')],
+        Input('close-modal-btn', 'n_clicks'),
+        Input({'type': 'drop-hammers-table', 'index': dash.dependencies.ALL}, 'active_cell'),  # 丢锤表格点击
+        Input({'type': 'multi-hammers-table', 'index': dash.dependencies.ALL}, 'active_cell')],  # 多锤表格点击
         [State('detail-modal', 'style'),
-        State('session-id', 'data')]
+        State('session-id', 'data'),
+        State({'type': 'drop-hammers-table', 'index': dash.dependencies.ALL}, 'data'),  # 丢锤表格数据
+        State({'type': 'multi-hammers-table', 'index': dash.dependencies.ALL}, 'data')],  # 多锤表格数据
+        prevent_initial_call=False
         )
-    def update_plot(clickData, close_clicks, close_btn_clicks, current_style, session_id):
+    def update_plot(clickData, scatter_clickData, zscore_scatter_clickData, close_clicks, close_btn_clicks, 
+                   drop_hammers_active_cells, multi_hammers_active_cells,
+                   current_style, session_id, drop_hammers_table_data, multi_hammers_table_data):
         """更新详细图表 - 支持多用户会话"""
         from dash import no_update
 
         # if session_id is None:
-        if session_id not in backends:
-            return current_style, no_update, no_update, no_update
-
         # 获取用户会话数据
-        backend = backends[session_id]
-        if backend is None:
-            return current_style, no_update, no_update, no_update
+        backend = session_manager.get_backend(session_id)
+        if not backend:
+            return current_style, no_update
 
         ctx = callback_context
         if not ctx.triggered:
-            return current_style, no_update, no_update, no_update
+            return current_style, no_update
 
-        trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
+        # 获取触发信息
+        triggered_prop_id = ctx.triggered[0]['prop_id']
+        trigger_value = ctx.triggered[0].get('value')
+        
+        # 解析trigger_id
+        if triggered_prop_id.startswith('{'):
+            # Pattern matching ID
+            import json
+            try:
+                trigger_id_dict = json.loads(triggered_prop_id.split('.')[0])
+                trigger_id = f"{trigger_id_dict.get('type', 'unknown')}-{trigger_id_dict.get('index', 'unknown')}"
+            except:
+                trigger_id = triggered_prop_id.split('.')[0]
+        else:
+            trigger_id = triggered_prop_id.split('.')[0]
+        
+        logger.info(f"🔍 回调触发: trigger_id={trigger_id}, trigger_value={trigger_value}, triggered_prop_id={triggered_prop_id}")
 
+        # 处理瀑布图点击
         if trigger_id == 'main-plot' and clickData:
             # 从会话中获取数据
             # 检查数据是否已加载
@@ -879,16 +855,30 @@ def register_callbacks(app, backends, history_manager):
                 # logger.debug(f"点击点: {point}")
 
                 if point.get('customdata') is None:
-                    return current_style, no_update, no_update, no_update
-                print(point['customdata'])
-                key_id = point['customdata'][2]
-                key_on = point['customdata'][0]
-                key_off = point['customdata'][1]
-                data_type = point['customdata'][4]
-                index = point['customdata'][5]
-
-                # todo
-                detail_figure1, detail_figure2, detail_figure_combined = backend.generate_watefall_conbine_plot_by_index(index=index, is_record=(data_type=='record'))
+                    return current_style, no_update
+                
+                customdata = point['customdata'][0] if isinstance(point['customdata'], list) and len(point['customdata']) > 0 else point['customdata']
+                
+                # 多算法模式：从customdata中提取算法名称
+                if len(customdata) >= 7:
+                    algorithm_name = customdata[6] if len(customdata) > 6 else None
+                    key_id = customdata[2]
+                    key_on = customdata[0]
+                    key_off = customdata[1]
+                    data_type = customdata[4]
+                    index = customdata[5]
+                    
+                    logger.info(f"🖱️ 多算法模式点击: 算法={algorithm_name}, 索引={index}, 类型={data_type}")
+                    
+                    # 从对应的算法数据中生成详细图表
+                    detail_figure1, detail_figure2, detail_figure_combined = backend.generate_multi_algorithm_detail_plot_by_index(
+                        algorithm_name=algorithm_name,
+                        index=index,
+                        is_record=(data_type=='record')
+                    )
+                else:
+                    logger.warning(f"⚠️ customdata格式不正确，长度={len(customdata)}")
+                    return current_style, no_update
 
                 # 更新模态框样式为显示状态
                 modal_style = {
@@ -904,10 +894,403 @@ def register_callbacks(app, backends, history_manager):
                 }
 
                 logger.info("🔄 显示详细分析模态框")
-                return modal_style, detail_figure1, detail_figure2, detail_figure_combined
+                return modal_style, detail_figure_combined
             else:
                 logger.warning("点击数据格式不正确")
-                return current_style, no_update, no_update, no_update
+                return current_style, no_update
+        
+        # 处理散点图点击（点击超过阈值的点时显示曲线图）
+        elif trigger_id == 'key-delay-scatter-plot' and scatter_clickData:
+            logger.info(f"🔍 散点图点击回调被触发 - scatter_clickData: {scatter_clickData is not None}")
+            
+            if 'points' not in scatter_clickData or len(scatter_clickData['points']) == 0:
+                logger.warning("⚠️ 散点图点击回调 - scatter_clickData无效或没有points")
+                return current_style, no_update
+            
+            point = scatter_clickData['points'][0]
+            logger.info(f"🔍 散点图点击 - 点击点数据: {point}")
+            
+            if not point.get('customdata'):
+                logger.warning("⚠️ 散点图点击 - 点没有customdata")
+                return current_style, no_update
+            
+            # 安全地提取customdata
+            raw_customdata = point['customdata']
+            logger.info(f"🔍 散点图点击 - raw_customdata类型: {type(raw_customdata)}, 值: {raw_customdata}")
+            
+            if isinstance(raw_customdata, list) and len(raw_customdata) > 0:
+                customdata = raw_customdata[0] if isinstance(raw_customdata[0], list) else raw_customdata
+            else:
+                customdata = raw_customdata
+            
+            # 确保customdata是列表类型
+            if not isinstance(customdata, list):
+                logger.warning(f"⚠️ customdata不是列表类型: {type(customdata)}, 值: {customdata}")
+                return current_style, no_update
+            
+            logger.info(f"🔍 散点图点击 - customdata: {customdata}, 长度: {len(customdata)}")
+            
+            # 提取延时值
+            delay_ms = point.get('y')
+            if delay_ms is None:
+                return current_style, no_update
+            
+            # 多算法模式
+            if len(customdata) >= 5:
+                record_index = customdata[0]
+                replay_index = customdata[1]
+                algorithm_name = customdata[4]
+                
+                # 获取该算法的阈值
+                algorithm = backend.multi_algorithm_manager.get_algorithm(algorithm_name)
+                if algorithm and algorithm.analyzer:
+                    me_0_1ms = algorithm.analyzer.get_mean_error()
+                    std_0_1ms = algorithm.analyzer.get_standard_deviation()
+                    mu = me_0_1ms / 10.0
+                    sigma = std_0_1ms / 10.0
+                    upper_threshold = mu + 3 * sigma
+                    lower_threshold = mu - 3 * sigma
+                    
+                    # 检查是否超过阈值
+                    if delay_ms > upper_threshold or delay_ms < lower_threshold:
+                        logger.info(f"🖱️ 散点图点击（超过阈值）: 算法={algorithm_name}, record_index={record_index}, replay_index={replay_index}, delay={delay_ms:.2f}ms")
+                        detail_figure1, detail_figure2, detail_figure_combined = backend.generate_multi_algorithm_scatter_detail_plot_by_indices(
+                            algorithm_name=algorithm_name,
+                            record_index=record_index,
+                            replay_index=replay_index
+                        )
+                        
+                        logger.info(f"🔍 散点图点击回调 - 图表生成结果: figure1={detail_figure1 is not None}, figure2={detail_figure2 is not None}, figure_combined={detail_figure_combined is not None}")
+                        
+                        if detail_figure1 and detail_figure2 and detail_figure_combined:
+                            modal_style = {
+                                'display': 'block',
+                                'position': 'fixed',
+                                'zIndex': '1000',
+                                'left': '0',
+                                'top': '0',
+                                'width': '100%',
+                                'height': '100%',
+                                'backgroundColor': 'rgba(0,0,0,0.6)',
+                                'backdropFilter': 'blur(5px)'
+                            }
+                            logger.info("✅ 散点图点击回调 - 返回模态框和图表")
+                            return modal_style, detail_figure_combined
+                        else:
+                            logger.warning(f"⚠️ 散点图点击回调 - 图表生成失败，部分图表为None")
+                    else:
+                        logger.info(f"ℹ️ 散点图点击 - 点未超过阈值: delay={delay_ms:.2f}ms, 阈值范围=[{lower_threshold:.2f}, {upper_threshold:.2f}]")
+            
+            return current_style, no_update
+        
+        # 处理Z-Score标准化散点图点击（点击任意点时显示曲线图）
+        elif trigger_id == 'key-delay-zscore-scatter-plot' and zscore_scatter_clickData:
+            logger.info(f"🔍 Z-Score标准化散点图点击回调被触发 - zscore_scatter_clickData: {zscore_scatter_clickData is not None}")
+            
+            if 'points' not in zscore_scatter_clickData or len(zscore_scatter_clickData['points']) == 0:
+                logger.warning("⚠️ Z-Score标准化散点图点击回调 - zscore_scatter_clickData无效或没有points")
+                return current_style, no_update
+            
+            point = zscore_scatter_clickData['points'][0]
+            logger.info(f"🔍 Z-Score标准化散点图点击 - 点击点数据: {point}")
+            
+            if not point.get('customdata'):
+                logger.warning("⚠️ Z-Score标准化散点图点击 - 点没有customdata")
+                return current_style, no_update
+            
+            # 安全地提取customdata
+            raw_customdata = point['customdata']
+            logger.info(f"🔍 Z-Score标准化散点图点击 - raw_customdata类型: {type(raw_customdata)}, 值: {raw_customdata}")
+            
+            if isinstance(raw_customdata, list) and len(raw_customdata) > 0:
+                customdata = raw_customdata[0] if isinstance(raw_customdata[0], list) else raw_customdata
+            else:
+                customdata = raw_customdata
+            
+            # 确保customdata是列表类型
+            if not isinstance(customdata, list):
+                logger.warning(f"⚠️ Z-Score标准化散点图点击 - customdata不是列表类型: {type(customdata)}, 值: {customdata}")
+                return current_style, no_update
+            
+            logger.info(f"🔍 Z-Score标准化散点图点击 - customdata: {customdata}, 长度: {len(customdata)}")
+            
+            # 多算法模式：从customdata中提取算法名称和索引
+            if len(customdata) >= 5:
+                record_index = customdata[0]
+                replay_index = customdata[1]
+                algorithm_name = customdata[4]  # Z-Score散点图的customdata格式: [record_index, replay_index, key_id_int, delay_ms, algorithm_name]
+                
+                logger.info(f"🖱️ Z-Score标准化散点图点击: 算法={algorithm_name}, record_index={record_index}, replay_index={replay_index}")
+                
+                # 生成详细曲线图
+                detail_figure1, detail_figure2, detail_figure_combined = backend.generate_multi_algorithm_scatter_detail_plot_by_indices(
+                    algorithm_name=algorithm_name,
+                    record_index=record_index,
+                    replay_index=replay_index
+                )
+                
+                logger.info(f"🔍 Z-Score标准化散点图点击回调 - 图表生成结果: figure1={detail_figure1 is not None}, figure2={detail_figure2 is not None}, figure_combined={detail_figure_combined is not None}")
+                
+                if detail_figure1 and detail_figure2 and detail_figure_combined:
+                    modal_style = {
+                        'display': 'block',
+                        'position': 'fixed',
+                        'zIndex': '1000',
+                        'left': '0',
+                        'top': '0',
+                        'width': '100%',
+                        'height': '100%',
+                        'backgroundColor': 'rgba(0,0,0,0.6)',
+                        'backdropFilter': 'blur(5px)'
+                    }
+                    logger.info("✅ Z-Score标准化散点图点击回调 - 返回模态框和图表")
+                    return modal_style, detail_figure_combined
+                else:
+                    logger.warning(f"⚠️ Z-Score标准化散点图点击回调 - 图表生成失败，部分图表为None")
+            else:
+                logger.warning(f"⚠️ Z-Score标准化散点图点击 - customdata长度不足: {len(customdata)}")
+            
+            return current_style, no_update
+
+        # 处理丢锤表格点击
+        elif 'drop-hammers-table' in str(trigger_id):
+            import json
+            try:
+                logger.info(f"🔍 丢锤表格点击 - 开始处理")
+                logger.info(f"🔍 trigger_value={trigger_value}, active_cells={drop_hammers_active_cells}")
+                
+                # 解析表格ID获取算法名称和表格索引
+                triggered_prop = ctx.triggered[0]['prop_id']
+                table_id_str = triggered_prop.split('.')[0]
+                table_id = json.loads(table_id_str)
+                algorithm_name = table_id.get('index')
+                
+                if not algorithm_name:
+                    logger.warning(f"⚠️ 无法获取算法名称")
+                    return current_style, no_update
+                
+                logger.info(f"🔍 算法名称: {algorithm_name}, triggered_prop={triggered_prop}")
+                
+                # 找到被点击的表格在列表中的索引
+                # 需要从后端获取算法列表，确保表格数据与算法对应
+                active_algorithms = backend.multi_algorithm_manager.get_active_algorithms() if backend.multi_algorithm_manager else []
+                algorithm_names = [alg.metadata.algorithm_name for alg in active_algorithms]
+                
+                # 找到当前算法在列表中的索引
+                if algorithm_name not in algorithm_names:
+                    logger.warning(f"⚠️ 算法 '{algorithm_name}' 不在激活算法列表中")
+                    return current_style, no_update
+                
+                algorithm_idx = algorithm_names.index(algorithm_name)
+                logger.info(f"🔍 算法索引: {algorithm_idx}, 算法名称: {algorithm_name}")
+                
+                # 从对应表格的active_cells中获取active_cell
+                active_cell = None
+                if algorithm_idx < len(drop_hammers_active_cells):
+                    active_cell = drop_hammers_active_cells[algorithm_idx]
+                    logger.info(f"🔍 从active_cells[{algorithm_idx}]获取: {active_cell}")
+                
+                # 如果active_cells中没有，尝试使用trigger_value（但需要验证是否来自正确的表格）
+                if not active_cell and trigger_value and isinstance(trigger_value, dict) and 'row' in trigger_value:
+                    # 验证trigger_value是否来自当前表格
+                    # 由于无法直接验证，我们假设它来自当前表格
+                    active_cell = trigger_value
+                    logger.info(f"🔍 使用trigger_value: {active_cell}")
+                
+                if not active_cell:
+                    logger.warning(f"⚠️ 未找到active_cell, algorithm_idx={algorithm_idx}, active_cells={drop_hammers_active_cells}")
+                    return current_style, no_update
+                
+                row_idx = active_cell.get('row')
+                if row_idx is None:
+                    logger.warning(f"⚠️ active_cell中没有row索引")
+                    return current_style, no_update
+                
+                logger.info(f"🔍 row_idx={row_idx}, algorithm_idx={algorithm_idx}")
+                
+                # 找到对应的表格数据 - 使用已经计算好的algorithm_idx
+                
+                # 通过算法索引获取对应的表格数据
+                if algorithm_idx >= len(drop_hammers_table_data):
+                    logger.warning(f"⚠️ 算法索引 {algorithm_idx} 超出表格数据范围")
+                    return current_style, no_update
+                
+                data_list = drop_hammers_table_data[algorithm_idx]
+                if not data_list or row_idx >= len(data_list):
+                    logger.warning(f"⚠️ 表格数据为空或行索引超出范围: algorithm_idx={algorithm_idx}, row_idx={row_idx}, data_list长度={len(data_list) if data_list else 0}")
+                    return current_style, no_update
+                
+                table_data = data_list[row_idx]
+                logger.info(f"🔍 找到表格数据: algorithm={algorithm_name}, algorithm_idx={algorithm_idx}, row_idx={row_idx}, data={table_data}")
+                
+                row_index = table_data.get('index')
+                data_type = table_data.get('data_type')
+                
+                logger.info(f"🔍 表格数据: row_index={row_index}, data_type={data_type}")
+                
+                # 只处理record类型的行
+                if data_type != 'record' or row_index == '无匹配' or row_index is None:
+                    logger.info(f"ℹ️ 跳过该行: data_type={data_type}, row_index={row_index}")
+                    return current_style, no_update
+                
+                # 获取表格数据中的keyId，用于验证
+                table_key_id = table_data.get('keyId')
+                
+                # 生成图表
+                index = int(row_index)
+                logger.info(f"🔍 生成图表: algorithm={algorithm_name}, index={index}, table_keyId={table_key_id}")
+                
+                detail_figure1, detail_figure2, detail_figure_combined = backend.generate_multi_algorithm_error_detail_plot_by_index(
+                    algorithm_name=algorithm_name,
+                    index=index,
+                    error_type='drop',
+                    expected_key_id=table_key_id  # 传递期望的keyId用于验证
+                )
+                
+                if not detail_figure1 or not detail_figure2 or not detail_figure_combined:
+                    logger.warning(f"⚠️ 图表生成失败")
+                    return current_style, no_update
+                
+                # 返回结果 - 确保样式正确
+                modal_style = {
+                    'display': 'block',
+                    'position': 'fixed',
+                    'zIndex': '1000',
+                    'left': '0',
+                    'top': '0',
+                    'width': '100%',
+                    'height': '100%',
+                    'backgroundColor': 'rgba(0,0,0,0.6)',
+                    'backdropFilter': 'blur(5px)'
+                }
+                
+                logger.info(f"✅ 丢锤表格 - 返回模态框和图表, modal_style={modal_style}")
+                logger.info(f"🔍 图表类型: figure_combined={type(detail_figure_combined)}")
+                return modal_style, detail_figure_combined
+                
+            except Exception as e:
+                logger.error(f"❌ 丢锤表格点击处理失败: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                return current_style, no_update
+        
+        # 处理多锤表格点击
+        elif 'multi-hammers-table' in str(trigger_id):
+            import json
+            try:
+                logger.info(f"🔍 多锤表格点击 - 开始处理")
+                
+                # 解析表格ID获取算法名称和表格索引
+                triggered_prop = ctx.triggered[0]['prop_id']
+                table_id_str = triggered_prop.split('.')[0]
+                table_id = json.loads(table_id_str)
+                algorithm_name = table_id.get('index')
+                
+                if not algorithm_name:
+                    logger.warning(f"⚠️ 无法获取算法名称")
+                    return current_style, no_update
+                
+                logger.info(f"🔍 算法名称: {algorithm_name}, triggered_prop={triggered_prop}")
+                
+                # 找到被点击的表格在列表中的索引
+                # 需要从后端获取算法列表，确保表格数据与算法对应
+                active_algorithms = backend.multi_algorithm_manager.get_active_algorithms() if backend.multi_algorithm_manager else []
+                algorithm_names = [alg.metadata.algorithm_name for alg in active_algorithms]
+                
+                # 找到当前算法在列表中的索引
+                if algorithm_name not in algorithm_names:
+                    logger.warning(f"⚠️ 算法 '{algorithm_name}' 不在激活算法列表中")
+                    return current_style, no_update
+                
+                algorithm_idx = algorithm_names.index(algorithm_name)
+                logger.info(f"🔍 算法索引: {algorithm_idx}, 算法名称: {algorithm_name}")
+                
+                # 从对应表格的active_cells中获取active_cell
+                active_cell = None
+                if algorithm_idx < len(multi_hammers_active_cells):
+                    active_cell = multi_hammers_active_cells[algorithm_idx]
+                    logger.info(f"🔍 从active_cells[{algorithm_idx}]获取: {active_cell}")
+                
+                # 如果active_cells中没有，尝试使用trigger_value（但需要验证是否来自正确的表格）
+                if not active_cell and trigger_value and isinstance(trigger_value, dict) and 'row' in trigger_value:
+                    # 验证trigger_value是否来自当前表格
+                    # 由于无法直接验证，我们假设它来自当前表格
+                    active_cell = trigger_value
+                    logger.info(f"🔍 使用trigger_value: {active_cell}")
+                
+                if not active_cell:
+                    logger.warning(f"⚠️ 未找到active_cell, algorithm_idx={algorithm_idx}, active_cells={multi_hammers_active_cells}")
+                    return current_style, no_update
+                
+                row_idx = active_cell.get('row')
+                if row_idx is None:
+                    logger.warning(f"⚠️ active_cell中没有row索引")
+                    return current_style, no_update
+                
+                logger.info(f"🔍 row_idx={row_idx}, algorithm_idx={algorithm_idx}")
+                
+                # 找到对应的表格数据 - 使用已经计算好的algorithm_idx
+                
+                # 通过算法索引获取对应的表格数据
+                if algorithm_idx >= len(multi_hammers_table_data):
+                    logger.warning(f"⚠️ 算法索引 {algorithm_idx} 超出表格数据范围")
+                    return current_style, no_update
+                
+                data_list = multi_hammers_table_data[algorithm_idx]
+                if not data_list or row_idx >= len(data_list):
+                    logger.warning(f"⚠️ 表格数据为空或行索引超出范围: algorithm_idx={algorithm_idx}, row_idx={row_idx}, data_list长度={len(data_list) if data_list else 0}")
+                    return current_style, no_update
+                
+                table_data = data_list[row_idx]
+                logger.info(f"🔍 找到表格数据: algorithm={algorithm_name}, algorithm_idx={algorithm_idx}, row_idx={row_idx}, data={table_data}")
+                
+                row_index = table_data.get('index')
+                data_type = table_data.get('data_type')
+                
+                # 只处理play类型的行
+                if data_type != 'play' or row_index == '无匹配' or row_index is None:
+                    logger.info(f"ℹ️ 跳过该行: data_type={data_type}, row_index={row_index}")
+                    return current_style, no_update
+                
+                # 获取表格数据中的keyId，用于验证
+                table_key_id = table_data.get('keyId')
+                
+                # 生成图表
+                index = int(row_index)
+                logger.info(f"🔍 生成图表: algorithm={algorithm_name}, index={index}, table_keyId={table_key_id}")
+                
+                detail_figure1, detail_figure2, detail_figure_combined = backend.generate_multi_algorithm_error_detail_plot_by_index(
+                    algorithm_name=algorithm_name,
+                    index=index,
+                    error_type='multi',
+                    expected_key_id=table_key_id  # 传递期望的keyId用于验证
+                )
+                
+                if not detail_figure1 or not detail_figure2 or not detail_figure_combined:
+                    logger.warning(f"⚠️ 图表生成失败")
+                    return current_style, no_update
+                
+                # 返回结果
+                modal_style = {
+                    'display': 'block',
+                    'position': 'fixed',
+                    'zIndex': '1000',
+                    'left': '0',
+                    'top': '0',
+                    'width': '100%',
+                    'height': '100%',
+                    'backgroundColor': 'rgba(0,0,0,0.6)',
+                    'backdropFilter': 'blur(5px)'
+                }
+                
+                logger.info(f"✅ 多锤表格 - 返回模态框和图表")
+                return modal_style, detail_figure_combined
+                
+            except Exception as e:
+                logger.error(f"❌ 多锤表格点击处理失败: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                return current_style, no_update
 
         elif trigger_id in ['close-modal', 'close-modal-btn']:
             # 关闭模态框
@@ -922,10 +1305,10 @@ def register_callbacks(app, backends, history_manager):
                 'backgroundColor': 'rgba(0,0,0,0.6)',
                 'backdropFilter': 'blur(5px)'
             }
-            return modal_style, no_update, no_update, no_update
+            return modal_style, no_update
 
         else:
-            return current_style, no_update, no_update, no_update
+            return current_style, no_update
 
 
     # 修复PDF导出回调，添加加载动画和异常处理
@@ -945,10 +1328,9 @@ def register_callbacks(app, backends, history_manager):
             return no_update
 
         # 检查会话和后端实例
-        if not session_id or session_id not in backends:
+        backend = session_manager.get_backend(session_id)
+        if not backend:
             return dbc.Alert("❌ 会话已过期，请刷新页面", color="warning", duration=3000)
-
-        backend = backends[session_id]
         # 放宽校验：存在任一数据或匹配结果即可导出
         has_data = False
         try:
@@ -1003,10 +1385,13 @@ def register_callbacks(app, backends, history_manager):
             return no_update
 
         # 检查会话和后端实例
-        if not session_id or session_id not in backends:
+        backend = session_manager.get_backend(session_id)
+        if not backend:
             return no_update
 
-        backend = backends[session_id]
+        backend = session_manager.get_backend(session_id)
+        if not backend:
+            return no_update
         # 只要有有效数据即可生成（概览为主，异常页可为空）
         try:
             dm = getattr(backend, 'data_manager', None)
@@ -1073,10 +1458,7 @@ def register_callbacks(app, backends, history_manager):
             return [no_update]
 
         # 检查会话
-        if not session_id or session_id not in backends:
-            return [no_update]
-
-        backend = backends[session_id]
+        backend = session_manager.get_backend(session_id)
         if not backend:
             return [no_update]
 
@@ -1102,10 +1484,9 @@ def register_callbacks(app, backends, history_manager):
     )
     def handle_key_filter(key_filter, show_all_clicks, session_id):
         """处理键ID筛选"""
-        if not session_id or session_id not in backends:
+        backend = session_manager.get_backend(session_id)
+        if not backend:
             return no_update, no_update, no_update, no_update
-        
-        backend = backends[session_id]
         
         # 检查是否有数据（通过DataManager的getter）
         if not backend.data_manager.get_record_data() and not backend.data_manager.get_replay_data():
@@ -1166,10 +1547,9 @@ def register_callbacks(app, backends, history_manager):
     )
     def handle_time_filter(apply_clicks, reset_clicks, session_id, time_range):
         """处理时间轴筛选"""
-        if not session_id or session_id not in backends:
+        backend = session_manager.get_backend(session_id)
+        if not backend:
             return no_update, no_update, no_update
-        
-        backend = backends[session_id]
         
         # 检查是否有数据
         if not hasattr(backend, 'all_error_notes') or not backend.all_error_notes:
@@ -1267,7 +1647,8 @@ def register_callbacks(app, backends, history_manager):
             logger.info("⚠️ 按钮未点击，跳过处理")
             return no_update, no_update, no_update, no_update, no_update, no_update
         
-        if not session_id or session_id not in backends:
+        backend = session_manager.get_backend(session_id)
+        if not backend:
             logger.warning("⚠️ 无效的会话ID")
             return no_update, "无效的会话ID", no_update, no_update, no_update, no_update
         
@@ -1275,7 +1656,9 @@ def register_callbacks(app, backends, history_manager):
             logger.warning("⚠️ 时间范围输入为空")
             return no_update, "请输入有效的时间范围", no_update, no_update, no_update, no_update
         
-        backend = backends[session_id]
+        backend = session_manager.get_backend(session_id)
+        if not backend:
+            return no_update
         
         try:
             logger.info(f"🔄 调用后端更新时间范围: start_time={start_time}, end_time={end_time}")
@@ -1348,11 +1731,14 @@ def register_callbacks(app, backends, history_manager):
         if not n_clicks or n_clicks <= 0:
             return no_update, no_update, no_update, no_update, no_update, no_update
         
-        if not session_id or session_id not in backends:
+        backend = session_manager.get_backend(session_id)
+        if not backend:
             logger.warning("⚠️ 无效的会话ID")
             return no_update, "无效的会话ID", no_update, no_update, no_update, no_update
         
-        backend = backends[session_id]
+        backend = session_manager.get_backend(session_id)
+        if not backend:
+            return no_update
         
         try:
             # 重置显示时间范围
@@ -1394,22 +1780,23 @@ def register_callbacks(app, backends, history_manager):
     )
     def auto_generate_alignment_on_load(report_content, session_id):
         """报告内容加载时，自动生成偏移对齐柱状图与表格"""
-        if not session_id or session_id not in backends:
+        backend = session_manager.get_backend(session_id)
+        if not backend:
             return no_update, no_update
-
-        backend = backends[session_id]
-
+        
         try:
-            if not backend.analyzer:
-                logger.warning("⚠️ 没有分析器，无法生成偏移对齐分析")
-                empty = backend.plot_generator._create_empty_plot("没有分析器")
+            # 检查是否有激活的算法
+            active_algorithms = backend.get_active_algorithms()
+            if not active_algorithms:
+                logger.warning("⚠️ 没有激活的算法，无法生成偏移对齐分析")
+                empty = backend.plot_generator._create_empty_plot("没有激活的算法")
                 return empty, []
-
+            
             fig = backend.generate_offset_alignment_plot()
             table_data = backend.get_offset_alignment_data()
             logger.info("✅ 偏移对齐分析（自动）生成成功")
             return fig, table_data
-
+            
         except Exception as e:
             logger.error(f"❌ 自动生成偏移对齐分析失败: {e}")
             import traceback
@@ -1419,36 +1806,52 @@ def register_callbacks(app, backends, history_manager):
 
     # 按键与延时散点图自动生成回调函数 - 当报告内容加载时自动生成
     @app.callback(
-        Output('key-delay-scatter-plot', 'figure'),
+        [Output('key-delay-scatter-plot', 'figure'),
+         Output('key-delay-zscore-scatter-plot', 'figure')],
         [Input('report-content', 'children')],
         [State('session-id', 'data')],
         prevent_initial_call=True
     )
     def handle_generate_scatter_plot(report_content, session_id):
         """处理按键与延时散点图自动生成 - 当报告内容更新时触发"""
-        if not session_id or session_id not in backends:
-            return no_update
+        backend = session_manager.get_backend(session_id)
+        if not backend:
+            return no_update, no_update
         
-        backend = backends[session_id]
+        backend = session_manager.get_backend(session_id)
+        if not backend:
+            return no_update, no_update
         
         try:
             # 检查是否有分析数据
-            if not backend.analyzer:
+            if not backend.analyzer and not (hasattr(backend, 'multi_algorithm_mode') and backend.multi_algorithm_mode):
                 logger.warning("⚠️ 没有分析器，无法生成散点图")
-                return backend.plot_generator._create_empty_plot("没有分析器")
+                empty = backend.plot_generator._create_empty_plot("没有分析器")
+                return empty, empty
             
             # 生成按键与延时散点图
             fig = backend.generate_key_delay_scatter_plot()
             
-            logger.info("✅ 按键与延时散点图生成成功")
-            return fig
+            # 生成Z-Score标准化散点图
+            zscore_fig = backend.generate_key_delay_zscore_scatter_plot()
+            
+            # 验证Z-Score图表是否正确生成
+            if zscore_fig and hasattr(zscore_fig, 'data') and len(zscore_fig.data) > 0:
+                # 检查第一个数据点的y值是否是Z-Score（应该在-3到3之间，而不是原始的延时值）
+                first_trace = zscore_fig.data[0]
+                if hasattr(first_trace, 'y') and len(first_trace.y) > 0:
+                    first_y = first_trace.y[0] if hasattr(first_trace.y, '__getitem__') else first_trace.y
+                    logger.info(f"🔍 Z-Score图表验证: 第一个数据点的y值={first_y} (应该是Z-Score值，通常在-3到3之间)")
+            
+            logger.info("✅ 按键与延时散点图和Z-Score标准化散点图生成成功")
+            return fig, zscore_fig
             
         except Exception as e:
             logger.error(f"❌ 生成散点图失败: {e}")
             import traceback
             logger.error(traceback.format_exc())
-            
-            return backend.plot_generator._create_empty_plot(f"生成散点图失败: {str(e)}")
+            empty = backend.plot_generator._create_empty_plot(f"生成失败: {str(e)}")
+            return empty, empty
 
     # 锤速与延时散点图自动生成回调函数 - 当报告内容加载时自动生成
     @app.callback(
@@ -1459,16 +1862,16 @@ def register_callbacks(app, backends, history_manager):
     )
     def handle_generate_hammer_velocity_scatter_plot(report_content, session_id):
         """处理锤速与延时散点图自动生成 - 当报告内容更新时触发"""
-        if not session_id or session_id not in backends:
+        backend = session_manager.get_backend(session_id)
+        if not backend:
             return no_update
         
-        backend = backends[session_id]
-        
         try:
-            # 检查是否有分析数据
-            if not backend.analyzer:
-                logger.warning("⚠️ 没有分析器，无法生成散点图")
-                return backend.plot_generator._create_empty_plot("没有分析器")
+            # 检查是否有激活的算法
+            active_algorithms = backend.get_active_algorithms()
+            if not active_algorithms:
+                logger.warning("⚠️ 没有激活的算法，无法生成散点图")
+                return backend.plot_generator._create_empty_plot("没有激活的算法")
             
             # 生成锤速与延时散点图
             fig = backend.generate_hammer_velocity_delay_scatter_plot()
@@ -1568,16 +1971,17 @@ def register_callbacks(app, backends, history_manager):
     )
     def handle_generate_key_hammer_velocity_scatter_plot(report_content, session_id):
         """处理按键与锤速散点图自动生成（颜色表示延时）- 当报告内容更新时触发"""
-        if not session_id or session_id not in backends:
+        backend = session_manager.get_backend(session_id)
+        if not backend:
             return no_update
         
-        backend = backends[session_id]
-        
         try:
-            # 检查是否有分析数据
-            if not backend.analyzer:
-                logger.warning("⚠️ 没有分析器，无法生成散点图")
-                return backend.plot_generator._create_empty_plot("没有分析器")
+            # 检查是否在多算法模式
+            # 检查是否有激活的算法
+            active_algorithms = backend.get_active_algorithms()
+            if not active_algorithms:
+                logger.warning("⚠️ 没有激活的算法，无法生成散点图")
+                return backend.plot_generator._create_empty_plot("没有激活的算法")
             
             # 生成按键与锤速散点图（颜色表示延时）
             fig = backend.generate_key_hammer_velocity_scatter_plot()
@@ -1600,15 +2004,721 @@ def register_callbacks(app, backends, history_manager):
         prevent_initial_call=True
     )
     def handle_generate_delay_histogram(report_content, session_id):
-        if not session_id or session_id not in backends:
+        """处理延时直方图自动生成 - 当报告内容更新时触发"""
+        backend = session_manager.get_backend(session_id)
+        if not backend:
             return no_update
-        backend = backends[session_id]
+        
         try:
+            # 检查是否在多算法模式
+            # 检查是否有激活的算法
+            active_algorithms = backend.get_active_algorithms()
+            if not active_algorithms:
+                logger.warning("⚠️ 没有激活的算法，无法生成延时直方图")
+                return backend.plot_generator._create_empty_plot("没有激活的算法")
+            
             fig = backend.generate_delay_histogram_plot()
+            logger.info("✅ 延时直方图生成成功")
             return fig
         except Exception as e:
             logger.error(f"❌ 生成延时直方图失败: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return backend.plot_generator._create_empty_plot(f"生成直方图失败: {str(e)}")
+
+    # ==================== 多算法对比模式回调 ====================
+    
+    # 多算法模式初始化回调 - 在会话初始化时自动触发
+    @app.callback(
+        [Output('multi-algorithm-upload-area', 'style'),
+         Output('multi-algorithm-upload-area', 'children'),
+         Output('multi-algorithm-management-area', 'style'),
+         Output('multi-algorithm-management-area', 'children'),
+         Output('main-plot', 'figure', allow_duplicate=True),
+         Output('report-content', 'children', allow_duplicate=True)],
+        [Input('session-id', 'data')],
+        prevent_initial_call='initial_duplicate',
+        prevent_duplicate=True
+    )
+    def initialize_multi_algorithm_mode(session_id):
+        """初始化多算法模式 - 确保上传区域和管理区域显示"""
+        logger.info(f"🔄 初始化多算法模式: session_id={session_id}")
+        
+        if not session_id:
+            return no_update, no_update, no_update, no_update, no_update, no_update
+        
+        session_id, backend = session_manager.get_or_create_backend(session_id)
+        if not backend:
+            logger.warning("⚠️ 无法获取backend实例")
+            return no_update, no_update, no_update, no_update, no_update, no_update
+        
+        try:
+            # 多算法模式始终启用
+            # 确保multi_algorithm_manager已初始化
+            if not backend.multi_algorithm_manager:
+                backend._ensure_multi_algorithm_manager()
+            has_existing_data = False
+            existing_filename = None
+            logger.info("✅ 多算法模式已就绪")
+            
+            success = True
+            if success:
+                upload_style = {'display': 'block'}
+                try:
+                    upload_area = create_multi_algorithm_upload_area()
+                    logger.info("✅ 创建多算法上传区域成功")
+                except Exception as e:
+                    logger.error(f"❌ 创建多算法上传区域失败: {e}")
+                    upload_area = html.Div("上传区域创建失败", style={'color': '#dc3545'})
+                
+                management_style = {'display': 'block'}
+                try:
+                    management_area = create_multi_algorithm_management_area()
+                    logger.info("✅ 创建多算法管理区域成功")
+                except Exception as e:
+                    logger.error(f"❌ 创建多算法管理区域失败: {e}")
+                    management_area = html.Div("管理区域创建失败", style={'color': '#dc3545'})
+            else:
+                upload_style = {'display': 'block'}  # 即使失败也显示，让用户知道有问题
+                upload_area = html.Div("多算法模式启用失败", style={'color': '#dc3545'})
+                management_style = {'display': 'block'}
+                management_area = html.Div("多算法模式启用失败", style={'color': '#dc3545'})
+            
+            # 检查是否有激活的算法，更新瀑布图
+            plot_fig = no_update
+            report_content = no_update
+            
+            active_algorithms = backend.get_active_algorithms()
+            if active_algorithms:
+                try:
+                    logger.info(f"🔄 更新瀑布图，共 {len(active_algorithms)} 个激活算法")
+                    plot_fig = backend.generate_waterfall_plot()
+                    report_content = create_report_layout(backend)
+                except Exception as e:
+                    logger.error(f"❌ 更新瀑布图失败: {e}")
+                    plot_fig = _create_empty_figure_for_callback(f"更新失败: {str(e)}")
+                    report_content = html.Div([
+                        html.H4("更新失败", className="text-center text-danger"),
+                        html.P(f"错误信息: {str(e)}", className="text-center")
+                    ])
+            
+            logger.info(f"✅ 多算法模式初始化完成")
+            return upload_style, upload_area, management_style, management_area, plot_fig, report_content
+            
+        except Exception as e:
+            logger.error(f"❌ 初始化多算法模式失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return (
+                {'display': 'block'}, 
+                html.Div("初始化失败", style={'color': '#dc3545'}), 
+                {'display': 'block'}, 
+                html.Div("初始化失败", style={'color': '#dc3545'}), 
+                no_update, 
+                no_update
+            )
+    
+    @app.callback(
+        [Output('multi-algorithm-file-list', 'children'),
+         Output('multi-algorithm-upload-status', 'children'),
+         Output('multi-algorithm-files-store', 'data')],
+        [Input('upload-multi-algorithm-data', 'contents')],
+        [State('upload-multi-algorithm-data', 'filename'),
+         State('session-id', 'data'),
+         State('multi-algorithm-files-store', 'data')],
+        prevent_initial_call=True
+    )
+    def handle_multi_file_upload(contents_list, filename_list, session_id, store_data):
+        """处理多文件上传，显示文件列表供用户输入算法名称"""
+        # 获取后端实例
+        backend = session_manager.get_backend(session_id)
+        if not backend:
+            return no_update, no_update, no_update
+        
+        # 确保多算法模式已启用
+        # 确保multi_algorithm_manager已初始化
+        if not backend.multi_algorithm_manager:
+            backend._ensure_multi_algorithm_manager()
+        
+        # 使用MultiFileUploadHandler处理文件上传
+        upload_handler = MultiFileUploadHandler()
+        return upload_handler.process_uploaded_files(contents_list, filename_list, store_data)
+    
+    @app.callback(
+        Output({'type': 'algorithm-status', 'index': dash.dependencies.MATCH}, 'children'),
+        [Input({'type': 'confirm-algorithm-btn', 'index': dash.dependencies.MATCH}, 'n_clicks')],
+        [State({'type': 'algorithm-name-input', 'index': dash.dependencies.MATCH}, 'value'),
+         State({'type': 'confirm-algorithm-btn', 'index': dash.dependencies.MATCH}, 'id'),
+         State('multi-algorithm-files-store', 'data'),
+         State('session-id', 'data')],
+        prevent_initial_call=True
+    )
+    def confirm_add_algorithm(n_clicks, algorithm_name, button_id, store_data, session_id):
+        """确认添加算法"""
+        if not n_clicks or not algorithm_name or not algorithm_name.strip():
+            return html.Span("请输入算法名称", style={'color': '#ffc107'})
+        
+        # 获取后端实例
+        backend = session_manager.get_backend(session_id)
+        if not backend:
+            return html.Span("会话无效", style={'color': '#dc3545'})
+        
+        # 确保多算法模式已启用
+        # 确保multi_algorithm_manager已初始化
+        if not backend.multi_algorithm_manager:
+            backend._ensure_multi_algorithm_manager()
+        
+        if not store_data or 'contents' not in store_data or 'filenames' not in store_data:
+            return html.Span("文件数据丢失，请重新上传", style={'color': '#dc3545'})
+        
+        try:
+            # 使用MultiFileUploadHandler获取文件数据
+            upload_handler = MultiFileUploadHandler()
+            file_id = button_id['index']
+            file_data = upload_handler.get_file_data_by_id(file_id, store_data)
+            
+            if not file_data:
+                return html.Span("文件数据无效", style={'color': '#dc3545'})
+            
+            content, filename = file_data
+            algorithm_name = algorithm_name.strip()
+            
+            # 异步添加算法
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            success, error_msg = loop.run_until_complete(
+                backend.add_algorithm(algorithm_name, filename, content)
+            )
+            loop.close()
+            
+            if success:
+                # 确保新添加的算法默认显示（is_active 应该已经是 True，但确保一下）
+                algorithm = backend.multi_algorithm_manager.get_algorithm(algorithm_name) if hasattr(backend, 'multi_algorithm_manager') else None
+                if algorithm:
+                    algorithm.is_active = True
+                    logger.info(f"✅ 确保算法 '{algorithm_name}' 默认显示: is_active={algorithm.is_active}")
+                logger.info(f"✅ 算法 '{algorithm_name}' 添加成功")
+                return html.Span("✅ 添加成功", style={'color': '#28a745', 'fontWeight': 'bold'})
+            else:
+                return html.Span(f"❌ {error_msg}", style={'color': '#dc3545'})
+            
+        except Exception as e:
+            logger.error(f"❌ 添加算法失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return html.Span(f"添加失败: {str(e)}", style={'color': '#dc3545'})
+    
+    @app.callback(
+        Output('algorithm-list-trigger', 'data'),
+        [Input({'type': 'algorithm-status', 'index': dash.dependencies.ALL}, 'children'),
+         Input('confirm-migrate-existing-data-btn', 'n_clicks')],
+        [State('session-id', 'data')],
+        prevent_initial_call=True
+    )
+    def trigger_algorithm_list_update(status_children, migrate_clicks, session_id):
+        """当算法状态改变时触发算法列表更新"""
+        import time
+        # 当算法状态改变或迁移按钮被点击时，触发列表更新
+        # 这会在算法添加成功后自动触发，因为 algorithm-status 会更新
+        # status_children 可能是 None 或空列表（当没有算法时），需要处理
+        if status_children is None:
+            status_children = []
+        trigger_value = time.time()
+        logger.info(f"🔄 触发算法列表更新: trigger_value={trigger_value}, status_children数量={len(status_children) if status_children else 0}")
+        return trigger_value
+    
+    @app.callback(
+        [Output('main-plot', 'figure', allow_duplicate=True),
+         Output('report-content', 'children', allow_duplicate=True)],
+        [Input('algorithm-list-trigger', 'data'),
+         Input({'type': 'algorithm-toggle', 'index': dash.dependencies.ALL}, 'value')],
+        [State('session-id', 'data')],
+        prevent_duplicate=True,
+        prevent_initial_call=True
+    )
+    def update_plot_on_algorithm_change(trigger_data, toggle_values, session_id):
+        """当算法添加/删除/切换时，自动更新瀑布图和报告"""
+        backend = session_manager.get_backend(session_id)
+        if not backend:
+            return no_update, no_update
+        
+        # 确保多算法模式已启用
+        # 确保multi_algorithm_manager已初始化
+        if not backend.multi_algorithm_manager:
+            backend._ensure_multi_algorithm_manager()
+        
+        # 检查是否有激活的算法
+        active_algorithms = backend.get_active_algorithms()
+        if not active_algorithms:
+            # 没有激活的算法，显示空图表
+            empty_fig = _create_empty_figure_for_callback("请至少激活一个算法以查看瀑布图")
+            empty_report = html.Div([
+                html.H4("暂无数据", className="text-center text-muted"),
+                html.P("请至少激活一个算法以查看分析报告", className="text-center text-muted")
+            ])
+            return empty_fig, empty_report
+        
+        try:
+            # 生成多算法瀑布图
+            logger.info(f"🔄 更新多算法瀑布图，共 {len(active_algorithms)} 个激活算法")
+            fig = backend.generate_waterfall_plot()
+            
+            # 生成报告内容（多算法模式下的报告）
+            report_content = create_report_layout(backend)
+            
+            logger.info("✅ 多算法瀑布图和报告更新完成")
+            return fig, report_content
+            
+        except Exception as e:
+            logger.error(f"❌ 更新多算法瀑布图失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            error_fig = _create_empty_figure_for_callback(f"更新失败: {str(e)}")
+            error_report = html.Div([
+                html.H4("更新失败", className="text-center text-danger"),
+                html.P(f"错误信息: {str(e)}", className="text-center")
+            ])
+            return error_fig, error_report
+    
+    @app.callback(
+        [Output('existing-data-migration-area', 'style'),
+         Output('existing-data-migration-area', 'children')],
+        [Input('session-id', 'data'),
+         Input('confirm-migrate-existing-data-btn', 'n_clicks')],
+        [State('existing-data-algorithm-name-input', 'value')],
+        prevent_initial_call=True
+    )
+    def handle_existing_data_migration(session_id_trigger, migrate_clicks, algorithm_name):
+        """处理现有数据迁移区域的显示和迁移操作"""
+        logger.info(f"🔄 handle_existing_data_migration: migrate_clicks={migrate_clicks}")
+        
+        # 从 session_id_trigger 获取 session_id（它可能是 None 或实际值）
+        session_id = session_id_trigger if session_id_trigger else None
+        
+        backend = session_manager.get_backend(session_id)
+        if not backend:
+            logger.warning("⚠️ 无法获取backend实例（handle_existing_data_migration）")
+            return {'display': 'none'}, None
+        
+        ctx = callback_context
+        if not ctx.triggered:
+            return {'display': 'none'}, None
+        
+        trigger_id = ctx.triggered[0]['prop_id']
+        logger.info(f"🔍 触发源: {trigger_id}")
+        
+        try:
+            # 如果是会话初始化触发
+            if 'session-id' in trigger_id:
+                # 多算法模式始终启用
+                logger.info("ℹ️ 多算法模式始终启用")
+                
+                # 检查是否有现有分析数据
+                has_existing_data = False
+                existing_filename = None
+                
+                try:
+                    if backend.analyzer and backend.analyzer.note_matcher and hasattr(backend.analyzer, 'matched_pairs') and len(backend.analyzer.matched_pairs) > 0:
+                        has_existing_data = True
+                        data_source_info = backend.get_data_source_info()
+                        existing_filename = data_source_info.get('filename', '未知文件')
+                        logger.info(f"✅ 检测到现有分析数据: {existing_filename}")
+                except Exception as e:
+                    logger.warning(f"⚠️ 检查现有数据时出错: {e}")
+                    has_existing_data = False
+                
+                if has_existing_data:
+                    # 显示迁移提示（按钮和输入框在布局中已定义，通过显示它们）
+                    migration_area = dbc.Alert([
+                        html.H6("检测到现有分析数据", className="mb-2", style={'fontWeight': 'bold'}),
+                        html.P(f"文件: {existing_filename}", style={'fontSize': '14px', 'marginBottom': '10px'}),
+                        html.P("请为这个算法输入名称，以便在多算法模式下进行对比：", style={'fontSize': '14px', 'marginBottom': '10px'}),
+                        html.Div(id='migration-components-placeholder', children=[
+                            html.P("请在下方输入算法名称并点击确认迁移按钮", style={'fontSize': '12px', 'color': '#6c757d'})
+                        ])
+                    ], color='info', className='mb-3')
+                    logger.info("✅ 显示迁移提示区域")
+                    return {'display': 'block'}, migration_area
+                else:
+                    logger.info("ℹ️ 没有现有数据需要迁移")
+                    return {'display': 'none'}, None
+            
+            # 如果是迁移按钮触发
+            elif 'confirm-migrate-existing-data-btn' in trigger_id:
+                if not migrate_clicks or not algorithm_name or not algorithm_name.strip():
+                    return no_update, no_update
+                
+                try:
+                    # 确保multi_algorithm_manager已初始化
+                    if not backend.multi_algorithm_manager:
+                        backend._ensure_multi_algorithm_manager()
+                    
+                    algorithm_name = algorithm_name.strip()
+                    logger.info(f"📤 开始迁移现有数据到算法: {algorithm_name}")
+                    success, error_msg = backend.migrate_existing_data_to_algorithm(algorithm_name)
+                    
+                    if success:
+                        # 隐藏迁移区域
+                        logger.info("✅ 数据迁移成功")
+                        return {'display': 'none'}, None
+                    else:
+                        # 显示错误信息
+                        logger.error(f"❌ 数据迁移失败: {error_msg}")
+                        error_alert = dbc.Alert([
+                            html.H6("迁移失败", className="mb-2", style={'fontWeight': 'bold', 'color': '#dc3545'}),
+                            html.P(f"错误: {error_msg}", style={'fontSize': '14px'})
+                        ], color='danger', className='mb-3')
+                        return no_update, error_alert
+                except Exception as e:
+                    logger.error(f"❌ 迁移数据时发生异常: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    error_alert = dbc.Alert([
+                        html.H6("迁移失败", className="mb-2", style={'fontWeight': 'bold', 'color': '#dc3545'}),
+                        html.P(f"异常: {str(e)}", style={'fontSize': '14px'})
+                    ], color='danger', className='mb-3')
+                    return no_update, error_alert
+            else:
+                # 未知触发源
+                logger.warning(f"⚠️ 未知触发源: {trigger_id}")
+                return {'display': 'none'}, None
+                
+        except Exception as e:
+            logger.error(f"❌ handle_existing_data_migration 发生异常: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {'display': 'none'}, None
+        
+        return {'display': 'none'}, None
+    
+    @app.callback(
+        [Output('algorithm-list', 'children'),
+         Output('algorithm-management-status', 'children')],
+        [Input('algorithm-list-trigger', 'data')],
+        [State('session-id', 'data')],
+        prevent_initial_call=True
+    )
+    def update_algorithm_list(trigger_data, session_id):
+        """更新算法列表显示"""
+        backend = session_manager.get_backend(session_id)
+        if not backend:
+            return [], ""
+        
+        backend = session_manager.get_backend(session_id)
+        if not backend:
+            return [], ""
+        
+        # 确保多算法模式已启用
+        # 确保multi_algorithm_manager已初始化
+        if not backend.multi_algorithm_manager:
+            backend._ensure_multi_algorithm_manager()
+        
+        try:
+            algorithms = backend.get_all_algorithms()
+            
+            if not algorithms:
+                return [], html.Span("暂无算法，请上传文件", style={'color': '#6c757d'})
+            
+            algorithm_items = []
+            for alg_info in algorithms:
+                alg_name = alg_info['algorithm_name']
+                filename = alg_info['filename']
+                status = alg_info['status']
+                # 获取is_active，如果未设置或为None，则默认为True（新上传的文件应该默认显示）
+                is_active = alg_info.get('is_active')
+                if is_active is None:
+                    is_active = True
+                    # 如果is_active为None，确保算法对象中的is_active也被设置为True
+                    algorithm = backend.multi_algorithm_manager.get_algorithm(alg_name) if hasattr(backend, 'multi_algorithm_manager') else None
+                    if algorithm:
+                        algorithm.is_active = True
+                        logger.info(f"✅ 确保算法 '{alg_name}' 默认显示: is_active={is_active}")
+                color = alg_info['color']
+                is_ready = alg_info['is_ready']
+                
+                # 状态图标
+                if status == 'ready' and is_ready:
+                    status_icon = html.I(className="fas fa-check-circle", style={'color': '#28a745', 'marginRight': '5px'})
+                    status_text = "就绪"
+                elif status == 'loading':
+                    status_icon = html.I(className="fas fa-spinner fa-spin", style={'color': '#17a2b8', 'marginRight': '5px'})
+                    status_text = "加载中"
+                elif status == 'error':
+                    status_icon = html.I(className="fas fa-exclamation-circle", style={'color': '#dc3545', 'marginRight': '5px'})
+                    status_text = "错误"
+                else:
+                    status_icon = html.I(className="fas fa-clock", style={'color': '#ffc107', 'marginRight': '5px'})
+                    status_text = "等待中"
+                
+                # 显示/隐藏开关
+                toggle_switch = dbc.Switch(
+                    id={'type': 'algorithm-toggle', 'index': alg_name},
+                    label='显示',
+                    value=is_active,
+                    style={'fontSize': '12px'}
+                )
+                
+                algorithm_items.append(
+                    dbc.Card([
+                        dbc.CardBody([
+                            html.Div([
+                                html.Div([
+                                    html.Span(alg_name, style={'fontWeight': 'bold', 'fontSize': '14px', 'color': color}),
+                                    html.Br(),
+                                    html.Small(filename, style={'color': '#6c757d', 'fontSize': '11px'}),
+                                    html.Br(),
+                                    html.Small([status_icon, status_text], style={'fontSize': '11px'})
+                                ], style={'flex': '1'}),
+                                html.Div([
+                                    toggle_switch,
+                                    dbc.Button("删除", 
+                                             id={'type': 'algorithm-delete-btn', 'index': alg_name},
+                                             color='danger',
+                                             size='sm',
+                                             n_clicks=0,
+                                             style={'marginTop': '5px', 'width': '100%'})
+                                ], style={'marginLeft': '10px'})
+                            ], style={'display': 'flex', 'justifyContent': 'space-between', 'alignItems': 'center'})
+                        ])
+                    ], className='mb-2', style={'border': f'2px solid {color}', 'borderRadius': '5px'})
+                )
+            
+            # 创建算法列表（使用列表而不是Div，保持一致性）
+            algorithm_list = algorithm_items  # 直接返回列表，Dash会自动处理
+            status_text = html.Span(f"共 {len(algorithms)} 个算法", style={'color': '#6c757d'})
+            
+            return algorithm_list, status_text
+            
+        except Exception as e:
+            logger.error(f"❌ 更新算法列表失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return [], html.Span(f"更新失败: {str(e)}", style={'color': '#dc3545'})
+    
+    @app.callback(
+        [Output('algorithm-list', 'children', allow_duplicate=True),
+         Output('algorithm-management-status', 'children', allow_duplicate=True),
+         Output('algorithm-list-trigger', 'data', allow_duplicate=True),
+         Output('multi-algorithm-file-list', 'children', allow_duplicate=True),
+         Output('multi-algorithm-files-store', 'data', allow_duplicate=True)],
+        [Input({'type': 'algorithm-toggle', 'index': dash.dependencies.ALL}, 'value'),
+         Input({'type': 'algorithm-delete-btn', 'index': dash.dependencies.ALL}, 'n_clicks')],
+        [State({'type': 'algorithm-toggle', 'index': dash.dependencies.ALL}, 'id'),
+         State({'type': 'algorithm-delete-btn', 'index': dash.dependencies.ALL}, 'id'),
+         State('session-id', 'data'),
+         State('multi-algorithm-files-store', 'data')],
+        prevent_duplicate=True,
+        prevent_initial_call=True
+    )
+    def handle_algorithm_management(toggle_values, delete_clicks_list, toggle_ids, delete_ids, session_id, store_data):
+        """处理算法管理操作（显示/隐藏、删除）"""
+        backend = session_manager.get_backend(session_id)
+        if not backend:
+            return no_update, no_update, no_update, no_update, no_update
+        
+        # 确保多算法模式已启用
+        # 确保multi_algorithm_manager已初始化
+        if not backend.multi_algorithm_manager:
+            backend._ensure_multi_algorithm_manager()
+        
+        ctx = callback_context
+        if not ctx.triggered:
+            return no_update, no_update, no_update, no_update, no_update
+        
+        trigger_id = ctx.triggered[0]['prop_id']
+        
+        # 标记是否删除了算法，用于更新文件列表
+        algorithm_deleted = False
+        deleted_algorithm_filename = None
+        
+        try:
+            # 解析 trigger_id，格式通常是 '{"type":"...","index":"..."}.property'
+            import json
+            trigger_prop_id = trigger_id.split('.')[0]
+            try:
+                trigger_data = json.loads(trigger_prop_id)
+                algorithm_name = trigger_data.get('index', '')
+            except (json.JSONDecodeError, KeyError):
+                logger.error(f"无法解析 trigger_id: {trigger_id}")
+                return no_update, no_update, no_update, no_update, no_update
+            
+            if 'algorithm-toggle' in trigger_id:
+                # 根据开关的新值设置显示/隐藏状态（而不是切换）
+                # 找到对应的开关索引和值
+                if toggle_values and toggle_ids:
+                    for i, toggle_id in enumerate(toggle_ids):
+                        if toggle_id and toggle_id.get('index') == algorithm_name:
+                            new_value = toggle_values[i] if i < len(toggle_values) else None
+                            if new_value is not None:
+                                # 获取算法对象
+                                algorithm = backend.multi_algorithm_manager.get_algorithm(algorithm_name) if hasattr(backend, 'multi_algorithm_manager') else None
+                                if algorithm:
+                                    # 直接设置为新值，而不是切换
+                                    if algorithm.is_active != new_value:
+                                        algorithm.is_active = new_value
+                                        logger.info(f"✅ 算法 '{algorithm_name}' 显示状态设置为: {'显示' if new_value else '隐藏'}")
+                                    else:
+                                        logger.debug(f"ℹ️ 算法 '{algorithm_name}' 显示状态未变化: {new_value}")
+                            break
+                else:
+                    # 如果找不到对应的开关，使用切换方式（向后兼容）
+                    backend.toggle_algorithm(algorithm_name)
+            elif 'algorithm-delete-btn' in trigger_id:
+                # 删除算法
+                # 检查是否有点击（n_clicks > 0）
+                if delete_clicks_list:
+                    # 找到对应的按钮索引
+                    for i, delete_id in enumerate(delete_ids):
+                        if delete_id and delete_id.get('index') == algorithm_name:
+                            if delete_clicks_list[i] and delete_clicks_list[i] > 0:
+                                # 在删除前获取算法信息，以便从文件列表中移除
+                                algorithms_before = backend.get_all_algorithms()
+                                for alg_info in algorithms_before:
+                                    if alg_info['algorithm_name'] == algorithm_name:
+                                        deleted_algorithm_filename = alg_info.get('filename', '')
+                                        break
+                                
+                                backend.remove_algorithm(algorithm_name)
+                                algorithm_deleted = True
+                                break
+                    else:
+                        return no_update, no_update, no_update, no_update, no_update
+                else:
+                    return no_update, no_update, no_update, no_update, no_update
+            else:
+                return no_update, no_update, no_update, no_update, no_update
+            
+            # 重新获取算法列表
+            algorithms = backend.get_all_algorithms()
+            
+            # 更新文件列表：如果删除了算法，从文件列表中移除对应的文件
+            file_list_children = no_update
+            updated_store_data = no_update
+            
+            if algorithm_deleted and store_data and deleted_algorithm_filename:
+                # 获取所有已添加算法的文件名
+                added_filenames = set()
+                for alg_info in algorithms:
+                    added_filenames.add(alg_info.get('filename', ''))
+                
+                # 从store_data中获取文件列表
+                if 'contents' in store_data and 'filenames' in store_data:
+                    contents_list = store_data.get('contents', [])
+                    filenames_list = store_data.get('filenames', [])
+                    file_ids = store_data.get('file_ids', [])
+                    
+                    # 过滤出未添加的文件
+                    filtered_contents = []
+                    filtered_filenames = []
+                    filtered_file_ids = []
+                    
+                    for i, filename in enumerate(filenames_list):
+                        if filename not in added_filenames:
+                            if i < len(contents_list):
+                                filtered_contents.append(contents_list[i])
+                            filtered_filenames.append(filename)
+                            if i < len(file_ids):
+                                filtered_file_ids.append(file_ids[i])
+                    
+                    # 更新store_data
+                    updated_store_data = {
+                        'contents': filtered_contents,
+                        'filenames': filtered_filenames,
+                        'file_ids': filtered_file_ids
+                    }
+                    
+                    # 重新生成文件列表UI
+                    if filtered_contents and filtered_filenames:
+                        from ui.multi_file_upload_handler import MultiFileUploadHandler
+                        upload_handler = MultiFileUploadHandler()
+                        file_list_children, _, _ = upload_handler.process_uploaded_files(
+                            filtered_contents, 
+                            filtered_filenames, 
+                            updated_store_data
+                        )
+                    else:
+                        # 如果没有文件了，返回空列表
+                        file_list_children = []
+                        updated_store_data = {'contents': [], 'filenames': [], 'file_ids': []}
+            
+            if not algorithms:
+                # 返回空列表和状态文本，以及触发更新
+                import time
+                empty_list = []  # 空列表，而不是 Div
+                status_text = html.Span("暂无算法，请上传文件", style={'color': '#6c757d'})
+                # 如果没有算法了，也清空文件列表
+                if file_list_children == no_update:
+                    file_list_children = []
+                if updated_store_data == no_update:
+                    updated_store_data = {'contents': [], 'filenames': [], 'file_ids': []}
+                return empty_list, status_text, time.time(), file_list_children, updated_store_data
+            
+            algorithm_items = []
+            for alg_info in algorithms:
+                alg_name = alg_info['algorithm_name']
+                filename = alg_info['filename']
+                status = alg_info['status']
+                is_active = alg_info['is_active']
+                color = alg_info['color']
+                is_ready = alg_info['is_ready']
+                
+                if status == 'ready' and is_ready:
+                    status_icon = html.I(className="fas fa-check-circle", style={'color': '#28a745', 'marginRight': '5px'})
+                    status_text = "就绪"
+                elif status == 'loading':
+                    status_icon = html.I(className="fas fa-spinner fa-spin", style={'color': '#17a2b8', 'marginRight': '5px'})
+                    status_text = "加载中"
+                elif status == 'error':
+                    status_icon = html.I(className="fas fa-exclamation-circle", style={'color': '#dc3545', 'marginRight': '5px'})
+                    status_text = "错误"
+                else:
+                    status_icon = html.I(className="fas fa-clock", style={'color': '#ffc107', 'marginRight': '5px'})
+                    status_text = "等待中"
+                
+                toggle_switch = dbc.Switch(
+                    id={'type': 'algorithm-toggle', 'index': alg_name},
+                    label='显示',
+                    value=is_active,
+                    style={'fontSize': '12px'}
+                )
+                
+                algorithm_items.append(
+                    dbc.Card([
+                        dbc.CardBody([
+                            html.Div([
+                                html.Div([
+                                    html.Span(alg_name, style={'fontWeight': 'bold', 'fontSize': '14px', 'color': color}),
+                                    html.Br(),
+                                    html.Small(filename, style={'color': '#6c757d', 'fontSize': '11px'}),
+                                    html.Br(),
+                                    html.Small([status_icon, status_text], style={'fontSize': '11px'})
+                                ], style={'flex': '1'}),
+                                html.Div([
+                                    toggle_switch,
+                                    dbc.Button("删除", 
+                                             id={'type': 'algorithm-delete-btn', 'index': alg_name},
+                                             color='danger',
+                                             size='sm',
+                                             n_clicks=0,
+                                             style={'marginTop': '5px', 'width': '100%'})
+                                ], style={'marginLeft': '10px'})
+                            ], style={'display': 'flex', 'justifyContent': 'space-between', 'alignItems': 'center'})
+                        ])
+                    ], className='mb-2', style={'border': f'2px solid {color}', 'borderRadius': '5px'})
+                )
+            
+            # 创建算法列表（使用列表而不是Div，保持一致性）
+            algorithm_list = algorithm_items  # 直接返回列表，Dash会自动处理
+            status_text = html.Span(f"共 {len(algorithms)} 个算法", style={'color': '#6c757d'})
+            
+            # 更新触发 Store，以便触发算法列表更新
+            import time
+            return algorithm_list, status_text, time.time(), file_list_children, updated_store_data
+            
+        except Exception as e:
+            logger.error(f"❌ 处理算法管理操作失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return no_update, no_update, no_update, no_update, no_update
 

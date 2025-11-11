@@ -74,9 +74,14 @@ class TableDataGenerator:
                     rec = error_note.infos[0]
                     
                 # 获取详细的匹配失败原因
-                analysis_reason = '丢锤（录制有，播放无）'
-                if ('record', rec.index) in failure_reasons:
-                    analysis_reason = failure_reasons[('record', rec.index)]
+                # 优先使用ErrorNote中的reason字段，如果没有则从failure_reasons中获取
+                analysis_reason = getattr(error_note, 'reason', None)
+                # 如果reason是None或空字符串，尝试从failure_reasons中获取
+                if not analysis_reason:
+                    if ('record', rec.index) in failure_reasons:
+                        analysis_reason = failure_reasons[('record', rec.index)]
+                    else:
+                        analysis_reason = ''  # 没有原因就保持为空
                 
                 table_data.append({
                     'global_index': error_note.global_index,
@@ -106,7 +111,14 @@ class TableDataGenerator:
                     play = error_note.infos[0]
                     
                 # 多锤的分析原因
-                analysis_reason = '多锤（播放有，录制无）'
+                # 优先使用ErrorNote中的reason字段，如果没有则从failure_reasons中获取
+                analysis_reason = getattr(error_note, 'reason', None)
+                # 如果reason是None或空字符串，尝试从failure_reasons中获取
+                # 注意：播放数据的失败原因可能不存在，因为匹配是以录制数据为基准的
+                if not analysis_reason:
+                    # 尝试查找对应的录制索引（通过exceeds_threshold_matched_pairs或matched_pairs）
+                    # 但这里没有这些信息，所以保持为空
+                    analysis_reason = ''
                 
                 # 录制行显示"无匹配"
                 table_data.append({

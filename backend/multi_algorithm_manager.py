@@ -1,0 +1,349 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+多算法对比管理器
+
+负责管理多个算法的数据集，支持算法对比分析。
+使用面向对象设计，支持并发处理。
+"""
+
+from typing import Dict, List, Optional, Tuple, Any
+from dataclasses import dataclass, field
+from enum import Enum
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from utils.logger import Logger
+from spmid.spmid_analyzer import SPMIDAnalyzer
+from spmid.spmid_reader import Note
+
+logger = Logger.get_logger()
+
+
+class AlgorithmStatus(Enum):
+    """算法状态枚举"""
+    PENDING = "pending"  # 等待加载
+    LOADING = "loading"  # 正在加载
+    READY = "ready"  # 已就绪
+    ERROR = "error"  # 加载失败
+
+
+@dataclass
+class AlgorithmMetadata:
+    """算法元数据"""
+    algorithm_name: str  # 算法名称（用户自定义或文件名）
+    filename: str  # 原始文件名
+    upload_time: float  # 上传时间戳
+    status: AlgorithmStatus = AlgorithmStatus.PENDING
+    error_message: Optional[str] = None
+
+
+class AlgorithmDataset:
+    """
+    单个算法的数据集类
+    
+    封装单个算法的所有数据、分析结果和统计信息。
+    每个算法实例独立管理自己的分析器。
+    """
+    
+    # 预定义颜色方案（用于图表显示）
+    COLOR_PALETTE = [
+        '#1f77b4',  # 蓝色
+        '#ff7f0e',  # 橙色
+        '#2ca02c',  # 绿色
+        '#d62728',  # 红色
+        '#9467bd',  # 紫色
+        '#8c564b',  # 棕色
+        '#e377c2',  # 粉色
+        '#7f7f7f',  # 灰色
+    ]
+    
+    def __init__(self, algorithm_name: str, filename: str, color_index: int = 0):
+        """
+        初始化算法数据集
+        
+        Args:
+            algorithm_name: 算法名称（用户自定义或基于文件名）
+            filename: 原始文件名
+            color_index: 颜色索引（用于分配图表颜色）
+        """
+        self.metadata = AlgorithmMetadata(
+            algorithm_name=algorithm_name,
+            filename=filename,
+            upload_time=0.0
+        )
+        
+        # 分析器实例
+        self.analyzer: Optional[SPMIDAnalyzer] = None
+        
+        # 显示控制
+        self.color = self.COLOR_PALETTE[color_index % len(self.COLOR_PALETTE)]
+        self.is_active: bool = True  # 是否在对比中显示
+        
+        # 原始数据（用于重新分析）
+        self.record_data: Optional[List[Note]] = None
+        self.replay_data: Optional[List[Note]] = None
+        
+        logger.info(f"✅ AlgorithmDataset初始化: {algorithm_name} (文件: {filename})")
+    
+    def load_data(self, record_data: List[Note], replay_data: List[Note]) -> bool:
+        """
+        加载并分析数据
+        
+        Args:
+            record_data: 录制数据
+            replay_data: 播放数据
+            
+        Returns:
+            bool: 是否成功
+        """
+        try:
+            self.metadata.status = AlgorithmStatus.LOADING
+            
+            # 保存原始数据
+            self.record_data = record_data
+            self.replay_data = replay_data
+            
+            # 创建分析器并执行分析
+            self.analyzer = SPMIDAnalyzer()
+            self.analyzer.analyze(record_data, replay_data)
+            
+            self.metadata.status = AlgorithmStatus.READY
+            logger.info(f"✅ 算法 {self.metadata.algorithm_name} 数据加载完成")
+            return True
+            
+        except Exception as e:
+            self.metadata.status = AlgorithmStatus.ERROR
+            self.metadata.error_message = str(e)
+            logger.error(f"❌ 算法 {self.metadata.algorithm_name} 数据加载失败: {e}")
+            return False
+    
+    def get_statistics(self) -> Dict[str, Any]:
+        """
+        获取统计信息
+        
+        Returns:
+            Dict[str, Any]: 统计信息字典
+        """
+        if not self.analyzer:
+            return {}
+        
+        return {
+            'algorithm_name': self.metadata.algorithm_name,
+            'filename': self.metadata.filename,
+            'offset_statistics': self.analyzer.get_offset_statistics() if self.analyzer.note_matcher else {},
+            'global_average_delay': self.analyzer.get_global_average_delay() if self.analyzer.note_matcher else 0.0,
+            'mean_error': self.analyzer.get_mean_error() if self.analyzer.note_matcher else 0.0,
+            'matched_pairs_count': len(self.analyzer.matched_pairs) if hasattr(self.analyzer, 'matched_pairs') else 0,
+        }
+    
+    def get_offset_alignment_data(self) -> List[Dict[str, Any]]:
+        """
+        获取偏移对齐数据
+        
+        Returns:
+            List[Dict[str, Any]]: 偏移对齐数据列表
+        """
+        if not self.analyzer or not self.analyzer.note_matcher:
+            return []
+        
+        return self.analyzer.note_matcher.get_offset_alignment_data()
+    
+    def is_ready(self) -> bool:
+        """检查算法是否已就绪"""
+        return self.metadata.status == AlgorithmStatus.READY and self.analyzer is not None
+
+
+class MultiAlgorithmManager:
+    """
+    多算法对比管理器类
+    
+    负责管理多个算法数据集，支持：
+    - 添加/删除算法
+    - 并发加载多个算法
+    - 算法状态管理
+    - 算法显示控制
+    """
+    
+    def __init__(self, max_algorithms: int = 4):
+        """
+        初始化多算法管理器
+        
+        Args:
+            max_algorithms: 最大算法数量（需要用户确认）
+        """
+        self.algorithms: Dict[str, AlgorithmDataset] = {}  # algorithm_name -> AlgorithmDataset
+        self.max_algorithms = max_algorithms
+        self.executor = ThreadPoolExecutor(max_workers=max_algorithms)  # 线程池用于并发处理
+        
+        logger.info(f"✅ MultiAlgorithmManager初始化完成 (最大算法数: {max_algorithms})")
+    
+    def get_algorithm_count(self) -> int:
+        """获取当前算法数量"""
+        return len(self.algorithms)
+    
+    def can_add_algorithm(self) -> bool:
+        """检查是否可以添加新算法"""
+        return self.get_algorithm_count() < self.max_algorithms
+    
+    def validate_algorithm_name(self, algorithm_name: str) -> Tuple[bool, str]:
+        """
+        验证算法名称是否有效
+        
+        Args:
+            algorithm_name: 算法名称
+            
+        Returns:
+            Tuple[bool, str]: (是否有效, 错误信息)
+        """
+        if not algorithm_name or not algorithm_name.strip():
+            return False, "算法名称不能为空"
+        
+        algorithm_name = algorithm_name.strip()
+        
+        if algorithm_name in self.algorithms:
+            return False, f"算法名称 '{algorithm_name}' 已存在"
+        
+        return True, ""
+    
+    async def add_algorithm_async(self, algorithm_name: str, filename: str,
+                                  record_data: List[Note], replay_data: List[Note]) -> Tuple[bool, str]:
+        """
+        异步添加算法（支持并发处理）
+        
+        使用 ThreadPoolExecutor 进行并发处理，因为数据分析是 CPU 密集型任务。
+        
+        Args:
+            algorithm_name: 算法名称（必须由用户指定）
+            filename: 文件名
+            record_data: 录制数据
+            replay_data: 播放数据
+            
+        Returns:
+            Tuple[bool, str]: (是否成功, 错误信息)
+        """
+        # 验证算法名称
+        is_valid, error_msg = self.validate_algorithm_name(algorithm_name)
+        if not is_valid:
+            return False, error_msg
+        
+        # 检查是否超过最大数量
+        if not self.can_add_algorithm():
+            return False, f"已达到最大算法数量限制 ({self.max_algorithms})"
+        
+        # 创建算法数据集
+        color_index = len(self.algorithms)
+        algorithm = AlgorithmDataset(algorithm_name, filename, color_index)
+        
+        # 在线程池中执行数据加载（CPU密集型任务，使用线程池更高效）
+        loop = asyncio.get_event_loop()
+        success = await loop.run_in_executor(
+            self.executor,
+            algorithm.load_data,
+            record_data,
+            replay_data
+        )
+        
+        if success:
+            self.algorithms[algorithm_name] = algorithm
+            logger.info(f"✅ 算法 '{algorithm_name}' 添加成功")
+            return True, ""
+        else:
+            error_msg = algorithm.metadata.error_message or "未知错误"
+            logger.error(f"❌ 算法 '{algorithm_name}' 添加失败: {error_msg}")
+            return False, error_msg
+    
+    def remove_algorithm(self, algorithm_name: str) -> bool:
+        """
+        移除算法
+        
+        Args:
+            algorithm_name: 算法名称
+            
+        Returns:
+            bool: 是否成功
+        """
+        if algorithm_name not in self.algorithms:
+            return False
+        
+        del self.algorithms[algorithm_name]
+        logger.info(f"✅ 算法 '{algorithm_name}' 已移除")
+        return True
+    
+    def get_algorithm(self, algorithm_name: str) -> Optional[AlgorithmDataset]:
+        """获取指定算法"""
+        return self.algorithms.get(algorithm_name)
+    
+    def get_all_algorithms(self) -> List[AlgorithmDataset]:
+        """获取所有算法列表"""
+        return list(self.algorithms.values())
+    
+    def get_active_algorithms(self) -> List[AlgorithmDataset]:
+        """获取激活的算法列表（用于对比显示）"""
+        return [alg for alg in self.algorithms.values() if alg.is_active and alg.is_ready()]
+    
+    def toggle_algorithm(self, algorithm_name: str) -> bool:
+        """
+        切换算法的显示/隐藏状态
+        
+        Args:
+            algorithm_name: 算法名称
+            
+        Returns:
+            bool: 是否成功
+        """
+        if algorithm_name not in self.algorithms:
+            return False
+        
+        algorithm = self.algorithms[algorithm_name]
+        algorithm.is_active = not algorithm.is_active
+        logger.info(f"✅ 算法 '{algorithm_name}' 显示状态: {'显示' if algorithm.is_active else '隐藏'}")
+        return True
+    
+    def rename_algorithm(self, old_name: str, new_name: str) -> bool:
+        """
+        重命名算法
+        
+        Args:
+            old_name: 旧名称
+            new_name: 新名称
+            
+        Returns:
+            bool: 是否成功
+        """
+        if old_name not in self.algorithms:
+            return False
+        
+        if new_name in self.algorithms:
+            return False  # 新名称已存在
+        
+        algorithm = self.algorithms.pop(old_name)
+        algorithm.metadata.algorithm_name = new_name
+        self.algorithms[new_name] = algorithm
+        
+        logger.info(f"✅ 算法重命名: '{old_name}' -> '{new_name}'")
+        return True
+    
+    def clear_all(self) -> None:
+        """清空所有算法"""
+        self.algorithms.clear()
+        logger.info("✅ 所有算法已清空")
+    
+    def get_comparison_statistics(self) -> Dict[str, Any]:
+        """
+        获取所有算法的对比统计信息
+        
+        Returns:
+            Dict[str, Any]: 对比统计信息
+        """
+        active_algorithms = self.get_active_algorithms()
+        
+        if not active_algorithms:
+            return {}
+        
+        comparison_data = {}
+        for algorithm in active_algorithms:
+            comparison_data[algorithm.metadata.algorithm_name] = algorithm.get_statistics()
+        
+        return comparison_data
+

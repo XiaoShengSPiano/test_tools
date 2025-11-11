@@ -89,9 +89,10 @@ class SPMIDAnalyzer:
         # 步骤3：执行按键匹配
         self.matched_pairs = self.note_matcher.find_all_matched_pairs(self.valid_record_data, self.valid_replay_data)
         
-        # 步骤4：分析异常
+        # 步骤4：分析异常（传递note_matcher以便识别超过阈值的匹配对）
         self.drop_hammers, self.multi_hammers = self.error_detector.analyze_hammer_issues(
-            self.valid_record_data, self.valid_replay_data, self.matched_pairs
+            self.valid_record_data, self.valid_replay_data, self.matched_pairs,
+            note_matcher=self.note_matcher
         )
         
         # 步骤6：提取正常匹配的音符对

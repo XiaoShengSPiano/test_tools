@@ -333,7 +333,11 @@ def plot_bar_plotly(record, play, time_range=None):
         title=title,
         xaxis=xaxis_config,
         yaxis_title='Key ID (1-88: keys, 89-90: pedals)',
-        yaxis=dict(tickmode='array', tickvals=list(range(1, 91))),
+        yaxis=dict(
+            tickmode='array', 
+            tickvals=list(range(1, 91)),
+            range=[1, 91]  # 设置y轴范围，确保不显示负数（按键ID从1开始）
+        ),
         height=None,
         width=None,
         template='simple_white',
@@ -358,72 +362,105 @@ def plot_bar_plotly(record, play, time_range=None):
 import plotly.graph_objects as go
 import numpy as np
 
-def plot_note_comparison_plotly(record_note, play_note):
+def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None):
     """
     使用 Plotly 绘制音符的触后数据和锤子数据对比图（在同一图中）
     
     参数:
     record_note: 录制音轨数据，如果为None则不绘制录制数据
     play_note: 回放音轨数据，如果为None则不绘制回放数据
+    algorithm_name: 算法名称（可选），用于在标题中显示
     """
     
     # 创建图表
     fig = go.Figure()
     
     # 检查并绘制录制触后数据（线条）
-    if record_note is not None and not record_note.after_touch.empty:
-        fig.add_trace(
-            go.Scatter(
-                x=record_note.after_touch.index,
-                y=record_note.after_touch.values,
-                mode='lines',
-                name='录制触后',
-                line=dict(color='blue', width=3),
-                showlegend=True
-            )
-        )
+    # 注意：
+    # - after_touch.index 和 hammers.index 是相对时间（相对于音符开始），单位是 0.1ms
+    # - note.offset 是绝对时间偏移，单位是 0.1ms
+    # - 实际时间 = (相对时间 + offset) / 10.0，转换为 ms
+    # - after_touch.values: 触后压力值（力度传感器读数）
+    # - hammers.values: 锤子速度值（MIDI 速度）
+    if record_note is not None:
+        try:
+            if hasattr(record_note, 'after_touch') and record_note.after_touch is not None and not record_note.after_touch.empty:
+                # 计算绝对时间：相对时间 + offset，然后转换为 ms
+                x_after_touch = (record_note.after_touch.index + record_note.offset) / 10.0
+                y_after_touch = record_note.after_touch.values  # 触后压力值
+                fig.add_trace(
+                    go.Scatter(
+                        x=x_after_touch,
+                        y=y_after_touch,
+                        mode='lines',
+                        name='录制触后',
+                        line=dict(color='blue', width=3),
+                        showlegend=True,
+                        hovertemplate='时间: %{x:.2f} ms<br>触后压力: %{y}<extra></extra>'
+                    )
+                )
+            
+            # 检查并绘制录制锤子数据（点）
+            if hasattr(record_note, 'hammers') and record_note.hammers is not None and not record_note.hammers.empty:
+                # 计算绝对时间：相对时间 + offset，然后转换为 ms
+                x_hammers = (record_note.hammers.index + record_note.offset) / 10.0
+                y_hammers = record_note.hammers.values  # 锤子速度值
+                fig.add_trace(
+                    go.Scatter(
+                        x=x_hammers,
+                        y=y_hammers,
+                        mode='markers',
+                        name='录制锤子',
+                        marker=dict(color='blue', size=8, symbol='circle'),
+                        showlegend=True,
+                        hovertemplate='时间: %{x:.2f} ms<br>锤子速度: %{y}<extra></extra>'
+                    )
+                )
+        except Exception as e:
+            logger.warning(f"⚠️ 绘制录制数据时出错: {e}")
     
     # 检查并绘制回放触后数据（线条）
-    if play_note is not None and not play_note.after_touch.empty:
-        fig.add_trace(
-            go.Scatter(
-                x=play_note.after_touch.index,
-                y=play_note.after_touch.values,
-                mode='lines',
-                name='回放触后',
-                line=dict(color='red', width=3),
-                showlegend=True
-            )
-        )
-    
-    # 检查并绘制录制锤子数据（点）
-    if record_note is not None and not record_note.hammers.empty:
-        fig.add_trace(
-            go.Scatter(
-                x=record_note.hammers.index,
-                y=record_note.hammers.values,
-                mode='markers',
-                name='录制锤子',
-                marker=dict(color='blue', size=8, symbol='circle'),
-                showlegend=True
-            )
-        )
-    
-    # 检查并绘制回放锤子数据（点）
-    if play_note is not None and not play_note.hammers.empty:
-        fig.add_trace(
-            go.Scatter(
-                x=play_note.hammers.index,
-                y=play_note.hammers.values,
-                mode='markers',
-                name='回放锤子',
-                marker=dict(color='red', size=8, symbol='circle'),
-                showlegend=True
-            )
-        )
+    if play_note is not None:
+        try:
+            if hasattr(play_note, 'after_touch') and play_note.after_touch is not None and not play_note.after_touch.empty:
+                # 计算绝对时间：相对时间 + offset，然后转换为 ms
+                x_after_touch = (play_note.after_touch.index + play_note.offset) / 10.0
+                y_after_touch = play_note.after_touch.values  # 触后压力值
+                fig.add_trace(
+                    go.Scatter(
+                        x=x_after_touch,
+                        y=y_after_touch,
+                        mode='lines',
+                        name='回放触后',
+                        line=dict(color='red', width=3),
+                        showlegend=True,
+                        hovertemplate='时间: %{x:.2f} ms<br>触后压力: %{y}<extra></extra>'
+                    )
+                )
+            
+            # 检查并绘制回放锤子数据（点）
+            if hasattr(play_note, 'hammers') and play_note.hammers is not None and not play_note.hammers.empty:
+                # 计算绝对时间：相对时间 + offset，然后转换为 ms
+                x_hammers = (play_note.hammers.index + play_note.offset) / 10.0
+                y_hammers = play_note.hammers.values  # 锤子速度值
+                fig.add_trace(
+                    go.Scatter(
+                        x=x_hammers,
+                        y=y_hammers,
+                        mode='markers',
+                        name='回放锤子',
+                        marker=dict(color='red', size=8, symbol='circle'),
+                        showlegend=True,
+                        hovertemplate='时间: %{x:.2f} ms<br>锤子速度: %{y}<extra></extra>'
+                    )
+                )
+        except Exception as e:
+            logger.warning(f"⚠️ 绘制回放数据时出错: {e}")
     
     # 生成标题
     title_parts = []
+    if algorithm_name:
+        title_parts.append(f"算法: {algorithm_name}")
     if record_note is not None:
         title_parts.append(f"录制音符ID: {record_note.id}")
     if play_note is not None:
@@ -433,23 +470,52 @@ def plot_note_comparison_plotly(record_note, play_note):
     if title_parts:
         title += f" ({', '.join(title_parts)})"
     
+    # 如果没有任何数据，添加一个提示信息
+    if len(fig.data) == 0:
+        fig.add_annotation(
+            text="无数据可显示",
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, xanchor='center', yanchor='middle',
+            showarrow=False, font_size=16
+        )
+    
     # 更新布局
     fig.update_layout(
-        title=title,
-        xaxis_title='时间 (ms)',
-        yaxis_title='数值',
+        title=dict(
+            text=title,
+            x=0.5,  # 标题居中
+            xanchor='center',
+            font=dict(size=16)
+        ),
+        xaxis=dict(
+            title=dict(text='时间 (ms)', font=dict(size=14)),
+            showgrid=True,
+            showline=True,
+            linewidth=1,
+            linecolor='black',
+            mirror=True
+        ),
+        yaxis=dict(
+            title=dict(text='数值（触后压力/锤子速度）', font=dict(size=14)),
+            showgrid=True,
+            showline=True,
+            linewidth=1,
+            linecolor='black',
+            mirror=True
+        ),
         height=500,
         width=800,
         template='simple_white',
         showlegend=True,
         legend=dict(
             orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1
+            yanchor="top",
+            y=1.10,  # 将图注放在标题正下方（标题在图表上方，图注在标题下方）
+            xanchor="center",
+            x=0.5  # 图注居中，与标题对齐
         ),
-        hovermode='x unified'  # 统一悬停模式
+        hovermode='x unified',  # 统一悬停模式
+        margin=dict(l=60, r=20, t=100, b=60)  # 增加顶部边距，为标题和图注留出足够空间
     )
     
     return fig

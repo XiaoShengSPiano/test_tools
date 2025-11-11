@@ -23,7 +23,9 @@ class HistoryManager:
 
         self._lock = threading.RLock()
         self.init_database()
-        logger.info("✅ HistoryManager初始化完成")
+        # 只在主进程中记录初始化日志（避免Flask debug模式下的重复日志）
+        if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+            logger.info("✅ HistoryManager初始化完成")
 
     def init_database(self):
         """初始化数据库表结构 - 根据实际表结构"""

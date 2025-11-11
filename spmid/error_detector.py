@@ -35,69 +35,129 @@ class ErrorDetector:
         self.silent_hammers: List[ErrorNote] = []
     
     def analyze_hammer_issues(self, record_data: List[Note], replay_data: List[Note], 
-                            matched_pairs: List[Tuple[int, int, Note, Note]]) -> Tuple[List[ErrorNote], List[ErrorNote]]:
+                            matched_pairs: List[Tuple[int, int, Note, Note]],
+                            note_matcher=None) -> Tuple[List[ErrorNote], List[ErrorNote]]:
         """
         分析多锤和丢锤问题
         
         Args:
             record_data: 录制数据
             replay_data: 播放数据
-            matched_pairs: 匹配对列表
+            matched_pairs: 匹配对列表（只包含在阈值内的正常匹配对）
+            note_matcher: 音符匹配器（可选），用于获取超过阈值的匹配对
             
         Returns:
             Tuple[List[ErrorNote], List[ErrorNote]]: (drop_hammers, multi_hammers)
         """
-        # 分析未匹配的音符
-        self._analyze_unmatched_notes(record_data, replay_data, matched_pairs)
+        # 获取超过阈值的匹配对（如果有）
+        exceeds_threshold_matched_pairs = []
+        if note_matcher and hasattr(note_matcher, 'exceeds_threshold_matched_pairs'):
+            exceeds_threshold_matched_pairs = note_matcher.exceeds_threshold_matched_pairs
+        
+        # 分析未匹配的音符（没有最佳配对的按键，直接判断为异常）
+        self._analyze_unmatched_notes(record_data, replay_data, matched_pairs, exceeds_threshold_matched_pairs, note_matcher)
+        
+        # 分析超过阈值的匹配对（即使有最佳配对，但超过阈值，仍然标记为异常）
+        if exceeds_threshold_matched_pairs:
+            self._analyze_exceeds_threshold_pairs(record_data, replay_data, exceeds_threshold_matched_pairs, note_matcher)
         
         return self.drop_hammers, self.multi_hammers
     
     def _analyze_unmatched_notes(self, record_data: List[Note], replay_data: List[Note], 
-                               matched_pairs: List[Tuple[int, int, Note, Note]]) -> None:
+                               matched_pairs: List[Tuple[int, int, Note, Note]],
+                               exceeds_threshold_matched_pairs: List[Tuple[int, int, Note, Note]] = None,
+                               note_matcher=None) -> None:
         """
         分析未匹配的音符，识别丢锤和多锤异常
+        这些是没有最佳配对的按键（完全没有候选或所有候选都被占用），直接判断为异常
         
         Args:
             record_data: 录制数据
             replay_data: 播放数据
-            matched_pairs: 匹配对列表
+            matched_pairs: 匹配对列表（只包含在阈值内的正常匹配对）
+            exceeds_threshold_matched_pairs: 超过阈值但有最佳配对的匹配对列表（可选）
         """
-        # 获取已匹配的索引
+        # 获取已匹配的索引（包括正常匹配和超过阈值的匹配）
         matched_record_indices = {pair[0] for pair in matched_pairs}
         matched_replay_indices = {pair[1] for pair in matched_pairs}
         
+        # 如果提供了超过阈值的匹配对，也要排除这些索引（因为它们会在_analyze_exceeds_threshold_pairs中处理）
+        if exceeds_threshold_matched_pairs:
+            matched_record_indices.update({pair[0] for pair in exceeds_threshold_matched_pairs})
+            matched_replay_indices.update({pair[1] for pair in exceeds_threshold_matched_pairs})
+        
+        # 获取失败原因（从note_matcher中获取，如果有）
+        failure_reasons = {}
+        if note_matcher and hasattr(note_matcher, 'failure_reasons'):
+            failure_reasons = note_matcher.failure_reasons
+        
         # 分析录制数据中未匹配的音符（丢锤）
+        # 这些是没有最佳配对的按键，直接判断为异常
         for i, record_note in enumerate(record_data):
             if i not in matched_record_indices:
-                self._handle_drop_hammer_case(record_note, i)
+                # 尝试从failure_reasons中获取原因（如果有）
+                reason = failure_reasons.get(("record", i), None)
+                self._handle_drop_hammer_case(record_note, i, reason)
         
         # 分析播放数据中未匹配的音符（多锤）
+        # 这些是没有最佳配对的按键，直接判断为异常
         for i, replay_note in enumerate(replay_data):
             if i not in matched_replay_indices:
-                self._handle_multi_hammer_case(replay_note, i)
+                # 尝试从failure_reasons中获取原因（如果有）
+                # 注意：播放数据的失败原因可能不存在，因为匹配是以录制数据为基准的
+                reason = failure_reasons.get(("replay", i), None)
+                self._handle_multi_hammer_case(replay_note, i, reason)
     
-    def _handle_drop_hammer_case(self, note: Note, index: int) -> None:
+    def _analyze_exceeds_threshold_pairs(self, record_data: List[Note], replay_data: List[Note], 
+                                        exceeds_threshold_matched_pairs: List[Tuple[int, int, Note, Note]],
+                                        note_matcher=None) -> None:
+        """
+        分析超过阈值的匹配对，将它们标记为异常
+        
+        Args:
+            record_data: 录制数据
+            replay_data: 播放数据
+            exceeds_threshold_matched_pairs: 超过阈值但有最佳配对的匹配对列表，格式为[(record_index, replay_index, record_note, replay_note), ...]
+            note_matcher: 音符匹配器（可选），用于获取失败原因
+        """
+        for record_index, replay_index, record_note, replay_note in exceeds_threshold_matched_pairs:
+            # 获取失败原因（如果有）
+            # 注意：匹配是以录制数据为基准的，所以原因存储在 ("record", record_index) 中
+            reason = None
+            if note_matcher and hasattr(note_matcher, 'failure_reasons'):
+                reason = note_matcher.failure_reasons.get(("record", record_index), None)
+            
+            # 创建错误音符，标记为"超过阈值"
+            # 对于录制数据，标记为丢锤（超过阈值）
+            self._handle_drop_hammer_case(record_note, record_index, reason)
+            # 对于播放数据，标记为多锤（超过阈值）
+            # 注意：播放数据也使用相同的reason，因为这是同一个匹配对
+            self._handle_multi_hammer_case(replay_note, replay_index, reason)
+    
+    def _handle_drop_hammer_case(self, note: Note, index: int, reason: str = None) -> None:
         """
         处理丢锤情况
         
         Args:
             note: 音符对象
             index: 音符索引
+            reason: 失败原因（可选）
         """
         note_info = self._extract_note_info(note, index)
-        error_note = self._create_error_note_with_stats(note, note_info, "丢锤")
+        error_note = self._create_error_note_with_stats(note, note_info, "丢锤", reason)
         self.drop_hammers.append(error_note)
     
-    def _handle_multi_hammer_case(self, note: Note, index: int) -> None:
+    def _handle_multi_hammer_case(self, note: Note, index: int, reason: str = None) -> None:
         """
         处理多锤情况
         
         Args:
             note: 音符对象
             index: 音符索引
+            reason: 失败原因（可选）
         """
         note_info = self._extract_note_info(note, index)
-        error_note = self._create_error_note_with_stats(note, note_info, "多锤")
+        error_note = self._create_error_note_with_stats(note, note_info, "多锤", reason)
         self.multi_hammers.append(error_note)
     
     def _extract_note_info(self, note: Note, index: int) -> Dict:
@@ -124,7 +184,7 @@ class ErrorDetector:
             'relative_keyoff': note.after_touch.index[-1] + note.offset
         }
     
-    def _create_error_note_with_stats(self, note: Note, note_info: Dict, error_type: str) -> ErrorNote:
+    def _create_error_note_with_stats(self, note: Note, note_info: Dict, error_type: str, reason: str = None) -> ErrorNote:
         """
         创建错误音符对象并添加统计信息
         
@@ -132,11 +192,16 @@ class ErrorDetector:
             note: 音符对象
             note_info: 音符信息字典
             error_type: 错误类型
+            reason: 失败原因（可选）
             
         Returns:
             ErrorNote: 错误音符对象
         """
         from .types import NoteInfo
+        
+        # 如果没有提供原因，保持为空字符串
+        if reason is None:
+            reason = ""
         
         return ErrorNote(
             infos=[NoteInfo(
@@ -147,7 +212,8 @@ class ErrorDetector:
             )],
             diffs=[],
             error_type=error_type,
-            global_index=note_info['index']
+            global_index=note_info['index'],
+            reason=reason
         )
     
     def get_drop_hammers(self) -> List[ErrorNote]:

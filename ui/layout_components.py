@@ -31,12 +31,80 @@ empty_figure.update_layout(
 )
 
 
+def create_multi_algorithm_upload_area():
+    """创建多算法上传区域"""
+    return html.Div([
+        html.Label("多算法上传", style={
+            'fontWeight': 'bold',
+            'color': '#2c3e50',
+            'marginBottom': '10px',
+            'fontSize': '16px'
+        }),
+        dcc.Upload(
+            id='upload-multi-algorithm-data',
+            children=html.Div([
+                html.I(className="fas fa-upload",
+                      style={'fontSize': '32px', 'color': '#28a745', 'marginBottom': '10px'}),
+                html.Br(),
+                html.Span('上传算法文件（支持多选）', style={'fontSize': '14px', 'color': '#6c757d'})
+            ], style={
+                'textAlign': 'center',
+                'padding': '20px',
+                'border': '2px dashed #28a745',
+                'borderRadius': '8px',
+                'backgroundColor': '#f8f9fa',
+                'cursor': 'pointer'
+            }),
+            multiple=True
+        ),
+        html.Div(id='multi-algorithm-upload-status', style={'marginTop': '10px', 'fontSize': '12px'}),
+        # 文件列表区域（上传后显示）
+        html.Div(id='multi-algorithm-file-list', style={'marginTop': '15px'})
+    ])
+
+
+def create_multi_algorithm_management_area():
+    """创建多算法管理区域"""
+    return html.Div([
+        html.Label("📊 算法管理", style={
+            'fontWeight': 'bold',
+            'color': '#2c3e50',
+            'marginBottom': '10px',
+            'fontSize': '16px'
+        }),
+        # 现有数据迁移提示区域（默认隐藏，由回调动态更新）
+        html.Div(id='existing-data-migration-area', style={'display': 'none'}, className='mb-3'),
+        # 迁移相关的组件（始终存在，但默认隐藏，由回调控制显示）
+        dbc.Input(
+            id='existing-data-algorithm-name-input',
+            type='text',
+            placeholder='输入算法名称',
+            style={'display': 'none', 'marginBottom': '10px'}
+        ),
+        dbc.Button(
+            "确认迁移",
+            id='confirm-migrate-existing-data-btn',
+            color='primary',
+            size='sm',
+            n_clicks=0,
+            style={'display': 'none'}
+        ),
+        html.Div(id='algorithm-list', children=[]),
+        html.Div(id='algorithm-management-status', 
+                style={'fontSize': '12px', 'color': '#6c757d', 'marginTop': '10px'})
+    ])
+
+
 
 def create_main_layout():
     """创建主界面布局"""
     return html.Div([
         # 隐藏的会话ID存储
         dcc.Store(id='session-id', storage_type='session'),
+        # 存储多算法上传的文件内容（用于确认添加时获取）
+        dcc.Store(id='multi-algorithm-files-store', data={'contents': [], 'filenames': []}),
+        # 触发算法列表更新的 Store（当算法添加/删除时更新）
+        dcc.Store(id='algorithm-list-trigger', data=0),
 
 
         # 页面标题
@@ -55,36 +123,15 @@ def create_main_layout():
             dbc.Card([
                 dbc.CardBody([
                     dbc.Row([
-                        # 左侧上传区域
+                        # 左侧上传区域（多算法模式，默认显示）
                         dbc.Col([
-                            html.Label("SPMID数据文件", style={
-                                'fontWeight': 'bold',
-                                'color': '#2c3e50',
-                                'marginBottom': '10px',
-                                'fontSize': '16px'
-                            }),
-                            # 文件上传组件
-                            dcc.Upload(
-                                id='upload-spmid-data',
-                                children=html.Div([
-                                    html.I(className="fas fa-cloud-upload-alt",
-                                          style={'fontSize': '48px', 'color': '#007bff', 'marginBottom': '15px'}),
-                                    html.Br(),
-                                    html.Span('拖拽SPMID文件到此处或点击选择文件',
-                                             style={'fontSize': '14px', 'color': '#6c757d'})
-                                ], style={
-                                    'textAlign': 'center',
-                                    'padding': '30px',
-                                    'border': '2px dashed #007bff',
-                                    'borderRadius': '10px',
-                                    'backgroundColor': '#f8f9fa',
-                                    'cursor': 'pointer',
-                                    'transition': 'all 0.3s ease'
-                                }),
-                                multiple=False
-                            ),
-                            html.Div(id='spmid-filename', style={'marginTop': '10px'})
-                        ], width=6),
+                            html.Div(id='multi-algorithm-upload-area', children=create_multi_algorithm_upload_area())
+                        ], width=5),
+
+                        # 中间算法管理区域（多算法模式，默认显示）
+                        dbc.Col([
+                            html.Div(id='multi-algorithm-management-area', children=create_multi_algorithm_management_area())
+                        ], width=3),
 
                         # 右侧历史记录和按钮区域
                         dbc.Col([
@@ -237,9 +284,18 @@ def create_main_layout():
             dcc.Tabs(id="main-tabs", value="waterfall-tab", children=[
                 dcc.Tab(label="🌊 瀑布图分析", value="waterfall-tab", children=[
                     html.Div(id="waterfall-content", style={'padding': '20px'}, children=[
-                        dcc.Graph(id='main-plot', figure=empty_figure, style={
-                            "height": "1000px"
-                        })
+                        dcc.Graph(
+                            id='main-plot', 
+                            figure=empty_figure, 
+                            style={"height": "1500px"},  # 适合一屏显示的高度
+                            config={
+                                'displayModeBar': True,
+                                'displaylogo': False,
+                                'modeBarButtonsToRemove': ['lasso2d', 'select2d'],  # 保留pan2d按钮，支持拖动
+                                'scrollZoom': True,  # 启用鼠标滚轮缩放
+                                'doubleClick': 'reset'  # 双击重置缩放
+                            }
+                        )
                     ]),
                     # 模态框 - 用于显示点击后的详细信息
                     html.Div([
@@ -277,91 +333,36 @@ def create_main_layout():
                                 'alignItems': 'center'
                             }),
 
-                            # 模态框主体 - 左右分布的图表 + 合并图表
+                            # 模态框主体 - 合并对比图表
                             html.Div([
-                                # 第一行：左右分布的图表
-                                html.Div([
-                                    # 左侧图表
-                                    html.Div([
-                                        html.H4("录制数据力度曲线", style={
-                                            'textAlign': 'center',
-                                            'color': '#2c3e50',
-                                            'marginBottom': '15px',
-                                            'fontWeight': 'bold'
-                                        }),
-                                        dcc.Graph(
-                                            id='detail-plot',
-                                            style={'height': '400px'},
-                                            config={
-                                                'displayModeBar': True,
-                                                'displaylogo': False,
-                                                'modeBarButtonsToRemove': ['pan2d', 'lasso2d', 'select2d']
-                                            }
-                                        )
-                                    ], style={
-                                        'width': '48%',
-                                        'float': 'left',
-                                        'padding': '10px'
-                                    }),
-
-                                    # 右侧图表
-                                    html.Div([
-                                        html.H4("回放数据力度曲线", style={
-                                            'textAlign': 'center',
-                                            'color': '#2c3e50',
-                                            'marginBottom': '15px',
-                                            'fontWeight': 'bold'
-                                        }),
-                                        dcc.Graph(
-                                            id='detail-plot2',
-                                            style={'height': '400px'},
-                                            config={
-                                                'displayModeBar': True,
-                                                'displaylogo': False,
-                                                'modeBarButtonsToRemove': ['pan2d', 'lasso2d', 'select2d']
-                                            }
-                                        )
-                                    ], style={
-                                        'width': '48%',
-                                        'float': 'right',
-                                        'padding': '10px'
-                                    }),
-
-                                    # 清除浮动
-                                    html.Div(style={'clear': 'both'})
-                                ]),
-
-                                # 第二行：合并图表
                                 html.Div([
                                     html.H4("合并对比力度曲线", style={
-                                        'textAlign': 'center',
-                                        'color': '#2c3e50',
-                                        'marginTop': '20px',
-                                        'marginBottom': '15px',
-                                        'fontWeight': 'bold'
-                                    }),
-                                    dcc.Graph(
+                                            'textAlign': 'center',
+                                            'color': '#2c3e50',
+                                            'marginBottom': '15px',
+                                            'fontWeight': 'bold'
+                                        }),
+                                        dcc.Graph(
                                         id='detail-plot-combined',
-                                        style={'height': '1200px'},  # 两个图表的总高度
-                                        config={
-                                            'displayModeBar': True,
-                                            'displaylogo': False,
-                                            'modeBarButtonsToRemove': ['pan2d', 'lasso2d', 'select2d']
-                                        }
-                                    )
-                                ], style={
+                                        style={'height': '800px'},
+                                            config={
+                                                'displayModeBar': True,
+                                                'displaylogo': False,
+                                                'modeBarButtonsToRemove': ['pan2d', 'lasso2d', 'select2d']
+                                            }
+                                        )
+                                    ], style={
                                     'width': '100%',
-                                    'padding': '10px'
+                                        'padding': '10px'
                                 })
-
                             ], id='modal-content', className="modal-body", style={
                                 'padding': '20px',
                                 'maxHeight': '90vh',
                                 'overflowY': 'auto'
-                            }),
+                                    }),
 
                             # 模态框底部
-                            html.Div([
+                                    html.Div([
                                 html.Button(
                                     "关闭",
                                     id="close-modal-btn",
@@ -395,7 +396,7 @@ def create_main_layout():
                             'overflow': 'hidden'
                         })
 
-                    ], id="detail-modal", className="modal", style={
+                    ], id="detail-modal-old", className="modal", style={
                         'display': 'none',
                         'position': 'fixed',
                         'zIndex': '1000',
@@ -412,7 +413,96 @@ def create_main_layout():
                     html.Div(id="report-content", style={'padding': '20px'})
                 ])
             ])
-        ], fluid=True)
+        ], fluid=True),
+        # 隐藏的动态组件，用于支持回调（这些组件会在report-content中实际使用）
+                                html.Div([
+            dcc.Graph(id='key-delay-scatter-plot', style={'display': 'none'}),
+            dcc.Graph(id='key-delay-zscore-scatter-plot', style={'display': 'none'}),
+            dcc.Graph(id='hammer-velocity-delay-scatter-plot', style={'display': 'none'}),
+            dcc.Graph(id='key-hammer-velocity-scatter-plot', style={'display': 'none'}),
+        ], style={'display': 'none'}),
+        # 将模态框移到主布局顶层，确保在所有Tab中都能显示
+        html.Div([
+            html.Div([
+                html.Div([
+                    html.Div([
+                        html.H4("详细分析", style={'margin': '0', 'padding': '15px 20px', 'borderBottom': '1px solid #dee2e6'}),
+                        html.Button("×", id="close-modal", className="close", style={
+                            'position': 'absolute',
+                            'right': '15px',
+                            'top': '15px',
+                            'fontSize': '28px',
+                            'fontWeight': 'bold',
+                            'background': 'none',
+                            'border': 'none',
+                            'cursor': 'pointer',
+                            'color': '#aaa'
+                        })
+                    ], style={'position': 'relative', 'borderBottom': '1px solid #dee2e6'}),
+                    html.Div([
+                        html.Div([
+                                    dcc.Graph(
+                                        id='detail-plot-combined',
+                                style={'height': '800px'},
+                                        config={
+                                            'displayModeBar': True,
+                                            'displaylogo': False,
+                                            'modeBarButtonsToRemove': ['pan2d', 'lasso2d', 'select2d']
+                                        }
+                                    )
+                                ], style={
+                                    'width': '100%',
+                                    'padding': '10px'
+                                })
+                            ], id='modal-content', className="modal-body", style={
+                                'padding': '20px',
+                                'maxHeight': '90vh',
+                                'overflowY': 'auto'
+                            }),
+                            html.Div([
+                                html.Button(
+                                    "关闭",
+                                    id="close-modal-btn",
+                                    className="btn btn-primary",
+                                    style={
+                                        'backgroundColor': '#007bff',
+                                        'borderColor': '#007bff',
+                                        'padding': '8px 20px',
+                                        'borderRadius': '5px',
+                                        'border': 'none',
+                                        'color': 'white',
+                                        'cursor': 'pointer'
+                                    }
+                                )
+                            ], className="modal-footer", style={
+                                'borderTop': '1px solid #dee2e6',
+                                'padding': '15px 20px',
+                                'textAlign': 'right'
+                            })
+                        ], className="modal-content", style={
+                            'backgroundColor': 'white',
+                            'margin': '1% auto',
+                            'padding': '0',
+                            'border': 'none',
+                            'width': '95%',
+                            'maxWidth': '1600px',
+                            'borderRadius': '10px',
+                            'boxShadow': '0 4px 20px rgba(0,0,0,0.3)',
+                            'maxHeight': '98vh',
+                            'overflow': 'hidden'
+                        })
+                    ], id="detail-modal", className="modal", style={
+                        'display': 'none',
+                        'position': 'fixed',
+                'zIndex': '9999',
+                        'left': '0',
+                        'top': '0',
+                        'width': '100%',
+                        'height': '100%',
+                        'backgroundColor': 'rgba(0,0,0,0.6)',
+                        'backdropFilter': 'blur(5px)'
+            })
+        ])
 
     ], style={
         'fontFamily': 'Arial, sans-serif',
@@ -421,68 +511,550 @@ def create_main_layout():
     })
 
 
-def create_report_layout(backend):
-    """创建完整的报告分析布局"""
-    summary = backend.get_summary_info()
-    source_info = backend.get_data_source_info()
-    data_source = source_info.get('filename') or "未知数据源"
-
-    # 计算延时误差统计指标（用于在数据概览下方显示）
-    try:
-        # 概览页的“平均延时”采用绝对值口径：使用 MAE 作为平均延时
-        mae_0_1ms_for_avg = backend.get_mean_absolute_error()
-        average_delay_ms = mae_0_1ms_for_avg / 10.0
-    except Exception:
-        average_delay_ms = 0.0
+def _create_single_algorithm_overview_row(algorithm, algorithm_name):
+    """为单个算法创建数据概览行（不包含卡片，只返回行内容）"""
+    from utils.logger import Logger
+    logger = Logger.get_logger()
     
-    # 计算已配对按键的方差（ms²）
     try:
-        # 后端返回单位为(0.1ms)²，这里转换为ms²需要除以100
-        variance_0_1ms_squared = backend.get_variance()
+        # 获取算法的统计数据
+        if not algorithm.analyzer:
+            return None
+        
+        # 计算基础统计
+        # 使用初始有效数据（第一次过滤后）来计算总有效音符数，这样才能正确反映准确率
+        initial_valid_record = getattr(algorithm.analyzer, 'initial_valid_record_data', None)
+        initial_valid_replay = getattr(algorithm.analyzer, 'initial_valid_replay_data', None)
+        
+        total_valid_record = len(initial_valid_record) if initial_valid_record else 0
+        total_valid_replay = len(initial_valid_replay) if initial_valid_replay else 0
+        
+        # 获取匹配对和错误统计
+        matched_pairs = algorithm.analyzer.matched_pairs if hasattr(algorithm.analyzer, 'matched_pairs') else []
+        drop_hammers = algorithm.analyzer.drop_hammers if hasattr(algorithm.analyzer, 'drop_hammers') else []
+        multi_hammers = algorithm.analyzer.multi_hammers if hasattr(algorithm.analyzer, 'multi_hammers') else []
+        
+        # 计算准确率
+        # 公式：成功匹配的音符对数 * 2 / (初始有效录制音符数 + 初始有效播放音符数) * 100
+        matched_count = len(matched_pairs)
+        total_valid = total_valid_record + total_valid_replay
+        accuracy = (matched_count * 2 / total_valid * 100) if total_valid > 0 else 0.0
+        
+        # 生成数据概览行（带算法名称标识）
+        overview_row = html.Div([
+            dbc.Row([
+                dbc.Col([
+                    html.Div([
+                        html.Small(f"算法: {algorithm_name}", className="text-muted", style={'fontSize': '12px', 'fontWeight': 'bold', 'display': 'block', 'marginBottom': '8px'})
+                    ])
+                ], width=12)
+            ], className="mb-2"),
+                            dbc.Row([
+                                dbc.Col([
+                                    html.Div([
+                        html.H3(f"{accuracy:.1f}%", className="text-success mb-1"),
+                                        html.P("准确率", className="text-muted mb-0"),
+                                        html.Small("成功匹配音符数/总有效音符数", className="text-muted", style={'fontSize': '10px'})
+                                    ], className="text-center")
+                                ], width=3),
+                                dbc.Col([
+                                    html.Div([
+                        html.H3(f"{len(drop_hammers)}", className="text-warning mb-1"),
+                                        html.P("丢锤数", className="text-muted mb-0"),
+                                        html.Small("录制有但播放没有", className="text-muted", style={'fontSize': '10px'})
+                                    ], className="text-center")
+                                ], width=3),
+                                dbc.Col([
+                                    html.Div([
+                        html.H3(f"{len(multi_hammers)}", className="text-info mb-1"),
+                                        html.P("多锤数", className="text-muted mb-0"),
+                                        html.Small("播放有但录制没有", className="text-muted", style={'fontSize': '10px'})
+                                    ], className="text-center")
+                                ], width=3),
+                                dbc.Col([
+                                    html.Div([
+                        html.H3(f"{matched_count}", className="text-secondary mb-1"),
+                                        html.P("已配对音符数", className="text-muted mb-0"),
+                                        html.Small("成功匹配的record-play配对数量", className="text-muted", style={'fontSize': '10px'})
+                                    ], className="text-center")
+                                ], width=3)
+            ], className="mb-3")
+        ], className="mb-3", style={'borderBottom': '1px solid #dee2e6', 'paddingBottom': '15px'})
+        
+        return overview_row
+        
+    except Exception as e:
+        logger.error(f"❌ 获取算法 '{algorithm_name}' 的数据概览失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return None
+
+
+def _create_single_algorithm_error_stats_row(algorithm, algorithm_name):
+    """为单个算法创建延时误差统计指标行（不包含卡片，只返回行内容）"""
+    from utils.logger import Logger
+    logger = Logger.get_logger()
+    
+    try:
+        # 获取算法的统计数据
+        if not algorithm.analyzer:
+            return None
+        
+        # 计算延时误差统计指标
+        mae_0_1ms = algorithm.analyzer.get_mean_absolute_error() if hasattr(algorithm.analyzer, 'get_mean_absolute_error') else 0.0
+        variance_0_1ms_squared = algorithm.analyzer.get_variance() if hasattr(algorithm.analyzer, 'get_variance') else 0.0
+        std_0_1ms = algorithm.analyzer.get_standard_deviation() if hasattr(algorithm.analyzer, 'get_standard_deviation') else 0.0
+        me_0_1ms = algorithm.analyzer.get_mean_error() if hasattr(algorithm.analyzer, 'get_mean_error') else 0.0
+        
+        average_delay_ms = mae_0_1ms / 10.0
         variance_ms_squared = variance_0_1ms_squared / 100.0
-    except Exception:
-        variance_ms_squared = 0.0
-    
-    # 计算已配对按键的标准差（ms）
-    try:
-        # 后端返回单位为0.1ms，这里转换为ms需要除以10
-        std_0_1ms = backend.get_standard_deviation()
         std_ms = std_0_1ms / 10.0
-    except Exception:
-        std_ms = 0.0
-    
-    # 计算平均绝对误差（MAE，ms）
-    try:
-        # 后端返回单位为0.1ms，这里转换为ms需要除以10
-        mae_0_1ms = backend.get_mean_absolute_error()
         mae_ms = mae_0_1ms / 10.0
-    except Exception:
-        mae_ms = 0.0
-    
-    # 计算均方误差（MSE，ms²）
-    try:
-        # 后端返回单位为(0.1ms)²，这里转换为ms²需要除以100
-        mse_0_1ms_squared = backend.get_mean_squared_error()
-        mse_ms_squared = mse_0_1ms_squared / 100.0
-    except Exception:
-        mse_ms_squared = 0.0
-    
-    # 计算平均误差（ME，ms，带符号）
-    try:
-        # 后端返回单位为0.1ms，这里转换为ms需要除以10
-        me_0_1ms = backend.get_mean_error()
         me_ms = me_0_1ms / 10.0
-    except Exception:
-        me_ms = 0.0
-    
-    
+        
+        # 生成延时误差统计指标行（带算法名称标识）
+        error_stats_row = html.Div([
+                            dbc.Row([
+                                dbc.Col([
+                                    html.Div([
+                        html.Small(f"算法: {algorithm_name}", className="text-muted", style={'fontSize': '12px', 'fontWeight': 'bold', 'display': 'block', 'marginBottom': '8px'})
+                    ])
+                ], width=12)
+            ], className="mb-2"),
+            dbc.Row([
+                dbc.Col([
+                    html.Div([
+                        html.H3(f"{me_ms:.2f} ms", className="text-secondary mb-1"),
+                        html.P("总体均值", className="text-muted mb-0"),
+                        html.Small("所有已匹配按键对的keyon_offset的算术平均", className="text-muted", style={'fontSize': '10px'})
+                                    ], className="text-center")
+                                ], width=3),
+                                dbc.Col([
+                                    html.Div([
+                                        html.H3(f"{variance_ms_squared:.2f} ms²", className="text-danger mb-1"),
+                                        html.P("总体方差", className="text-muted mb-0"),
+                                        html.Small("所有已匹配按键对的keyon_offset的总体方差", className="text-muted", style={'fontSize': '10px'})
+                                    ], className="text-center")
+                                ], width=3),
+                                dbc.Col([
+                                    html.Div([
+                                        html.H3(f"{std_ms:.2f} ms", className="text-info mb-1"),
+                                        html.P("总体标准差", className="text-muted mb-0"),
+                                        html.Small("所有已匹配按键对的keyon_offset的总体标准差", className="text-muted", style={'fontSize': '10px'})
+                                    ], className="text-center")
+                                ], width=3),
+                dbc.Col([
+                    html.Div([
+                        html.H3(f"{average_delay_ms:.2f} ms", className="text-primary mb-1"),
+                        html.P("平均延时（绝对值口径，等同MAE）", className="text-muted mb-0"),
+                        html.Small("平均(|keyon_offset|)，用于衡量误差大小，避免正负抵消", className="text-muted", style={'fontSize': '10px'})
+                    ], className="text-center")
+                ], width=3)
+            ], className="mb-3"),
+            dbc.Row([
+                                dbc.Col([
+                                    html.Div([
+                                        html.H3(f"{mae_ms:.2f} ms", className="text-warning mb-1"),
+                                        html.P("平均绝对误差(MAE)", className="text-muted mb-0"),
+                                        html.Small("已匹配按键对的延时绝对值的平均", className="text-muted", style={'fontSize': '10px'})
+                                    ], className="text-center")
+                ], width=3),
+                dbc.Col([], width=9)  # 占位，保持布局平衡
+            ])
+        ], className="mb-3", style={'borderBottom': '1px solid #dee2e6', 'paddingBottom': '15px'})
+        
+        return error_stats_row
+        
+    except Exception as e:
+        logger.error(f"❌ 获取算法 '{algorithm_name}' 的延时误差统计指标失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return None
 
+
+def _create_single_algorithm_error_tables(algorithm, algorithm_name):
+    """
+    为单个算法创建丢锤和多锤问题表格
+    
+    Args:
+        algorithm: AlgorithmDataset实例
+        algorithm_name: 算法名称
+        
+    Returns:
+        Tuple[html.Div, html.Div]: (丢锤表格区域, 多锤表格区域)
+    """
+    from utils.logger import Logger
+    logger = Logger.get_logger()
+    
+    try:
+        if not algorithm.analyzer:
+            return None, None
+        
+        # 获取错误数据（ErrorNote对象列表）
+        drop_hammers = algorithm.analyzer.drop_hammers if hasattr(algorithm.analyzer, 'drop_hammers') else []
+        multi_hammers = algorithm.analyzer.multi_hammers if hasattr(algorithm.analyzer, 'multi_hammers') else []
+        
+        # 获取匹配失败原因（用于更详细的分析）
+        failure_reasons = {}
+        if algorithm.analyzer and hasattr(algorithm.analyzer, 'note_matcher'):
+            failure_reasons = getattr(algorithm.analyzer.note_matcher, 'failure_reasons', {})
+        
+        # 转换为表格数据格式
+        drop_hammers_data = []
+        for error_note in drop_hammers:
+            # ErrorNote对象包含infos列表，每个元素是NoteInfo对象
+            if len(error_note.infos) > 0:
+                rec = error_note.infos[0]  # 获取第一个NoteInfo对象
+                
+                # 获取详细的匹配失败原因
+                analysis_reason = '丢锤（录制有，播放无）'
+                if ('record', rec.index) in failure_reasons:
+                    analysis_reason = failure_reasons[('record', rec.index)]
+                
+                # NoteInfo的keyOn和keyOff单位是0.1ms，需要除以10转换为ms
+                row = {
+                    'data_type': 'record',
+                    'keyId': rec.keyId,
+                    'keyOn': f"{rec.keyOn/10:.2f}",
+                    'keyOff': f"{rec.keyOff/10:.2f}",
+                    'index': rec.index,
+                    'analysis_reason': analysis_reason
+                }
+                drop_hammers_data.append(row)
+                
+                # 播放行显示"无匹配"
+                drop_hammers_data.append({
+                    'data_type': 'play',
+                    'keyId': '无匹配',
+                    'keyOn': '无匹配',
+                    'keyOff': '无匹配',
+                    'index': '无匹配',
+                    'analysis_reason': ''
+                })
+        
+        multi_hammers_data = []
+        for error_note in multi_hammers:
+            # ErrorNote对象包含infos列表，每个元素是NoteInfo对象
+            if len(error_note.infos) > 0:
+                play = error_note.infos[0]  # 获取第一个NoteInfo对象
+                
+                # 多锤的分析原因
+                analysis_reason = '多锤（播放有，录制无）'
+                
+                # 录制行显示"无匹配"
+                multi_hammers_data.append({
+                    'data_type': 'record',
+                    'keyId': '无匹配',
+                    'keyOn': '无匹配',
+                    'keyOff': '无匹配',
+                    'index': '无匹配',
+                    'analysis_reason': ''
+                })
+                
+                # 播放行显示实际数据
+                # NoteInfo的keyOn和keyOff单位是0.1ms，需要除以10转换为ms
+                row = {
+                    'data_type': 'play',
+                    'keyId': play.keyId,
+                    'keyOn': f"{play.keyOn/10:.2f}",
+                    'keyOff': f"{play.keyOff/10:.2f}",
+                    'index': play.index,
+                    'analysis_reason': analysis_reason
+                }
+                multi_hammers_data.append(row)
+        
+        # 创建丢锤表格
+        drop_hammers_table = html.Div([
+            dbc.Row([
+                dbc.Col([
+                    html.H6(f"丢锤问题列表 - {algorithm_name}", className="mb-2",
+                           style={'color': '#721c24', 'fontWeight': 'bold', 'fontSize': '16px', 'borderBottom': '2px solid #721c24', 'paddingBottom': '5px'}),
+                ], width=12)
+            ]),
+            dash_table.DataTable(
+                id={'type': 'drop-hammers-table', 'index': algorithm_name},
+                columns=[
+                    {"name": "数据类型", "id": "data_type"},
+                    {"name": "键位ID", "id": "keyId"},
+                    {"name": "按下时间(ms)", "id": "keyOn"},
+                    {"name": "释放时间(ms)", "id": "keyOff"},
+                    {"name": "index", "id": "index"},
+                    {"name": "未匹配原因", "id": "analysis_reason"},
+                ],
+                data=drop_hammers_data,
+                page_action='none',
+                style_cell={
+                    'textAlign': 'center',
+                    'fontSize': '13px',
+                    'fontFamily': 'Arial, sans-serif',
+                    'padding': '8px',
+                    'overflow': 'hidden',
+                    'textOverflow': 'ellipsis',
+                    'minWidth': '70px',
+                },
+                style_cell_conditional=[
+                    {'if': {'column_id': 'data_type'}, 'width': '14%'},
+                    {'if': {'column_id': 'keyId'}, 'width': '12%'},
+                    {'if': {'column_id': 'keyOn'}, 'width': '16%'},
+                    {'if': {'column_id': 'keyOff'}, 'width': '16%'},
+                    {'if': {'column_id': 'index'}, 'width': '10%'},
+                    {'if': {'column_id': 'analysis_reason'}, 'width': '32%'},
+                ],
+                style_header={
+                    'backgroundColor': '#f8d7da',
+                    'fontWeight': 'bold',
+                    'border': '2px solid #dee2e6',
+                    'fontSize': '14px',
+                    'color': '#721c24',
+                    'textAlign': 'center',
+                    'padding': '10px',
+                    'whiteSpace': 'normal',
+                    'height': 'auto'
+                },
+                style_data={
+                    'border': '1px solid #dee2e6',
+                    'fontSize': '13px',
+                    'padding': '8px'
+                },
+                style_data_conditional=[
+                    {
+                        'if': {'filter_query': '{data_type} = record'},
+                        'fontWeight': 'bold',
+                        'backgroundColor': '#ffeaea'
+                    },
+                    {
+                        'if': {'row_index': 'odd'},
+                        'backgroundColor': '#fafafa'
+                    }
+                ],
+                row_selectable=False,
+                sort_action="native",
+                filter_action="none",
+                style_table={
+                    'height': '300px',
+                    'overflowY': 'auto',
+                    'overflowX': 'auto',
+                    'border': '2px solid #dee2e6',
+                    'borderRadius': '8px',
+                    'minHeight': '150px'
+                }
+            ),
+        ], style={'backgroundColor': '#ffffff', 'padding': '15px', 'borderRadius': '8px', 'boxShadow': '0 2px 6px rgba(0,0,0,0.1)', 'marginBottom': '15px'})
+        
+        # 创建多锤表格
+        multi_hammers_table = html.Div([
+                            dbc.Row([
+                                dbc.Col([
+                    html.H6(f"多锤问题列表 - {algorithm_name}", className="mb-2",
+                           style={'color': '#856404', 'fontWeight': 'bold', 'fontSize': '16px', 'borderBottom': '2px solid #856404', 'paddingBottom': '5px'}),
+                ], width=12)
+            ]),
+            dash_table.DataTable(
+                id={'type': 'multi-hammers-table', 'index': algorithm_name},
+                columns=[
+                    {"name": "数据类型", "id": "data_type"},
+                    {"name": "键位ID", "id": "keyId"},
+                    {"name": "按下时间(ms)", "id": "keyOn"},
+                    {"name": "释放时间(ms)", "id": "keyOff"},
+                    {"name": "index", "id": "index"},
+                    {"name": "未匹配原因", "id": "analysis_reason"},
+                ],
+                data=multi_hammers_data,
+                page_action='none',
+                style_cell={
+                    'textAlign': 'center',
+                    'fontSize': '13px',
+                    'fontFamily': 'Arial, sans-serif',
+                    'padding': '8px',
+                    'overflow': 'hidden',
+                    'textOverflow': 'ellipsis',
+                    'minWidth': '70px',
+                },
+                style_cell_conditional=[
+                    {'if': {'column_id': 'data_type'}, 'width': '14%'},
+                    {'if': {'column_id': 'keyId'}, 'width': '12%'},
+                    {'if': {'column_id': 'keyOn'}, 'width': '16%'},
+                    {'if': {'column_id': 'keyOff'}, 'width': '16%'},
+                    {'if': {'column_id': 'index'}, 'width': '10%'},
+                    {'if': {'column_id': 'analysis_reason'}, 'width': '32%'},
+                ],
+                style_header={
+                    'backgroundColor': '#fff3cd',
+                    'fontWeight': 'bold',
+                    'border': '2px solid #dee2e6',
+                    'fontSize': '14px',
+                    'color': '#856404',
+                    'textAlign': 'center',
+                    'padding': '10px',
+                    'whiteSpace': 'normal',
+                    'height': 'auto'
+                },
+                style_data={
+                    'border': '1px solid #dee2e6',
+                    'fontSize': '13px',
+                    'padding': '8px'
+                },
+                style_data_conditional=[
+                    {
+                        'if': {'filter_query': '{data_type} = play'},
+                        'backgroundColor': '#fffef5'
+                    },
+                    {
+                        'if': {'row_index': 'odd'},
+                        'backgroundColor': '#fafafa'
+                    }
+                ],
+                row_selectable=False,
+                sort_action="native",
+                filter_action="none",
+                style_table={
+                    'height': '300px',
+                    'overflowY': 'auto',
+                    'overflowX': 'auto',
+                    'border': '2px solid #dee2e6',
+                    'borderRadius': '8px',
+                    'minHeight': '150px'
+                }
+            ),
+        ], style={'backgroundColor': '#ffffff', 'padding': '15px', 'borderRadius': '8px', 'boxShadow': '0 2px 6px rgba(0,0,0,0.1)', 'marginBottom': '15px'})
+        
+        return drop_hammers_table, multi_hammers_table
+        
+    except Exception as e:
+        logger.error(f"❌ 创建算法 {algorithm_name} 错误表格失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return None, None
+
+
+def _create_error_tables_row_for_algorithm(algorithm):
+    """
+    为单个算法创建一行错误表格（丢锤和多锤左右并排）
+    
+    Args:
+        algorithm: AlgorithmDataset实例
+        
+    Returns:
+        dbc.Row: 包含丢锤和多锤表格的行
+    """
+    algorithm_name = algorithm.metadata.algorithm_name
+    drop_table, multi_table = _create_single_algorithm_error_tables(algorithm, algorithm_name)
+    
+    if drop_table and multi_table:
+        return dbc.Row([
+            dbc.Col([drop_table], width=6, className="pr-2"),
+            dbc.Col([multi_table], width=6, className="pl-2"),
+        ], className="mb-3")
+    else:
+        # 如果没有数据，返回空行
+        return dbc.Row([
+                dbc.Col([
+                    html.Div([
+                    html.P(f"算法 {algorithm_name} 暂无错误数据", className="text-center text-muted", style={'padding': '20px'})
+                ], style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px'})
+            ], width=12)
+        ], className="mb-3")
+
+
+def _hex_to_rgba(hex_color, alpha=0.3):
+    """将十六进制颜色转换为RGBA格式，用于表格背景色
+    
+    Args:
+        hex_color: 十六进制颜色值（如 '#1f77b4'）
+        alpha: 透明度（0-1），默认0.3，确保颜色足够明显
+    
+    Returns:
+        RGBA格式的颜色字符串（如 'rgba(31, 119, 180, 0.3)'）
+    """
+    hex_color = hex_color.lstrip('#')
+    r = int(hex_color[0:2], 16)
+    g = int(hex_color[2:4], 16)
+    b = int(hex_color[4:6], 16)
+    return f'rgba({r}, {g}, {b}, {alpha})'
+
+def create_report_layout(backend):
+    """创建完整的报告分析布局（仅支持多算法模式）"""
+    # 多算法模式：为每个算法生成一行数据概览和一行延时误差统计指标
+    active_algorithms = backend.get_active_algorithms() if hasattr(backend, 'get_active_algorithms') else []
+    
+    # 获取算法颜色映射（用于表格行背景色）
+    algorithm_colors = {}
+    for algorithm in active_algorithms:
+        if hasattr(algorithm, 'color'):
+            algorithm_colors[algorithm.metadata.algorithm_name] = algorithm.color
+    
+    if not active_algorithms:
+        # 没有激活的算法，显示提示
+        return html.Div([
+            html.H4("暂无数据", className="text-center text-muted"),
+            html.P("请至少激活一个算法以查看分析报告", className="text-center text-muted")
+        ])
+    
+    # 为每个算法生成数据概览和延时误差统计指标（合并到同一个卡片中）
+    overview_rows = []
+    error_stats_rows = []
+    
+    for algorithm in active_algorithms:
+        algorithm_name = algorithm.metadata.algorithm_name
+        overview_row = _create_single_algorithm_overview_row(algorithm, algorithm_name)
+        error_stats_row = _create_single_algorithm_error_stats_row(algorithm, algorithm_name)
+        
+        if overview_row:
+            overview_rows.append(overview_row)
+        if error_stats_row:
+            error_stats_rows.append(error_stats_row)
+    
+    # 创建合并的数据概览卡片（包含所有算法）
+    all_rows = []
+    if overview_rows:
+        all_rows.append(
+                dbc.Row([
+                    dbc.Col([
+                        dbc.Card([
+                            dbc.CardHeader([
+                                html.H4([
+                                    html.I(className="fas fa-chart-pie", style={'marginRight': '10px', 'color': '#28a745'}),
+                                    "数据统计概览"
+                                ], className="mb-0")
+                            ]),
+                            dbc.CardBody([
+                                *overview_rows
+                        ])
+                    ], className="shadow-sm mb-4")
+                    ], width=12)
+                ])
+            )
+    
+    # 创建合并的延时误差统计指标卡片（包含所有算法）
+    if error_stats_rows:
+        all_rows.append(
+            dbc.Row([
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardHeader([
+                            html.H4([
+                                html.I(className="fas fa-chart-bar", style={'marginRight': '10px', 'color': '#dc3545'}),
+                                "延时误差统计指标"
+                            ], className="mb-0")
+                        ]),
+                        dbc.CardBody([
+                            *error_stats_rows
+                        ])
+                    ], className="shadow-sm mb-4")
+                ], width=12)
+            ])
+        )
+    
+    # 获取数据源信息（使用第一个算法的文件名）
+    source_info = backend.get_data_source_info()
+    data_source = source_info.get('filename') or "多算法对比"
+    
+    # 注意：由于这些UI组件（dcc.Graph、dash_table.DataTable等）需要在布局中定义
+    # 否则回调函数无法找到它们，所以我们必须在这里包含它们
+    
     return html.Div([
-        # 下载组件 - 隐藏但必需
         dcc.Download(id='download-pdf'),
-
         dbc.Container([
-            # 标题和PDF导出按钮
             dbc.Row([
                 dbc.Col([
                     html.H2(f"分析报告 - {data_source}", className="text-center mb-3",
@@ -499,161 +1071,33 @@ def create_report_layout(backend):
                 ], width=4)
             ], className="mb-4"),
 
-            # 数据统计概览
-            dbc.Row([
-                dbc.Col([
-                    dbc.Card([
-                        dbc.CardHeader([
-                            html.H4([
-                                html.I(className="fas fa-chart-pie", style={'marginRight': '10px', 'color': '#28a745'}),
-                                "数据统计概览"
-                            ], className="mb-0")
-                        ]),
-                        dbc.CardBody([
-                            # 第一行：基础统计指标（准确率、丢锤数、多锤数、已配对音符数）
-                            dbc.Row([
-                                dbc.Col([
-                                    html.Div([
-                                        html.H3(f"{summary['accuracy']:.1f}%", className="text-success mb-1"),
-                                        html.P("准确率", className="text-muted mb-0"),
-                                        html.Small("成功匹配音符数/总有效音符数", className="text-muted", style={'fontSize': '10px'})
-                                    ], className="text-center")
-                                ], width=3),
-                                dbc.Col([
-                                    html.Div([
-                                        html.H3(f"{summary['drop_hammers']}", className="text-warning mb-1"),
-                                        html.P("丢锤数", className="text-muted mb-0"),
-                                        html.Small("录制有但播放没有", className="text-muted", style={'fontSize': '10px'})
-                                    ], className="text-center")
-                                ], width=3),
-                                dbc.Col([
-                                    html.Div([
-                                        html.H3(f"{summary['multi_hammers']}", className="text-info mb-1"),
-                                        html.P("多锤数", className="text-muted mb-0"),
-                                        html.Small("播放有但录制没有", className="text-muted", style={'fontSize': '10px'})
-                                    ], className="text-center")
-                                ], width=3),
-                                dbc.Col([
-                                    html.Div([
-                                        html.H3(f"{summary.get('matching_analysis', {}).get('matched_pairs', 0)}", className="text-secondary mb-1"),
-                                        html.P("已配对音符数", className="text-muted mb-0"),
-                                        html.Small("成功匹配的record-play配对数量", className="text-muted", style={'fontSize': '10px'})
-                                    ], className="text-center")
-                                ], width=3)
-                            ])
-                        ])
-                    ], className="shadow-sm mb-4")
-                ])
-            ]),
-        
-        # 延时误差统计指标 - 在数据概览下方（之前删掉的数据）
-        dbc.Row([
-            dbc.Col([
-                dbc.Card([
-                    dbc.CardHeader([
-                        html.H4([
-                            html.I(className="fas fa-chart-bar", style={'marginRight': '10px', 'color': '#dc3545'}),
-                            "延时误差统计指标"
-                        ], className="mb-0")
-                    ]),
-                    dbc.CardBody([
-                        # 第一行：平均延时、总体方差、总体标准差、平均绝对误差
-                        dbc.Row([
-                            dbc.Col([
-                                html.Div([
-                                    html.H3(f"{average_delay_ms:.2f} ms", className="text-primary mb-1"),
-                                    html.P("平均延时（绝对值口径，等同MAE）", className="text-muted mb-0"),
-                                    html.Small("平均(|keyon_offset|)，用于衡量误差大小，避免正负抵消", className="text-muted", style={'fontSize': '10px'})
-                                ], className="text-center")
-                            ], width=3),
-                            dbc.Col([
-                                html.Div([
-                                    html.H3(f"{variance_ms_squared:.2f} ms²", className="text-danger mb-1"),
-                                    html.P("总体方差", className="text-muted mb-0"),
-                                    html.Small("所有已匹配按键对的keyon_offset的总体方差", className="text-muted", style={'fontSize': '10px'})
-                                ], className="text-center")
-                            ], width=3),
-                            dbc.Col([
-                                html.Div([
-                                    html.H3(f"{std_ms:.2f} ms", className="text-info mb-1"),
-                                    html.P("总体标准差", className="text-muted mb-0"),
-                                    html.Small("所有已匹配按键对的keyon_offset的总体标准差", className="text-muted", style={'fontSize': '10px'})
-                                ], className="text-center")
-                            ], width=3),
-                            dbc.Col([
-                                html.Div([
-                                    html.H3(f"{mae_ms:.2f} ms", className="text-warning mb-1"),
-                                    html.P("平均绝对误差(MAE)", className="text-muted mb-0"),
-                                    html.Small("已匹配按键对的延时绝对值的平均", className="text-muted", style={'fontSize': '10px'})
-                                ], className="text-center")
-                            ], width=3)
-                        ], className="mb-3"),
-                        
-                        # 第二行：均方误差、平均误差
-                        dbc.Row([
-                            dbc.Col([
-                                html.Div([
-                                    html.H3(f"{mse_ms_squared:.2f} ms²", className="text-info mb-1"),
-                                    html.P("均方误差(MSE)", className="text-muted mb-0"),
-                                    html.Small("所有匹配对延时平方的平均", className="text-muted", style={'fontSize': '10px'})
-                                ], className="text-center")
-                            ], width=3),
-                            dbc.Col([
-                                html.Div([
-                                    html.H3(f"{me_ms:.2f} ms", className="text-secondary mb-1"),
-                                    html.P("平均误差(ME)（带符号）", className="text-muted mb-0"),
-                                    html.Small("mean(keyon_offset)，反映系统性提前/滞后方向，不等同平均延时", className="text-muted", style={'fontSize': '10px'})
-                                ], className="text-center")
-                            ], width=3),
-                            dbc.Col([], width=6)  # 占位，保持布局平衡
-                        ])
-                    ])
-                ], className="shadow-sm mb-4")
-            ], width=12)
-        ]),
-        
-        # 延时与按键差异分析区域（EDA）
-        dbc.Row([
-            dbc.Col([
-                dbc.Card([
-                    dbc.CardHeader([
-                        html.H4([
-                            html.I(className="fas fa-chart-line", style={'marginRight': '10px', 'color': '#1976d2'}),
-                            "延时与按键差异分析（EDA）"
-                        ], className="mb-0")
-                    ]),
-                    dbc.CardBody([
-                        # EDA分析区域（已移除抖动点图，使用散点图替代）
-                        html.Div([
-                            html.P("延时与按键差异分析请参考下方的散点图", className="text-muted", style={'fontSize': '14px', 'textAlign': 'center', 'padding': '20px'})
-                        ]),
-                    ])
-                ], className="shadow-sm mb-4")
-            ], width=12)
-        ]),
-        
+                # 多算法数据概览和延时误差统计指标（每个算法一行）
+                *all_rows,
+                
+                # 为每个算法创建独立的丢锤和多锤表格
+                *[_create_error_tables_row_for_algorithm(alg) for alg in active_algorithms if alg.analyzer],
+                
+                # 其余内容（图表、表格等）- 与单算法模式保持一致
         # 柱状图分析区域 - 独立全宽区域
         dbc.Row([
             dbc.Col([
-                # 偏移对齐分析柱状图（自动生成）
                 html.Div([
                     dbc.Row([
                         dbc.Col([
-                            html.H6("偏移对齐分析柱状图", className="mb-2",
+                                    html.H6("按键延时分析条形图", className="mb-2",
                                    style={'color': '#6f42c1', 'fontWeight': 'bold', 'borderBottom': '2px solid #6f42c1', 'paddingBottom': '5px'}),
-                        ], width=12)
+                                ], width=12)
                     ]),
                     dcc.Graph(
                         id='offset-alignment-plot',
                         figure={},
-                        style={'height': '2200px'}  # 增大高度以匹配后端图表高度
+                                style={'height': '2200px'}
                     ),
                 ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
-                
             ], width=12)
         ]),
         
-        # 按键与延时散点图区域 - 在柱状图下方，表格上方
+                # 按键与延时散点图区域
         dbc.Row([
             dbc.Col([
                 html.Div([
@@ -669,11 +1113,29 @@ def create_report_layout(backend):
                         style={'height': '500px'}
                     ),
                 ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
+                    ], width=12)
+                ]),
                 
+                # 按键与延时Z-Score标准化散点图区域 - 在按键与延时散点图下方
+                dbc.Row([
+                    dbc.Col([
+                        html.Div([
+                            dbc.Row([
+                                dbc.Col([
+                                    html.H6("按键与延时Z-Score标准化散点图", className="mb-2",
+                                           style={'color': '#9c27b0', 'fontWeight': 'bold', 'borderBottom': '2px solid #9c27b0', 'paddingBottom': '5px'}),
+                                ], width=12)
+                            ]),
+                            dcc.Graph(
+                                id='key-delay-zscore-scatter-plot',
+                                figure={},
+                                style={'height': '500px'}
+                            ),
+                        ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
             ], width=12)
         ]),
         
-        # 锤速与延时散点图区域 - 在按键与延时散点图下方，表格上方
+                # 锤速与延时散点图区域
         dbc.Row([
             dbc.Col([
                 html.Div([
@@ -689,11 +1151,10 @@ def create_report_layout(backend):
                         style={'height': '500px'}
                     ),
                 ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
-                
             ], width=12)
         ]),
         
-        # 按键与锤速散点图区域（颜色表示延时）- 在锤速与延时散点图下方，表格上方
+                # 按键与锤速散点图区域（颜色表示延时）
         dbc.Row([
             dbc.Col([
                 html.Div([
@@ -709,11 +1170,10 @@ def create_report_layout(backend):
                         style={'height': '500px'}
                     ),
                 ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
-                
             ], width=12)
         ]),
 
-        # 延时分布直方图（附正态拟合曲线）- 在按键与锤速散点图下方，表格上方
+                # 延时分布直方图（附正态拟合曲线）
         dbc.Row([
             dbc.Col([
                 html.Div([
@@ -729,79 +1189,11 @@ def create_report_layout(backend):
                         style={'height': '500px'}
                     ),
                 ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
-                
             ], width=12)
         ]),
         
-        # 延时与按键关系分析区域 - 已注释，因为箱线图与柱状图的均值子图重复
-        # dbc.Row([
-        #     dbc.Col([
-        #         html.Div([
-        #             dbc.Row([
-        #                 dbc.Col([
-        #                     html.H5("📊 延时与按键关系分析", className="mb-3",
-        #                            style={'color': '#1976d2', 'fontWeight': 'bold', 'fontSize': '20px', 'borderBottom': '3px solid #1976d2', 'paddingBottom': '10px'}),
-        #                 ], width=12)
-        #             ]),
-        #             # 箱线图
-        #             dbc.Row([
-        #                 dbc.Col([
-        #                     html.H6("各按键延时分布箱线图", className="mb-2",
-        #                            style={'color': '#1976d2', 'fontWeight': 'bold'}),
-        #                     dcc.Graph(
-        #                         id='delay-by-key-boxplot',
-        #                         figure={},
-        #                         style={'height': '500px'}
-        #                     ),
-        #                 ], width=12)
-        #             ], className="mb-3"),
-        #             # 统计分析结果表格
-        #             dbc.Row([
-        #                 dbc.Col([
-        #                     html.H6("统计分析结果", className="mb-2",
-        #                            style={'color': '#1976d2', 'fontWeight': 'bold'}),
-        #                     html.Div(id='delay-by-key-analysis-stats', children=[])
-        #                 ], width=12)
-        #             ])
-        #         ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
-        #     ], width=12)
-        # ]),
-        
-        # 延时与锤速关系分析区域 - 已注释
-        # dbc.Row([
-        #     dbc.Col([
-        #         html.Div([
-        #             dbc.Row([
-        #                 dbc.Col([
-        #                     html.H5("📈 延时与锤速关系分析", className="mb-3",
-        #                            style={'color': '#d32f2f', 'fontWeight': 'bold', 'fontSize': '20px', 'borderBottom': '3px solid #d32f2f', 'paddingBottom': '10px'}),
-        #                 ], width=12)
-        #             ]),
-        #             # 散点图+回归线
-        #             dbc.Row([
-        #                 dbc.Col([
-        #                     html.H6("延时与锤速散点图（含回归分析）", className="mb-2",
-        #                            style={'color': '#d32f2f', 'fontWeight': 'bold'}),
-        #                     dcc.Graph(
-        #                         id='delay-by-velocity-analysis-plot',
-        #                         figure={},
-        #                         style={'height': '500px'}
-        #                     ),
-        #                 ], width=12)
-        #             ], className="mb-3"),
-        #             # 统计分析结果
-        #             dbc.Row([
-        #                 dbc.Col([
-        #                     html.H6("相关性分析结果", className="mb-2",
-        #                            style={'color': '#d32f2f', 'fontWeight': 'bold'}),
-        #                     html.Div(id='delay-by-velocity-analysis-stats', children=[])
-        #                 ], width=12)
-        #             ])
-        #         ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
-        #     ], width=12)
-        # ]),
-            
-            # 主要内容区域：丢锤和多锤表格左右并排显示
+                # 主要内容区域：为每个算法创建独立的丢锤和多锤表格（已在上面通过列表展开添加）
+                # 这里保留原有的单算法模式表格（用于向后兼容，但多算法模式下不会使用）
             dbc.Row([
                 # 左侧：丢锤问题表格
                 dbc.Col([
@@ -823,39 +1215,44 @@ def create_report_layout(backend):
                                 {"name": "未匹配原因", "id": "analysis_reason"},
                             ],
                             data=backend.get_error_table_data('丢锤'),
-                            # 去掉分页，显示所有数据
                             page_action='none',
                             style_cell={
                                 'textAlign': 'center',
-                                'fontSize': '14px',  # 增大字体从10px到14px
+                                    'fontSize': '14px',
                                 'fontFamily': 'Arial, sans-serif',
-                                'padding': '10px',  # 增大内边距从6px到10px
+                                    'padding': '10px',
                                 'overflow': 'hidden',
                                 'textOverflow': 'ellipsis',
                                 'minWidth': '80px',
                             },
-                            style_cell_conditional=[
-                                {'if': {'column_id': 'data_type'}, 'width': '16%'},
-                                {'if': {'column_id': 'keyId'}, 'width': '14%'},
-                                {'if': {'column_id': 'keyOn'}, 'width': '18%'},
-                                {'if': {'column_id': 'keyOff'}, 'width': '18%'},
-                                {'if': {'column_id': 'index'}, 'width': '12%'},
-                                {'if': {'column_id': 'analysis_reason'}, 'width': '22%'},
+                                style_cell_conditional=(
+                                    # 多算法模式：添加算法名称列的宽度
+                                    [{'if': {'column_id': 'algorithm_name'}, 'width': '12%'}] if (
+                                        hasattr(backend, 'is_multi_algorithm_mode') and 
+                                        backend.is_multi_algorithm_mode()
+                                    ) else []
+                                ) + [
+                                    {'if': {'column_id': 'data_type'}, 'width': '14%'},
+                                    {'if': {'column_id': 'keyId'}, 'width': '12%'},
+                                    {'if': {'column_id': 'keyOn'}, 'width': '16%'},
+                                    {'if': {'column_id': 'keyOff'}, 'width': '16%'},
+                                    {'if': {'column_id': 'index'}, 'width': '10%'},
+                                    {'if': {'column_id': 'analysis_reason'}, 'width': '20%'},
                             ],
                             style_header={
                                 'backgroundColor': '#f8d7da',
                                 'fontWeight': 'bold',
                                 'border': '2px solid #dee2e6',
-                                'fontSize': '15px',  # 增大表头字体从10px到15px
+                                    'fontSize': '15px',
                                 'color': '#721c24',
                                 'textAlign': 'center',
-                                'padding': '12px',  # 增大表头内边距
+                                    'padding': '12px',
                                 'whiteSpace': 'normal',
                                 'height': 'auto'
                             },
                             style_data={
                                 'border': '1px solid #dee2e6',
-                                'fontSize': '14px',  # 增大数据字体从9px到14px
+                                    'fontSize': '14px',
                                 'padding': '10px'
                             },
                             style_data_conditional=[
@@ -879,11 +1276,11 @@ def create_report_layout(backend):
                                     'backgroundColor': '#fafafa'
                                 }
                             ],
-                            row_selectable=False,  # 禁用行选择，不显示选择列
+                                row_selectable=False,
                             sort_action="native",
-                            filter_action="none",  # 禁用筛选功能，不显示过滤行
+                                filter_action="none",
                             style_table={
-                                'height': 'calc(75vh - 200px)',  # 增大表格高度
+                                    'height': 'calc(75vh - 200px)',
                                 'overflowY': 'auto', 
                                 'overflowX': 'auto',
                                 'border': '2px solid #dee2e6', 
@@ -892,7 +1289,7 @@ def create_report_layout(backend):
                             }
                         ),
                     ], style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '10px', 'boxShadow': '0 4px 12px rgba(0,0,0,0.15)', 'height': '100%'}),
-                ], width=6, className="pr-2"),  # 左侧列，宽度50%
+                    ], width=6, className="pr-2"),
                 
                 # 右侧：多锤问题表格
                 dbc.Col([
@@ -905,7 +1302,10 @@ def create_report_layout(backend):
                         ]),
                         dash_table.DataTable(
                             id='multi-hammers-table',
-                            columns=[
+                                columns=(
+                                    # 多算法模式：添加"算法名称"列
+                                [{"name": "算法名称", "id": "algorithm_name"}]
+                                ) + [
                                 {"name": "数据类型", "id": "data_type"},
                                 {"name": "键位ID", "id": "keyId"},
                                 {"name": "按下时间(ms)", "id": "keyOn"},
@@ -914,39 +1314,44 @@ def create_report_layout(backend):
                                 {"name": "未匹配原因", "id": "analysis_reason"},
                             ],
                             data=backend.get_error_table_data('多锤'),
-                            # 去掉分页，显示所有数据
                             page_action='none',
                             style_cell={
                                 'textAlign': 'center',
-                                'fontSize': '14px',  # 增大字体从10px到14px
+                                    'fontSize': '14px',
                                 'fontFamily': 'Arial, sans-serif',
-                                'padding': '10px',  # 增大内边距从6px到10px
+                                    'padding': '10px',
                                 'overflow': 'hidden',
                                 'textOverflow': 'ellipsis',
                                 'minWidth': '80px',
                             },
-                            style_cell_conditional=[
-                                {'if': {'column_id': 'data_type'}, 'width': '16%'},
-                                {'if': {'column_id': 'keyId'}, 'width': '14%'},
-                                {'if': {'column_id': 'keyOn'}, 'width': '18%'},
-                                {'if': {'column_id': 'keyOff'}, 'width': '18%'},
-                                {'if': {'column_id': 'index'}, 'width': '12%'},
-                                {'if': {'column_id': 'analysis_reason'}, 'width': '22%'},
+                                style_cell_conditional=(
+                                    # 多算法模式：添加算法名称列的宽度
+                                    [{'if': {'column_id': 'algorithm_name'}, 'width': '12%'}] if (
+                                        hasattr(backend, 'is_multi_algorithm_mode') and 
+                                        backend.is_multi_algorithm_mode()
+                                    ) else []
+                                ) + [
+                                    {'if': {'column_id': 'data_type'}, 'width': '14%'},
+                                    {'if': {'column_id': 'keyId'}, 'width': '12%'},
+                                    {'if': {'column_id': 'keyOn'}, 'width': '16%'},
+                                    {'if': {'column_id': 'keyOff'}, 'width': '16%'},
+                                    {'if': {'column_id': 'index'}, 'width': '10%'},
+                                    {'if': {'column_id': 'analysis_reason'}, 'width': '20%'},
                             ],
                             style_header={
                                 'backgroundColor': '#fff3cd',
                                 'fontWeight': 'bold',
                                 'border': '2px solid #dee2e6',
-                                'fontSize': '15px',  # 增大表头字体从10px到15px
+                                    'fontSize': '15px',
                                 'color': '#856404',
                                 'textAlign': 'center',
-                                'padding': '12px',  # 增大表头内边距
+                                    'padding': '12px',
                                 'whiteSpace': 'normal',
                                 'height': 'auto'
                             },
                             style_data={
                                 'border': '1px solid #dee2e6',
-                                'fontSize': '14px',  # 增大数据字体从9px到14px
+                                    'fontSize': '14px',
                                 'padding': '10px'
                             },
                             style_data_conditional=[
@@ -970,11 +1375,11 @@ def create_report_layout(backend):
                                     'backgroundColor': '#fafafa'
                                 }
                             ],
-                            row_selectable=False,  # 禁用行选择，不显示选择列
+                                row_selectable=False,
                             sort_action="native",
-                            filter_action="none",  # 禁用筛选功能，不显示过滤行
+                                filter_action="none",
                             style_table={
-                                'height': 'calc(75vh - 200px)',  # 增大表格高度
+                                    'height': 'calc(75vh - 200px)',
                                 'overflowY': 'auto', 
                                 'overflowX': 'auto',
                                 'border': '2px solid #dee2e6', 
@@ -983,14 +1388,12 @@ def create_report_layout(backend):
                             }
                         ),
                     ], style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '10px', 'boxShadow': '0 4px 12px rgba(0,0,0,0.15)', 'height': '100%'}),
-                ], width=6, className="pl-2"),  # 右侧列，宽度50%
-            ], className="mb-4"),
+                    ], width=6, className="pl-2"),
+                ], className="mb-4", style={'display': 'none'}),  # 多算法模式下隐藏，使用上面的独立表格
             
             # 无效音符统计表格（单独一行）
             dbc.Row([
                 dbc.Col([
-
-                    # 无效音符统计表格
                     html.Div([
                         dbc.Row([
                             dbc.Col([
@@ -1000,7 +1403,9 @@ def create_report_layout(backend):
                         ]),
                         dash_table.DataTable(
                             id='invalid-notes-table',
-                            columns=[
+                                columns=(
+                                    [{"name": "算法名称", "id": "algorithm_name"}] if True else []
+                                ) + [
                                 {"name": "数据类型", "id": "data_type"},
                                 {"name": "总音符数", "id": "total_notes"},
                                 {"name": "有效音符", "id": "valid_notes"},
@@ -1011,50 +1416,64 @@ def create_report_layout(backend):
                                 {"name": "其他错误", "id": "other_errors"}
                             ],
                             data=backend.get_invalid_notes_table_data(),
-                            page_action='none',  # 去掉分页，显示所有数据
+                                page_action='none',
                             style_cell={
                                 'textAlign': 'center',
-                                'fontSize': '14px',  # 增大字体从10px到14px
+                                    'fontSize': '14px',
                                 'fontFamily': 'Arial, sans-serif',
-                                'padding': '10px',  # 增大内边距从6px到10px
+                                    'padding': '10px',
                                 'overflow': 'hidden',
                                 'textOverflow': 'ellipsis',
                                 'minWidth': '100px',
                             },
-                            style_cell_conditional=[
-                                {'if': {'column_id': 'data_type'}, 'width': '15%'},
-                                {'if': {'column_id': 'total_notes'}, 'width': '13%'},
-                                {'if': {'column_id': 'valid_notes'}, 'width': '13%'},
-                                {'if': {'column_id': 'invalid_notes'}, 'width': '13%'},
-                                {'if': {'column_id': 'duration_too_short'}, 'width': '15%'},
-                                {'if': {'column_id': 'empty_data'}, 'width': '12%'},
-                                {'if': {'column_id': 'silent_notes'}, 'width': '12%'},
-                                {'if': {'column_id': 'other_errors'}, 'width': '10%'},
+                                style_cell_conditional=(
+                                    [{'if': {'column_id': 'algorithm_name'}, 'width': '12%'}] if True else []
+                                ) + [
+                                    {'if': {'column_id': 'data_type'}, 'width': '13%' if True else '15%'},
+                                    {'if': {'column_id': 'total_notes'}, 'width': '11%' if True else '13%'},
+                                    {'if': {'column_id': 'valid_notes'}, 'width': '11%' if True else '13%'},
+                                    {'if': {'column_id': 'invalid_notes'}, 'width': '11%' if True else '13%'},
+                                    {'if': {'column_id': 'duration_too_short'}, 'width': '13%' if True else '15%'},
+                                    {'if': {'column_id': 'empty_data'}, 'width': '10%' if True else '12%'},
+                                    {'if': {'column_id': 'silent_notes'}, 'width': '10%' if True else '12%'},
+                                    {'if': {'column_id': 'other_errors'}, 'width': '9%' if True else '10%'},
                             ],
                             style_header={
                                 'backgroundColor': '#e9ecef',
                                 'fontWeight': 'bold',
                                 'border': '2px solid #dee2e6',
-                                'fontSize': '15px',  # 增大表头字体从10px到15px
+                                    'fontSize': '15px',
                                 'color': '#495057',
                                 'textAlign': 'center',
-                                'padding': '12px',  # 增大表头内边距
+                                    'padding': '12px',
                                 'whiteSpace': 'normal',
                                 'height': 'auto'
                             },
                             style_data={
                                 'border': '1px solid #dee2e6',
-                                'fontSize': '14px',  # 增大数据字体从9px到14px
+                                    'fontSize': '14px',
                                 'padding': '10px'
                             },
-                            style_data_conditional=[
+                                style_data_conditional=(
+                                    # 多算法模式：为算法名称列添加特殊样式
+                                    [
+                                        {
+                                            'if': {'column_id': 'algorithm_name'},
+                                            'fontWeight': 'bold',
+                                            'fontSize': '15px',
+                                            'backgroundColor': '#e3f2fd',
+                                            'borderLeft': '4px solid #1976d2',
+                                            'color': '#1976d2'
+                                        }
+                                    ] if True else []
+                                ) + [
                                 {
                                     'if': {'filter_query': '{data_type} = 录制数据'},
                                     'backgroundColor': '#f8f9fa',
                                     'fontWeight': 'bold'
                                 },
                                 {
-                                    'if': {'filter_query': '{data_type} = 播放数据'},
+                                        'if': {'filter_query': '{data_type} = 回放数据'},
                                     'backgroundColor': '#ffffff'
                                 },
                                 {
@@ -1063,9 +1482,9 @@ def create_report_layout(backend):
                                 }
                             ],
                             sort_action="native",
-                            filter_action="none",  # 禁用筛选功能，不显示过滤行
+                                filter_action="none",
                             style_table={
-                                'height': 'calc(40vh - 120px)',  # 增大表格高度
+                                    'height': 'calc(40vh - 120px)',
                                 'overflowY': 'auto', 
                                 'overflowX': 'auto',
                                 'border': '2px solid #dee2e6', 
@@ -1079,91 +1498,133 @@ def create_report_layout(backend):
                     html.Div([
                         dbc.Row([
                             dbc.Col([
-                                html.H6("偏移对齐分析", className="mb-2",
+                                    html.H6("按键延时分析", className="mb-2",
                                        style={'color': '#6f42c1', 'fontWeight': 'bold', 'borderBottom': '2px solid #6f42c1', 'paddingBottom': '5px'}),
                             ], width=12)
                         ]),
                         dash_table.DataTable(
                             id='offset-alignment-table',
-                            columns=[
+                                columns=(
+                                    # 多算法模式：添加"算法名称"列
+                                    [{"name": "算法名称", "id": "algorithm_name"}] if True else []
+                                ) + [
                                 {"name": "键位ID", "id": "key_id"},
                                 {"name": "配对数", "id": "count"},
                                 {"name": "中位数(ms)", "id": "median"},
                                 {"name": "均值(ms)", "id": "mean"},
                                 {"name": "标准差(ms)", "id": "std"},
-                                {"name": "方差(ms²)", "id": "variance"},
-                                {"name": "最小值(ms)", "id": "min"},
-                                {"name": "最大值(ms)", "id": "max"},
-                                {"name": "极差(ms)", "id": "range"},
+                                    {"name": "方差(ms²)", "id": "variance"},
+                                    {"name": "最小值(ms)", "id": "min"},
+                                    {"name": "最大值(ms)", "id": "max"},
+                                    {"name": "极差(ms)", "id": "range"},
                                 {"name": "状态", "id": "status"}
                             ],
                             data=backend.get_offset_alignment_data(),
-                            page_action='none',  # 去掉分页，显示所有数据
+                                page_action='none',
                             style_cell={
                                 'textAlign': 'center',
-                                'fontSize': '14px',  # 增大字体从10px到14px
+                                    'fontSize': '14px',
                                 'fontFamily': 'Arial, sans-serif',
-                                'padding': '10px',  # 增大内边距从6px到10px
+                                    'padding': '10px',
                                 'overflow': 'hidden',
                                 'textOverflow': 'ellipsis',
                                 'minWidth': '100px',
                             },
-                            style_cell_conditional=[
-                                {'if': {'column_id': 'key_id'}, 'width': '9%'},
-                                {'if': {'column_id': 'count'}, 'width': '9%'},
-                                {'if': {'column_id': 'median'}, 'width': '9%'},
-                                {'if': {'column_id': 'mean'}, 'width': '9%'},
-                                {'if': {'column_id': 'std'}, 'width': '9%'},
-                                {'if': {'column_id': 'variance'}, 'width': '10%'},
-                                {'if': {'column_id': 'min'}, 'width': '9%'},
-                                {'if': {'column_id': 'max'}, 'width': '9%'},
-                                {'if': {'column_id': 'range'}, 'width': '9%'},
-                                {'if': {'column_id': 'status'}, 'width': '18%'},
+                                style_cell_conditional=(
+                                    # 多算法模式：添加"算法名称"列的样式
+                                    [{'if': {'column_id': 'algorithm_name'}, 'width': '10%'}] if True else []
+                                ) + [
+                                    {'if': {'column_id': 'key_id'}, 'width': '8%' if True else '10%'},
+                                    {'if': {'column_id': 'count'}, 'width': '8%' if True else '10%'},
+                                    {'if': {'column_id': 'median'}, 'width': '8%' if True else '10%'},
+                                    {'if': {'column_id': 'mean'}, 'width': '8%' if True else '10%'},
+                                    {'if': {'column_id': 'std'}, 'width': '8%' if True else '10%'},
+                                    {'if': {'column_id': 'variance'}, 'width': '9%' if True else '10%'},
+                                    {'if': {'column_id': 'min'}, 'width': '8%' if True else '10%'},
+                                    {'if': {'column_id': 'max'}, 'width': '8%' if True else '10%'},
+                                    {'if': {'column_id': 'range'}, 'width': '8%' if True else '10%'},
+                                    {'if': {'column_id': 'status'}, 'width': '15%' if True else '10%'},
                             ],
                             style_header={
-                                'backgroundColor': '#e2d9f3',
+                                    'backgroundColor': '#e3f2fd',
                                 'fontWeight': 'bold',
                                 'border': '2px solid #dee2e6',
-                                'fontSize': '15px',  # 增大表头字体从10px到15px
-                                'color': '#6f42c1',
+                                    'fontSize': '15px',
+                                    'color': '#1976d2',
                                 'textAlign': 'center',
-                                'padding': '12px',  # 增大表头内边距
+                                    'padding': '12px',
                                 'whiteSpace': 'normal',
                                 'height': 'auto'
                             },
                             style_data={
                                 'border': '1px solid #dee2e6',
-                                'fontSize': '14px',  # 增大数据字体从9px到14px
+                                    'fontSize': '14px',
                                 'padding': '10px'
                             },
-                            style_data_conditional=[
+                                style_data_conditional=(
+                                    # 多算法模式：为算法名称列添加特殊样式
+                                    # 注意：算法名称列的背景色会与行背景色叠加，所以只设置字体样式
+                                    [
+                                        {
+                                            'if': {'column_id': 'algorithm_name'},
+                                            'fontWeight': 'bold',
+                                            'fontSize': '15px',
+                                            'color': '#1976d2'
+                                        }
+                                    ] if True else []
+                                ) + [
+                                    # 多算法模式：为每种算法添加不同的行背景色（放在最后，确保优先级最高）
+                                    # 每种算法的所有行使用相同的背景色，便于区分不同算法
+                                    *([
+                                        {
+                                            # 使用filter_query匹配算法名称
+                                            'if': {'filter_query': f'{{algorithm_name}} = "{alg_name}"'},
+                                            'backgroundColor': _hex_to_rgba(alg_color, alpha=0.25)
+                                        }
+                                        for alg_name, alg_color in algorithm_colors.items()
+                                    ] if True else []),
+                                    # 为每种算法的奇偶行添加轻微的颜色差异（像多锤表格一样）
+                                    *([
+                                        {
+                                            'if': {
+                                                'filter_query': f'{{algorithm_name}} = "{alg_name}"',
+                                                'row_index': 'odd'
+                                            },
+                                            'backgroundColor': _hex_to_rgba(alg_color, alpha=0.35)
+                                        }
+                                        for alg_name, alg_color in algorithm_colors.items()
+                                    ] if True else []),
                                 {
                                     'if': {'filter_query': '{key_id} = 总体'},
-                                    'backgroundColor': '#f8f9fa',
                                     'color': '#6f42c1',
                                     'fontWeight': 'bold'
                                 },
-                                {
-                                    'if': {'filter_query': '{key_id} = 汇总'},
-                                    'backgroundColor': '#e3f2fd',
-                                    'fontWeight': 'bold',
-                                    'color': '#1976d2'
+                                    {
+                                        'if': {'filter_query': '{key_id} = 汇总'},
+                                        'fontWeight': 'bold',
+                                        'color': '#1976d2'
                                 },
                                 {
                                     'if': {'filter_query': '{status} = matched'},
-                                    'backgroundColor': '#d4edda',
                                     'color': '#155724'
                                 },
                                 {
                                     'if': {'filter_query': '{status} contains invalid'},
-                                    'backgroundColor': '#f8d7da',
                                     'color': '#721c24'
-                                }
+                                    },
+                                    # 多算法模式：为按键ID列添加特殊样式，便于区分不同按键组
+                                    # 注意：这里只设置字体和颜色，不设置背景色，避免覆盖行背景色
+                                    {
+                                        'if': {'column_id': 'key_id'},
+                                        'fontWeight': 'bold',
+                                        'fontSize': '15px',
+                                        'color': '#856404'
+                                    } if True else {}
                             ],
                             sort_action="native",
-                            filter_action="none",  # 禁用筛选功能，不显示过滤行
+                                filter_action="none",
                             style_table={
-                                'height': 'calc(50vh - 150px)',  # 增大表格高度
+                                    'height': 'calc(50vh - 150px)',
                                 'overflowY': 'auto', 
                                 'overflowX': 'auto',
                                 'border': '2px solid #dee2e6', 
@@ -1172,9 +1633,7 @@ def create_report_layout(backend):
                             }
                         ),
                     ], className="mb-3", style={'backgroundColor': '#ffffff', 'padding': '15px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
-                    
-                    
-                ], width=12)  # 改为占满整行，删除右侧的对比分析图和详细数据信息
+                    ], width=12)
             ])
         ], fluid=True, style={'padding': '20px', 'backgroundColor': '#f5f5f5', 'minHeight': '100vh'})
     ], id='report-layout-container')

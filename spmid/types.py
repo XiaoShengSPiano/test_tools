@@ -31,6 +31,7 @@ class ErrorNote:
     diffs: List[Diffs]
     error_type: str = ""      # 错误类型："多锤" 或 "丢锤"
     global_index: int = -1    # 全局索引
+    reason: str = ""         # 失败原因（可选）
 
 
 # 备用类型定义（用于导入失败时的容错处理）

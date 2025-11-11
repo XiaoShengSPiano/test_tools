@@ -30,6 +30,9 @@ class NoteMatcher:
         self.matched_pairs: List[Tuple[int, int, Note, Note]] = []
         # 记录匹配失败原因：key=(data_type, index)，value=str
         self.failure_reasons: Dict[Tuple[str, int], str] = {}
+        # 记录超过阈值但有最佳配对的匹配对：List[Tuple[int, int, Note, Note]]，格式与matched_pairs相同
+        # 这些匹配对虽然超过阈值，但仍然有最佳配对，可以用于显示对比曲线图
+        self.exceeds_threshold_matched_pairs: List[Tuple[int, int, Note, Note]] = []
     
     def find_all_matched_pairs(self, record_data: List[Note], replay_data: List[Note]) -> List[Tuple[int, int, Note, Note]]:
         """
@@ -44,8 +47,9 @@ class NoteMatcher:
         """
         matched_pairs = []
         used_replay_indices = set()
-        # 清空上一轮失败原因
+        # 清空上一轮失败原因和超过阈值的匹配对
         self.failure_reasons.clear()
+        self.exceeds_threshold_matched_pairs.clear()
         
         logger.info(f"🎯 开始音符匹配: 录制数据{len(record_data)}个音符, 回放数据{len(replay_data)}个音符")
         
@@ -61,13 +65,37 @@ class NoteMatcher:
                 target_key_id=note_info["key_id"]
             )
 
+            # 如果没有在阈值内的候选，尝试获取所有候选（包括超过阈值的）以选择最佳匹配
+            all_candidates = None
+            exceeds_threshold = False
             if not candidates:
-                # 无任何在阈值内的候选，直接判定失败
-                logger.info(f"❌ 匹配失败: 键ID={note_info['key_id']}, 录制索引={i}, "
-                           f"录制时间=({note_info['keyon']/10:.2f}ms, {note_info['keyoff']/10:.2f}ms), "
-                           f"原因: {reason_if_empty}")
-                self.failure_reasons[("record", i)] = reason_if_empty
-                continue
+                # 获取所有候选（包括超过阈值的），用于选择最佳匹配
+                all_candidates, threshold, reason_if_empty = self._generate_all_candidates_sorted(
+                    replay_data,
+                    target_keyon=note_info["keyon"],
+                    target_keyoff=note_info["keyoff"],
+                    target_key_id=note_info["key_id"]
+                )
+                
+                if not all_candidates:
+                    # 完全没有候选，判定失败 - 明确说明"录制有，播放无"
+                    reason = f"录制有，播放无（没有找到键ID {note_info['key_id']} 的播放音符）"
+                    logger.info(f"❌ 匹配失败: 键ID={note_info['key_id']}, 录制索引={i}, "
+                               f"录制时间=({note_info['keyon']/10:.2f}ms, {note_info['keyoff']/10:.2f}ms), "
+                               f"原因: {reason}")
+                    self.failure_reasons[("record", i)] = reason
+                    continue
+                
+                # 即使超过阈值，也选择误差最小的候选作为匹配对（标记为异常）
+                best_error_ms = all_candidates[0]['total_error'] / 10.0
+                threshold_ms = threshold / 10.0
+                reason = f"时间误差过大（误差:{best_error_ms:.1f}ms, 阈值:{threshold_ms:.1f}ms），超过阈值但存在最佳匹配对"
+                logger.info(f"⚠️ 所有候选都超过阈值，选择最佳匹配（超过阈值）: 键ID={note_info['key_id']}, 录制索引={i}, "
+                           f"最佳误差={best_error_ms:.2f}ms, 阈值={threshold_ms:.2f}ms")
+                candidates = all_candidates  # 使用所有候选（包括超过阈值的）
+                exceeds_threshold = True  # 标记为超过阈值
+                # 记录超过阈值的原因（用于后续显示）
+                self.failure_reasons[("record", i)] = reason
 
             # 从候选中选择第一个未被占用的重放索引
             chosen = None
@@ -79,17 +107,33 @@ class NoteMatcher:
 
             if chosen is not None:
                 replay_index = chosen['index']
-                matched_pairs.append((i, replay_index, record_note, replay_data[replay_index]))
-                used_replay_indices.add(replay_index)
+                replay_note = replay_data[replay_index]
+                
+                # 检查是否超过阈值
+                if exceeds_threshold or chosen['total_error'] > threshold:
+                    # 超过阈值，加入exceeds_threshold_matched_pairs
+                    self.exceeds_threshold_matched_pairs.append((i, replay_index, record_note, replay_note))
+                    used_replay_indices.add(replay_index)
+                    # 记录超过阈值的原因（如果还没有记录）
+                    if ("record", i) not in self.failure_reasons:
+                        best_error_ms = chosen['total_error'] / 10.0
+                        threshold_ms = threshold / 10.0
+                        self.failure_reasons[("record", i)] = f"时间误差过大（误差:{best_error_ms:.1f}ms, 阈值:{threshold_ms:.1f}ms），超过阈值但存在最佳匹配对"
+                    logger.info(f"⚠️ 超过阈值匹配对已记录: 键ID={note_info['key_id']}, 录制索引={i}, 回放索引={replay_index}, "
+                               f"误差={chosen['total_error']/10:.2f}ms, 阈值={threshold/10:.2f}ms")
+                else:
+                    # 在阈值内，加入正常的matched_pairs
+                    matched_pairs.append((i, replay_index, record_note, replay_note))
+                    used_replay_indices.add(replay_index)
                 
                 # 记录匹配成功的详细信息
-                replay_note = replay_data[replay_index]
                 record_keyon, record_keyoff = self._calculate_note_times(record_note)
                 replay_keyon, replay_keyoff = self._calculate_note_times(replay_note)
                 keyon_offset = replay_keyon - record_keyon
                 keyoff_offset = replay_keyoff - record_keyoff
                 
-                logger.info(f"✅ 匹配成功: 键ID={note_info['key_id']}, "
+                status = "⚠️ 匹配成功（超过阈值）" if (exceeds_threshold or chosen['total_error'] > threshold) else "✅ 匹配成功"
+                logger.info(f"{status}: 键ID={note_info['key_id']}, "
                            f"录制索引={i}, 回放索引={replay_index}, "
                            f"录制时间=({record_keyon/10:.2f}ms, {record_keyoff/10:.2f}ms), "
                            f"回放时间=({replay_keyon/10:.2f}ms, {replay_keyoff/10:.2f}ms), "
@@ -97,8 +141,13 @@ class NoteMatcher:
                            f"总误差={chosen['total_error']/10:.2f}ms, "
                            f"阈值={threshold/10:.2f}ms")
             else:
-                # 所有阈值内候选都被占用
-                reason = f"所有候选已被占用(候选数:{len(candidates)}, 阈值:{threshold:.1f}ms)"
+                # 所有候选都被占用 - 明确说明原因
+                if len(candidates) > 0:
+                    # 有候选但都被占用
+                    reason = f"所有候选已被占用（候选数:{len(candidates)}, 阈值:{threshold/10:.1f}ms），录制有，播放有但已被其他录制音符匹配"
+                else:
+                    # 这种情况理论上不应该发生（因为前面已经处理了没有候选的情况）
+                    reason = f"录制有，播放无（没有可用候选）"
                 logger.info(f"❌ 匹配失败: 键ID={note_info['key_id']}, 录制索引={i}, "
                            f"录制时间=({note_info['keyon']/10:.2f}ms, {note_info['keyoff']/10:.2f}ms), "
                            f"原因: {reason}")
@@ -192,6 +241,63 @@ class NoteMatcher:
             )
 
         return within, max_allowed_error, ""
+    
+    def _generate_all_candidates_sorted(self, notes_list: List[Note], target_keyon: float, target_keyoff: float, target_key_id: int) -> Tuple[List[Dict[str, float]], float, str]:
+        """
+        生成所有候选列表（包括超过阈值的），按总误差升序排序
+        
+        用于在没有任何候选在阈值内时，选择最佳匹配（即使超过阈值）
+        
+        参数单位：
+            - target_keyon/target_keyoff：0.1ms（绝对时间 = after_touch.index + offset）
+            - 误差/阈值：0.1ms（内部统一单位）
+
+        Returns:
+            (candidates, max_allowed_error, reason_if_empty)
+        """
+        # 1) 过滤同键ID
+        matching = []
+        for idx, note in enumerate(notes_list):
+            if getattr(note, 'id', None) == target_key_id:
+                matching.append((idx, note))
+
+        if not matching:
+            return [], 0.0, f"没有找到键ID {target_key_id} 的音符"
+
+        # 2) 构建候选并计算误差
+        candidates: List[Dict[str, float]] = []
+        for idx, note in matching:
+            # 计算按键开始和结束时间
+            current_keyon = note.after_touch.index[0] + note.offset
+            current_keyoff = note.after_touch.index[-1] + note.offset
+
+            # 只使用keyon_offset计算误差
+            keyon_offset = current_keyon - target_keyon
+
+            # 评分：只使用 |keyon_offset| （单位：0.1ms）
+            total_error = abs(keyon_offset)
+
+            candidates.append({
+                'index': idx,
+                'total_error': total_error,
+                'keyon_error': abs(keyon_offset)
+            })
+
+        if not candidates:
+            return [], 0.0, f"没有找到键ID {target_key_id} 的候选音符"
+
+        # 3) 动态阈值计算（用于显示）
+        base_threshold = 500.0
+        duration = (target_keyoff - target_keyon)
+        if duration <= 0:
+            return [], 0.0, "无效持续时间(≤0)，疑似异常音符"
+        duration_factor = min(1.0, max(0.6, duration / 500.0))
+        max_allowed_error = base_threshold * duration_factor
+
+        # 4) 排序所有候选（包括超过阈值的）
+        candidates.sort(key=lambda x: x['total_error'])
+
+        return candidates, max_allowed_error, ""
     
     def _extract_note_info(self, note: Note, index: int) -> Dict:
         """
@@ -488,12 +594,11 @@ class NoteMatcher:
         说明：
         - "匹配对"指的是matched_pairs中的每个元素，是一个(record_note, replay_note)的配对
         - 对每个匹配对计算keyon_offset = replay_keyon - record_keyon
-        - 使用绝对值的keyon_offset计算方差，用于分析"时延与按键的关系"（关注误差大小而非方向）
-        - 与表格中每个按键的方差计算方式保持一致（都使用绝对值）
+        - 使用带符号的keyon_offset计算方差，按照标准总体方差公式
         
         标准数学公式：
-        σ² = (1/n) * Σ(|x_i| - μ_abs)²
-        其中 |x_i| 是绝对值的keyon_offset，μ_abs = (1/n) * Σ|x_i|（绝对值的均值）
+        σ² = (1/n) * Σ(x_i - μ)²
+        其中 x_i 是带符号的keyon_offset，μ = (1/n) * Σ x_i（总体均值）
         
         Returns:
             float: 总体方差（单位：(0.1ms)²，转换为ms²需要除以100）
@@ -504,33 +609,33 @@ class NoteMatcher:
         # 获取偏移对齐数据
         offset_data = self.get_offset_alignment_data()
         
-        # 提取所有绝对值的keyon_offset（用于分析误差大小）
-        abs_offsets = []
+        # 提取所有带符号的keyon_offset
+        offsets = []
         for item in offset_data:
             keyon_offset = item.get('keyon_offset', 0)
-            abs_offsets.append(abs(keyon_offset))  # 使用绝对值
+            offsets.append(keyon_offset)  # 使用带符号值
         
-        if len(abs_offsets) <= 1:
+        if len(offsets) <= 1:
             return 0.0
         
-        # 计算总体方差（使用绝对值的方差公式，分母 n）
-        # 公式：σ² = (1/n) * Σ(|x_i| - μ_abs)²
-        # 其中 μ_abs = (1/n) * Σ|x_i|（绝对值的均值）
-        mean_abs = sum(abs_offsets) / len(abs_offsets)  # 绝对值的均值
-        variance = sum((x - mean_abs) ** 2 for x in abs_offsets) / len(abs_offsets)  # 总体方差使用 n
+        # 计算总体方差（使用标准公式，分母 n）
+        # 公式：σ² = (1/n) * Σ(x_i - μ)²
+        # 其中 μ = (1/n) * Σ x_i（总体均值）
+        mean = sum(offsets) / len(offsets)  # 总体均值（带符号）
+        variance = sum((x - mean) ** 2 for x in offsets) / len(offsets)  # 总体方差使用 n
         return variance
     
     def get_standard_deviation(self) -> float:
         """
         计算已配对按键的总体标准差（Population Standard Deviation）
-        对所有已匹配按键对的绝对值keyon_offset计算总体标准差
+        对所有已匹配按键对的带符号keyon_offset计算总体标准差
         总体标准差 = sqrt(总体方差)
         
-        按照标准数学公式：σ = √(σ²) = √((1/n) * Σ(|x_i| - μ_abs)²)
-        其中 |x_i| 是绝对值的keyon_offset，μ_abs 是绝对值的均值
+        按照标准数学公式：σ = √(σ²) = √((1/n) * Σ(x_i - μ)²)
+        其中 x_i 是带符号的keyon_offset，μ = (1/n) * Σ x_i（总体均值）
         
         注意：此方法直接调用 get_variance() 然后开平方根，确保与方差计算的一致性
-        由于 get_variance() 使用绝对值计算，此方法也使用绝对值
+        由于 get_variance() 使用带符号值计算，此方法也使用带符号值
         
         Returns:
             float: 总体标准差（单位：0.1ms，转换为ms需要除以10）

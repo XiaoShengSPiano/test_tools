@@ -8,12 +8,32 @@ import os
 
 # 导入模块化组件
 from backend.history_manager import HistoryManager
+from backend.session_manager import SessionManager
 from ui.layout_components import create_main_layout
 from ui.callbacks import register_callbacks
 
-# 全局变量
-backends = {}  # 存储不同会话的后端实例
-history_manager = HistoryManager()
+# 全局变量（使用单例模式，避免在debug模式下重复初始化）
+# 注意：在Flask debug模式下，模块会被重新加载，但单例模式可以确保只初始化一次
+_history_manager = None
+_session_manager = None
+
+def get_history_manager():
+    """获取HistoryManager单例"""
+    global _history_manager
+    if _history_manager is None:
+        _history_manager = HistoryManager()
+    return _history_manager
+
+def get_session_manager():
+    """获取SessionManager单例"""
+    global _session_manager
+    if _session_manager is None:
+        _session_manager = SessionManager(get_history_manager())
+    return _session_manager
+
+# 初始化单例
+history_manager = get_history_manager()
+session_manager = get_session_manager()
 
 # 初始化Dash应用
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
@@ -25,7 +45,7 @@ app.config.suppress_callback_exceptions = True
 app.layout = create_main_layout()
 
 # 注册回调函数
-register_callbacks(app, backends, history_manager)
+register_callbacks(app, session_manager, history_manager)
 
 logger = Logger.get_logger()
 
