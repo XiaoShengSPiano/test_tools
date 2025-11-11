@@ -283,11 +283,11 @@ def create_main_layout():
         dbc.Container([
             dcc.Tabs(id="main-tabs", value="waterfall-tab", children=[
                 dcc.Tab(label="🌊 瀑布图分析", value="waterfall-tab", children=[
-                    html.Div(id="waterfall-content", style={'padding': '20px'}, children=[
+                    html.Div(id="waterfall-content", style={'padding': '20px', 'width': '100%'}, children=[
                         dcc.Graph(
                             id='main-plot', 
                             figure=empty_figure, 
-                            style={"height": "1500px"},  # 适合一屏显示的高度
+                            style={"height": "1500px", "width": "100%"},  # 固定高度和宽度，避免Tab切换时大小变化
                             config={
                                 'displayModeBar': True,
                                 'displaylogo': False,

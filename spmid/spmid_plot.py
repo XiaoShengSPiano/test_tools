@@ -338,10 +338,10 @@ def plot_bar_plotly(record, play, time_range=None):
             tickvals=list(range(1, 91)),
             range=[1, 91]  # 设置y轴范围，确保不显示负数（按键ID从1开始）
         ),
-        height=None,
-        width=None,
+        height=1500,  # 固定高度，与布局中的样式保持一致，避免Tab切换时高度变化
+        width=2000,  # 设置一个较大的宽度值，实际宽度由CSS样式控制（100%），确保占满容器
         template='simple_white',
-        autosize=True,
+        autosize=False,  # 使用固定高度和宽度，宽度由CSS样式控制（通过布局中的width: 100%）
         margin=dict(l=60, r=60, t=100, b=60),
         showlegend=False,
         paper_bgcolor='rgba(0,0,0,0)',

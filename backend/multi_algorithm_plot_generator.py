@@ -250,8 +250,9 @@ class MultiAlgorithmPlotGenerator:
                     range=[min_y, max_y + 10]  # 设置y轴范围，确保不显示负数，并留出一些边距
                 ),
                 height=final_height,  # 适合一屏显示的高度
+                width=2000,  # 设置一个较大的宽度值，实际宽度由CSS样式控制（100%），确保占满容器
                 template='simple_white',
-                autosize=False,  # 使用固定高度
+                autosize=False,  # 使用固定高度和宽度，宽度由CSS样式控制（通过布局中的width: 100%）
                 margin=dict(l=60, r=60, t=100, b=60),
                 showlegend=False,  # 不显示图例（因为trace太多）
                 paper_bgcolor='rgba(0,0,0,0)',
