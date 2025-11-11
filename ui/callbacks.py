@@ -1321,7 +1321,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
     )
     def show_pdf_loading(n_clicks, session_id):
         """第一步：立即显示PDF生成加载动画
-        说明：旧版要求存在 all_error_notes 才允许导出，导致“无异常时无法导出概览”。
+        说明：旧版要求存在 all_error_notes 才允许导出，导致"无异常时无法导出概览"。
         现在放宽条件：只要存在有效数据（任一轨或有匹配对）即可生成PDF（概览页+可选异常页）。
         """
         if not n_clicks:
@@ -2721,4 +2721,329 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             import traceback
             logger.error(traceback.format_exc())
             return no_update, no_update, no_update, no_update, no_update
+    
+    # 按键延时分析表格点击回调 - 显示按键曲线对比（悬浮窗）
+    @app.callback(
+        [Output('key-curves-modal', 'style'),
+         Output('key-curves-comparison-container', 'children')],
+        [Input('offset-alignment-table', 'active_cell'),
+         Input('close-key-curves-modal', 'n_clicks'),
+         Input('close-key-curves-modal-btn', 'n_clicks')],
+        [State('offset-alignment-table', 'data'),
+         State('session-id', 'data'),
+         State('key-curves-modal', 'style')],
+        prevent_initial_call=True
+    )
+    def handle_key_table_click(active_cell, close_modal_clicks, close_btn_clicks, table_data, session_id, current_style):
+        """处理按键延时分析表格点击，显示按键曲线对比（悬浮窗）"""
+        from dash import callback_context
+        
+        # 检测触发源
+        ctx = callback_context
+        if not ctx.triggered:
+            logger.debug("⚠️ 按键表格点击回调：没有触发源")
+            return current_style, []
+        
+        trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
+        logger.info(f"🔄 按键表格点击回调触发：trigger_id={trigger_id}")
+        
+        # 如果点击了关闭按钮，隐藏模态框
+        if trigger_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
+            logger.info("✅ 关闭按键曲线对比模态框")
+            modal_style = {
+                'display': 'none',
+                'position': 'fixed',
+                'zIndex': '9999',
+                'left': '0',
+                'top': '0',
+                'width': '100%',
+                'height': '100%',
+                'backgroundColor': 'rgba(0,0,0,0.6)',
+                'backdropFilter': 'blur(5px)'
+            }
+            return modal_style, []
+        
+        # 如果是表格点击
+        if trigger_id == 'offset-alignment-table':
+            logger.info(f"🔄 表格点击：active_cell={active_cell}, table_data长度={len(table_data) if table_data else 0}")
+            backend = session_manager.get_backend(session_id)
+            if not backend:
+                logger.warning("⚠️ 没有找到backend")
+                return current_style, []
+            if not active_cell or not table_data:
+                logger.warning("⚠️ active_cell或table_data为空")
+                return current_style, []
+            
+            try:
+                # 获取点击的行数据
+                row_idx = active_cell.get('row')
+                if row_idx is None or row_idx >= len(table_data):
+                    return current_style, []
+                
+                row_data = table_data[row_idx]
+                algorithm_name = row_data.get('algorithm_name')
+                key_id_str = row_data.get('key_id')
+                
+                # 跳过汇总行
+                if key_id_str in ['总体', '汇总'] or not algorithm_name:
+                    return current_style, []
+                
+                # 转换按键ID
+                try:
+                    key_id = int(key_id_str)
+                except (ValueError, TypeError):
+                    return current_style, []
+                
+                # 获取激活的算法列表
+                active_algorithms = backend.get_active_algorithms()
+                if len(active_algorithms) < 2:
+                    modal_style = {
+                        'display': 'block',
+                        'position': 'fixed',
+                        'zIndex': '9999',
+                        'left': '0',
+                        'top': '0',
+                        'width': '100%',
+                        'height': '100%',
+                        'backgroundColor': 'rgba(0,0,0,0.6)',
+                        'backdropFilter': 'blur(5px)'
+                    }
+                    return modal_style, [html.Div([
+                        html.P("需要至少2个激活的算法才能进行对比", className="text-muted text-center")
+                    ])]
+                
+                # 获取所有激活算法的匹配对
+                algorithm_pairs_dict = {}
+                all_timestamps = set()
+                
+                for alg in active_algorithms:
+                    alg_name = alg.metadata.algorithm_name
+                    pairs = backend.get_key_matched_pairs_by_algorithm(alg_name, key_id)
+                    if pairs:
+                        algorithm_pairs_dict[alg_name] = pairs
+                        for _, _, _, _, timestamp in pairs:
+                            all_timestamps.add(timestamp)
+                
+                if not algorithm_pairs_dict:
+                    modal_style = {
+                        'display': 'block',
+                        'position': 'fixed',
+                        'zIndex': '9999',
+                        'left': '0',
+                        'top': '0',
+                        'width': '100%',
+                        'height': '100%',
+                        'backgroundColor': 'rgba(0,0,0,0.6)',
+                        'backdropFilter': 'blur(5px)'
+                    }
+                    return modal_style, [html.Div([
+                        html.P(f"按键ID {key_id} 在所有激活算法中都没有匹配数据", className="text-muted text-center")
+                    ])]
+                
+                # 选择前两个有数据的算法进行对比
+                alg_names = list(algorithm_pairs_dict.keys())[:2]
+                if len(alg_names) < 2:
+                    # 如果只有一个算法有数据，选择前两个激活的算法（即使第二个没有数据）
+                    alg_names = [alg.metadata.algorithm_name for alg in active_algorithms[:2]]
+                    if alg_names[0] not in algorithm_pairs_dict:
+                        alg_names[0] = list(algorithm_pairs_dict.keys())[0]
+                
+                alg1_name = alg_names[0]
+                alg2_name = alg_names[1]
+                
+                alg1_pairs = algorithm_pairs_dict.get(alg1_name, [])
+                alg2_pairs = algorithm_pairs_dict.get(alg2_name, [])
+                
+                # 生成对比曲线图
+                import spmid
+                import plotly.graph_objects as go
+                from plotly.subplots import make_subplots
+                
+                comparison_rows = []
+                
+                # 使用双指针按时间戳对齐
+                # 注意：两个算法处理的是完全不同的SPMID文件，各自有独立的录制数据和播放数据
+                # - 算法A：SPMID文件1的录制数据1 vs 播放数据1
+                # - 算法B：SPMID文件2的录制数据2 vs 播放数据2
+                # 它们之间没有任何关联，record_index和record_keyon都是各自文件内的
+                # 步骤：
+                # - 提取两个算法的时间戳序列（单位：0.1ms，record_keyon是各自文件内录制按键开始时间）
+                # - 使用两个指针在合并时间线上前进，尽量将时间临近的配对，否则单侧显示
+                ALIGN_WINDOW_01MS = 200  # 对齐窗口：200(0.1ms) = 20ms
+                
+                alg1_pairs_sorted = sorted(alg1_pairs, key=lambda p: p[4])
+                alg2_pairs_sorted = sorted(alg2_pairs, key=lambda p: p[4])
+                i, j = 0, 0
+                while i < len(alg1_pairs_sorted) or j < len(alg2_pairs_sorted):
+                    if i < len(alg1_pairs_sorted) and j < len(alg2_pairs_sorted):
+                        t1 = alg1_pairs_sorted[i][4]
+                        t2 = alg2_pairs_sorted[j][4]
+                        diff = abs(t1 - t2)
+                        if diff <= ALIGN_WINDOW_01MS:
+                            # 配对显示
+                            comparison_rows.append((alg1_pairs_sorted[i], alg2_pairs_sorted[j], t1, t2))
+                            i += 1
+                            j += 1
+                        elif t1 < t2:
+                            # 左侧单独显示
+                            comparison_rows.append((alg1_pairs_sorted[i], None, t1, None))
+                            i += 1
+                        else:
+                            # 右侧单独显示
+                            comparison_rows.append((None, alg2_pairs_sorted[j], None, t2))
+                            j += 1
+                    elif i < len(alg1_pairs_sorted):
+                        t1 = alg1_pairs_sorted[i][4]
+                        comparison_rows.append((alg1_pairs_sorted[i], None, t1, None))
+                        i += 1
+                    else:
+                        t2 = alg2_pairs_sorted[j][4]
+                        comparison_rows.append((None, alg2_pairs_sorted[j], None, t2))
+                        j += 1
+                
+                # 为每个对齐项创建对比图
+                rendered_rows = []
+                for alg1_pair, alg2_pair, t1, t2 in comparison_rows:
+                    if not alg1_pair and not alg2_pair:
+                        continue
+                    
+                    # 创建左右对比的子图，标题显示各自时间
+                    # record_keyon：各自SPMID文件内录制按键开始时间（两个文件独立，时间戳无关联）
+                    if alg1_pair and t1 is not None:
+                        title1 = f"{alg1_name}<br>录制按键开始: {t1/10:.2f}ms"
+                    else:
+                        title1 = f"{alg1_name} (无数据)"
+                    
+                    if alg2_pair and t2 is not None:
+                        title2 = f"{alg2_name}<br>录制按键开始: {t2/10:.2f}ms"
+                    else:
+                        title2 = f"{alg2_name} (无数据)"
+                    
+                    fig = make_subplots(
+                        rows=1, cols=2,
+                        subplot_titles=(title1, title2),
+                        horizontal_spacing=0.15
+                    )
+                    
+                    # 左侧：算法1的曲线
+                    if alg1_pair:
+                        _, _, record_note1, replay_note1, _ = alg1_pair
+                        if record_note1 and hasattr(record_note1, 'after_touch') and not record_note1.after_touch.empty:
+                            x_at = (record_note1.after_touch.index + record_note1.offset) / 10.0
+                            y_at = record_note1.after_touch.values
+                            fig.add_trace(go.Scatter(x=x_at, y=y_at, mode='lines', name='录制触后', 
+                                                    line=dict(color='blue', width=2), showlegend=False), row=1, col=1)
+                        if record_note1 and hasattr(record_note1, 'hammers') and not record_note1.hammers.empty:
+                            x_hm = (record_note1.hammers.index + record_note1.offset) / 10.0
+                            y_hm = record_note1.hammers.values
+                            fig.add_trace(go.Scatter(x=x_hm, y=y_hm, mode='markers', name='录制锤子',
+                                                    marker=dict(color='blue', size=6), showlegend=False), row=1, col=1)
+                        if replay_note1 and hasattr(replay_note1, 'after_touch') and not replay_note1.after_touch.empty:
+                            x_at = (replay_note1.after_touch.index + replay_note1.offset) / 10.0
+                            y_at = replay_note1.after_touch.values
+                            fig.add_trace(go.Scatter(x=x_at, y=y_at, mode='lines', name='回放触后',
+                                                    line=dict(color='red', width=2), showlegend=False), row=1, col=1)
+                        if replay_note1 and hasattr(replay_note1, 'hammers') and not replay_note1.hammers.empty:
+                            x_hm = (replay_note1.hammers.index + replay_note1.offset) / 10.0
+                            y_hm = replay_note1.hammers.values
+                            fig.add_trace(go.Scatter(x=x_hm, y=y_hm, mode='markers', name='回放锤子',
+                                                    marker=dict(color='red', size=6), showlegend=False), row=1, col=1)
+                    
+                    # 右侧：算法2的曲线
+                    if alg2_pair:
+                        _, _, record_note2, replay_note2, _ = alg2_pair
+                        if record_note2 and hasattr(record_note2, 'after_touch') and not record_note2.after_touch.empty:
+                            x_at = (record_note2.after_touch.index + record_note2.offset) / 10.0
+                            y_at = record_note2.after_touch.values
+                            fig.add_trace(go.Scatter(x=x_at, y=y_at, mode='lines', name='录制触后',
+                                                    line=dict(color='blue', width=2), showlegend=False), row=1, col=2)
+                        if record_note2 and hasattr(record_note2, 'hammers') and not record_note2.hammers.empty:
+                            x_hm = (record_note2.hammers.index + record_note2.offset) / 10.0
+                            y_hm = record_note2.hammers.values
+                            fig.add_trace(go.Scatter(x=x_hm, y=y_hm, mode='markers', name='录制锤子',
+                                                    marker=dict(color='blue', size=6), showlegend=False), row=1, col=2)
+                        if replay_note2 and hasattr(replay_note2, 'after_touch') and not replay_note2.after_touch.empty:
+                            x_at = (replay_note2.after_touch.index + replay_note2.offset) / 10.0
+                            y_at = replay_note2.after_touch.values
+                            fig.add_trace(go.Scatter(x=x_at, y=y_at, mode='lines', name='回放触后',
+                                                    line=dict(color='red', width=2), showlegend=False), row=1, col=2)
+                        if replay_note2 and hasattr(replay_note2, 'hammers') and not replay_note2.hammers.empty:
+                            x_hm = (replay_note2.hammers.index + replay_note2.offset) / 10.0
+                            y_hm = replay_note2.hammers.values
+                            fig.add_trace(go.Scatter(x=x_hm, y=y_hm, mode='markers', name='回放锤子',
+                                                    marker=dict(color='red', size=6), showlegend=False), row=1, col=2)
+                    
+                    # 主标题
+                    title_text = f"按键ID {key_id} 曲线对比"
+                    
+                    fig.update_layout(
+                        title=title_text,
+                        height=400,
+                        showlegend=False
+                    )
+                    fig.update_xaxes(title_text="时间 (ms)", row=1, col=1)
+                    fig.update_xaxes(title_text="时间 (ms)", row=1, col=2)
+                    fig.update_yaxes(title_text="值", row=1, col=1)
+                    fig.update_yaxes(title_text="值", row=1, col=2)
+                    
+                    rendered_rows.append(
+                        dbc.Row([
+                            dbc.Col([
+                                dcc.Graph(figure=fig, style={'height': '400px'})
+                            ], width=12)
+                        ], className="mb-3")
+                    )
+                
+                if not rendered_rows:
+                    modal_style = {
+                        'display': 'block',
+                        'position': 'fixed',
+                        'zIndex': '9999',
+                        'left': '0',
+                        'top': '0',
+                        'width': '100%',
+                        'height': '100%',
+                        'backgroundColor': 'rgba(0,0,0,0.6)',
+                        'backdropFilter': 'blur(5px)'
+                    }
+                    return modal_style, [html.Div([
+                        html.P(f"按键ID {key_id} 没有可显示的对比数据", className="text-muted text-center")
+                    ])]
+                
+                # 显示模态框
+                modal_style = {
+                    'display': 'block',
+                    'position': 'fixed',
+                    'zIndex': '9999',
+                    'left': '0',
+                    'top': '0',
+                    'width': '100%',
+                    'height': '100%',
+                    'backgroundColor': 'rgba(0,0,0,0.6)',
+                    'backdropFilter': 'blur(5px)'
+                }
+                
+                return modal_style, rendered_rows
+                
+            except Exception as e:
+                logger.error(f"❌ 生成按键曲线对比失败: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                modal_style = {
+                    'display': 'block',
+                    'position': 'fixed',
+                    'zIndex': '9999',
+                    'left': '0',
+                    'top': '0',
+                    'width': '100%',
+                    'height': '100%',
+                    'backgroundColor': 'rgba(0,0,0,0.6)',
+                    'backdropFilter': 'blur(5px)'
+                }
+                return modal_style, [html.Div([
+                    html.P(f"生成对比图失败: {str(e)}", className="text-danger text-center")
+                ])]
+        
+        # 其他情况，保持当前状态
+        return current_style, []
 

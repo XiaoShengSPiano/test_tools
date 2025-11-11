@@ -1401,27 +1401,40 @@ class MultiAlgorithmPlotGenerator:
                         hovertemplate=f'算法: {algorithm_name}<br>锤速: %{{x}}<br>延时: %{{y:.2f}}ms<extra></extra>'
                     ))
                     
-                    # 添加趋势线（按锤速区间计算平均延时）
-                    if len(hammer_velocities) > 1:
-                        from collections import defaultdict
-                        velocity_delay_groups = defaultdict(list)
-                        for v, d in zip(hammer_velocities, delays_ms):
-                            velocity_group = (v // 10) * 10
-                            velocity_delay_groups[velocity_group].append(d)
+                    # 添加全局平均延时的水平虚线（类似Z-Score图中的均值线）
+                    if len(hammer_velocities) > 0:
+                        # 计算该算法的全局平均延时（使用MAE，即平均绝对误差）
+                        mae_0_1ms = algorithm.analyzer.get_mean_absolute_error() if hasattr(algorithm.analyzer, 'get_mean_absolute_error') else 0.0
+                        mae_ms = mae_0_1ms / 10.0
                         
-                        sorted_velocities = sorted(velocity_delay_groups.keys())
-                        avg_delays = [sum(velocity_delay_groups[v]) / len(velocity_delay_groups[v]) for v in sorted_velocities]
+                        # 获取x轴范围（使用所有算法的范围）
+                        all_velocities = []
+                        for alg in ready_algorithms:
+                            try:
+                                matched_pairs = alg.analyzer.note_matcher.get_matched_pairs()
+                                for record_idx, replay_idx, record_note, replay_note in matched_pairs:
+                                    if len(replay_note.hammers) > 0 and len(replay_note.hammers.values) > 0:
+                                        all_velocities.append(replay_note.hammers.values[0])
+                            except:
+                                continue
                         
+                        x_min = min(all_velocities) if all_velocities else 0
+                        x_max = max(all_velocities) if all_velocities else 100
+                        
+                        # 添加水平虚线
                         fig.add_trace(go.Scatter(
-                            x=sorted_velocities,
-                            y=avg_delays,
-                            mode='lines+markers',
+                            x=[x_min, x_max],
+                            y=[mae_ms, mae_ms],
+                            mode='lines',
                             name=f'{algorithm_name} - 平均延时',
-                            line=dict(color=color, width=2, dash='dash'),
-                            marker=dict(size=6, color=color),
+                            line=dict(
+                                color=color,
+                                width=1.5,
+                                dash='dot'
+                            ),
                             legendgroup=algorithm_name,
                             showlegend=True,
-                            hovertemplate=f'算法: {algorithm_name}<br>锤速区间: %{{x}}<br>平均延时: %{{y:.2f}}ms<extra></extra>'
+                            hovertemplate=f'算法: {algorithm_name}<br>平均延时: {mae_ms:.2f}ms<extra></extra>'
                         ))
                     
                 except Exception as e:

@@ -352,6 +352,17 @@ class SPMIDAnalyzer:
             return self.note_matcher.get_mean_squared_error()
         return 0.0
 
+    def get_root_mean_squared_error(self) -> float:
+        """
+        获取已配对按键的均方根误差（RMSE）
+        
+        Returns:
+            float: 均方根误差（0.1ms单位）
+        """
+        if self.note_matcher:
+            return self.note_matcher.get_root_mean_squared_error()
+        return 0.0
+    
     def get_mean_error(self) -> float:
         """
         获取已匹配按键对的平均误差（ME）

@@ -311,6 +311,19 @@ class PianoAnalysisBackend:
         mse_0_1ms_squared = self.analyzer.get_mean_squared_error()
         return mse_0_1ms_squared
 
+    def get_root_mean_squared_error(self) -> float:
+        """
+        获取已配对按键的均方根误差（RMSE）
+        
+        Returns:
+            float: 均方根误差（0.1ms单位）
+        """
+        if not self.analyzer:
+            return 0.0
+        
+        rmse_0_1ms = self.analyzer.get_root_mean_squared_error()
+        return rmse_0_1ms
+    
     def get_mean_error(self) -> float:
         """
         获取已匹配按键对的平均误差（ME）
@@ -1391,27 +1404,28 @@ class PianoAnalysisBackend:
                 hovertemplate='锤速: %{x}<br>延时: %{y:.2f}ms<extra></extra>'
             ))
             
-            # 添加趋势线（可选，帮助观察延时与锤速的关系）
-            if len(hammer_velocities) > 1:
-                # 按锤速分组计算平均延时
-                from collections import defaultdict
-                velocity_delay_groups = defaultdict(list)
-                for v, d in zip(hammer_velocities, delays_ms):
-                    # 将锤速按区间分组（每10个单位一组）
-                    velocity_group = (v // 10) * 10
-                    velocity_delay_groups[velocity_group].append(d)
+            # 添加全局平均延时的水平虚线（类似Z-Score图中的均值线）
+            if len(hammer_velocities) > 0:
+                # 计算全局平均延时（使用MAE，即平均绝对误差）
+                mae_0_1ms = self.get_mean_absolute_error()
+                mae_ms = mae_0_1ms / 10.0
                 
-                sorted_velocities = sorted(velocity_delay_groups.keys())
-                avg_delays = [sum(velocity_delay_groups[v]) / len(velocity_delay_groups[v]) for v in sorted_velocities]
+                # 获取x轴范围
+                x_min = min(hammer_velocities) if hammer_velocities else 0
+                x_max = max(hammer_velocities) if hammer_velocities else 100
                 
+                # 添加水平虚线
                 fig.add_trace(go.Scatter(
-                    x=sorted_velocities,
-                    y=avg_delays,
-                    mode='lines+markers',
+                    x=[x_min, x_max],
+                    y=[mae_ms, mae_ms],
+                    mode='lines',
                     name='平均延时',
-                    line=dict(color='#1976d2', width=2, dash='dash'),
-                    marker=dict(size=6, color='#1976d2'),
-                    hovertemplate='锤速区间: %{x}<br>平均延时: %{y:.2f}ms<extra></extra>'
+                    line=dict(
+                        color='#1976d2',
+                        width=1.5,
+                        dash='dot'
+                    ),
+                    hovertemplate=f'平均延时: {mae_ms:.2f}ms<extra></extra>'
                 ))
             
             # 更新布局
@@ -2540,6 +2554,49 @@ class PianoAnalysisBackend:
             })
         
         return algorithms
+    
+    def get_key_matched_pairs_by_algorithm(self, algorithm_name: str, key_id: int) -> List[Tuple[int, int, Any, Any, float]]:
+        """
+        获取指定算法和按键ID的所有匹配对，按时间戳排序
+        
+        Args:
+            algorithm_name: 算法名称
+            key_id: 按键ID
+            
+        Returns:
+            List[Tuple[int, int, Note, Note, float]]: 匹配对列表，每个元素为(record_index, replay_index, record_note, replay_note, record_keyon)
+        """
+        if not self.multi_algorithm_mode or not self.multi_algorithm_manager:
+            return []
+        
+        algorithm = self.multi_algorithm_manager.get_algorithm(algorithm_name)
+        if not algorithm or not algorithm.is_ready() or not algorithm.analyzer:
+            return []
+        
+        matched_pairs = algorithm.analyzer.matched_pairs if hasattr(algorithm.analyzer, 'matched_pairs') else []
+        if not matched_pairs:
+            return []
+        
+        # 获取偏移对齐数据以获取时间戳
+        offset_data = algorithm.analyzer.get_offset_alignment_data()
+        offset_map = {}
+        for item in offset_data:
+            record_idx = item.get('record_index')
+            replay_idx = item.get('replay_index')
+            if record_idx is not None and replay_idx is not None:
+                offset_map[(record_idx, replay_idx)] = item.get('record_keyon', 0)
+        
+        # 筛选指定按键ID的匹配对
+        key_pairs = []
+        for record_idx, replay_idx, record_note, replay_note in matched_pairs:
+            if record_note.id == key_id:
+                record_keyon = offset_map.get((record_idx, replay_idx), 0)
+                key_pairs.append((record_idx, replay_idx, record_note, replay_note, record_keyon))
+        
+        # 按时间戳排序
+        key_pairs.sort(key=lambda x: x[4])
+        
+        return key_pairs
     
     def get_active_algorithms(self) -> List[AlgorithmDataset]:
         """

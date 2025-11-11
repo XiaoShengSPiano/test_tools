@@ -704,6 +704,26 @@ class NoteMatcher:
         else:
             return 0.0
 
+    def get_root_mean_squared_error(self) -> float:
+        """
+        计算已配对按键的均方根误差（RMSE）
+        RMSE = sqrt(MSE) = sqrt(mean((keyon_offset)^2))
+        
+        Returns:
+            float: 均方根误差（单位：0.1ms，转换为ms需要除以10）
+        """
+        if not self.matched_pairs:
+            return 0.0
+        
+        # 获取MSE
+        mse = self.get_mean_squared_error()
+        
+        # 计算RMSE = sqrt(MSE)
+        import math
+        rmse = math.sqrt(mse) if mse > 0 else 0.0
+        
+        return rmse
+    
     def get_mean_error(self) -> float:
         """
         计算已匹配按键对的平均误差（ME，带符号的平均偏差）

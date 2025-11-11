@@ -501,7 +501,76 @@ def create_main_layout():
                         'height': '100%',
                         'backgroundColor': 'rgba(0,0,0,0.6)',
                         'backdropFilter': 'blur(5px)'
-            })
+            }),
+            # 按键曲线对比模态框（悬浮窗）
+            html.Div([
+                html.Div([
+                    html.Div([
+                        html.Div([
+                            html.H4("按键曲线对比", style={'margin': '0', 'padding': '15px 20px', 'borderBottom': '1px solid #dee2e6'}),
+                            html.Button("×", id="close-key-curves-modal", className="close", style={
+                                'position': 'absolute',
+                                'right': '15px',
+                                'top': '15px',
+                                'fontSize': '28px',
+                                'fontWeight': 'bold',
+                                'background': 'none',
+                                'border': 'none',
+                                'cursor': 'pointer',
+                                'color': '#aaa'
+                            })
+                        ], style={'position': 'relative', 'borderBottom': '1px solid #dee2e6'}),
+                        html.Div([
+                            html.Div(id='key-curves-comparison-container', children=[])
+                        ], id='key-curves-modal-content', className="modal-body", style={
+                            'padding': '20px',
+                            'maxHeight': '90vh',
+                            'overflowY': 'auto'
+                        }),
+                        html.Div([
+                            html.Button(
+                                "关闭",
+                                id="close-key-curves-modal-btn",
+                                className="btn btn-primary",
+                                style={
+                                    'backgroundColor': '#007bff',
+                                    'borderColor': '#007bff',
+                                    'padding': '8px 20px',
+                                    'borderRadius': '5px',
+                                    'border': 'none',
+                                    'color': 'white',
+                                    'cursor': 'pointer'
+                                }
+                            )
+                        ], className="modal-footer", style={
+                            'borderTop': '1px solid #dee2e6',
+                            'padding': '15px 20px',
+                            'textAlign': 'right'
+                        })
+                    ], className="modal-content", style={
+                        'backgroundColor': 'white',
+                        'margin': '1% auto',
+                        'padding': '0',
+                        'border': 'none',
+                        'width': '95%',
+                        'maxWidth': '1600px',
+                        'borderRadius': '10px',
+                        'boxShadow': '0 4px 20px rgba(0,0,0,0.3)',
+                        'maxHeight': '98vh',
+                        'overflow': 'hidden'
+                    })
+                ], id="key-curves-modal", className="modal", style={
+                    'display': 'none',
+                    'position': 'fixed',
+                    'zIndex': '9999',
+                    'left': '0',
+                    'top': '0',
+                    'width': '100%',
+                    'height': '100%',
+                    'backgroundColor': 'rgba(0,0,0,0.6)',
+                    'backdropFilter': 'blur(5px)'
+                })
+            ])
         ])
 
     ], style={
@@ -605,12 +674,13 @@ def _create_single_algorithm_error_stats_row(algorithm, algorithm_name):
         variance_0_1ms_squared = algorithm.analyzer.get_variance() if hasattr(algorithm.analyzer, 'get_variance') else 0.0
         std_0_1ms = algorithm.analyzer.get_standard_deviation() if hasattr(algorithm.analyzer, 'get_standard_deviation') else 0.0
         me_0_1ms = algorithm.analyzer.get_mean_error() if hasattr(algorithm.analyzer, 'get_mean_error') else 0.0
+        rmse_0_1ms = algorithm.analyzer.get_root_mean_squared_error() if hasattr(algorithm.analyzer, 'get_root_mean_squared_error') else 0.0
         
-        average_delay_ms = mae_0_1ms / 10.0
         variance_ms_squared = variance_0_1ms_squared / 100.0
         std_ms = std_0_1ms / 10.0
         mae_ms = mae_0_1ms / 10.0
         me_ms = me_0_1ms / 10.0
+        rmse_ms = rmse_0_1ms / 10.0
         
         # 生成延时误差统计指标行（带算法名称标识）
         error_stats_row = html.Div([
@@ -627,39 +697,38 @@ def _create_single_algorithm_error_stats_row(algorithm, algorithm_name):
                         html.H3(f"{me_ms:.2f} ms", className="text-secondary mb-1"),
                         html.P("总体均值", className="text-muted mb-0"),
                         html.Small("所有已匹配按键对的keyon_offset的算术平均", className="text-muted", style={'fontSize': '10px'})
-                                    ], className="text-center")
-                                ], width=3),
-                                dbc.Col([
-                                    html.Div([
-                                        html.H3(f"{variance_ms_squared:.2f} ms²", className="text-danger mb-1"),
-                                        html.P("总体方差", className="text-muted mb-0"),
-                                        html.Small("所有已匹配按键对的keyon_offset的总体方差", className="text-muted", style={'fontSize': '10px'})
-                                    ], className="text-center")
-                                ], width=3),
-                                dbc.Col([
-                                    html.Div([
-                                        html.H3(f"{std_ms:.2f} ms", className="text-info mb-1"),
-                                        html.P("总体标准差", className="text-muted mb-0"),
-                                        html.Small("所有已匹配按键对的keyon_offset的总体标准差", className="text-muted", style={'fontSize': '10px'})
-                                    ], className="text-center")
-                                ], width=3),
+                    ], className="text-center")
+                ], width=4),
                 dbc.Col([
                     html.Div([
-                        html.H3(f"{average_delay_ms:.2f} ms", className="text-primary mb-1"),
-                        html.P("平均延时（绝对值口径，等同MAE）", className="text-muted mb-0"),
-                        html.Small("平均(|keyon_offset|)，用于衡量误差大小，避免正负抵消", className="text-muted", style={'fontSize': '10px'})
+                        html.H3(f"{variance_ms_squared:.2f} ms²", className="text-danger mb-1"),
+                        html.P("总体方差", className="text-muted mb-0"),
+                        html.Small("所有已匹配按键对的keyon_offset的总体方差", className="text-muted", style={'fontSize': '10px'})
                     ], className="text-center")
-                ], width=3)
+                ], width=4),
+                dbc.Col([
+                    html.Div([
+                        html.H3(f"{std_ms:.2f} ms", className="text-info mb-1"),
+                        html.P("总体标准差", className="text-muted mb-0"),
+                        html.Small("所有已匹配按键对的keyon_offset的总体标准差", className="text-muted", style={'fontSize': '10px'})
+                    ], className="text-center")
+                ], width=4)
             ], className="mb-3"),
             dbc.Row([
-                                dbc.Col([
-                                    html.Div([
-                                        html.H3(f"{mae_ms:.2f} ms", className="text-warning mb-1"),
-                                        html.P("平均绝对误差(MAE)", className="text-muted mb-0"),
-                                        html.Small("已匹配按键对的延时绝对值的平均", className="text-muted", style={'fontSize': '10px'})
-                                    ], className="text-center")
-                ], width=3),
-                dbc.Col([], width=9)  # 占位，保持布局平衡
+                dbc.Col([
+                    html.Div([
+                        html.H3(f"{mae_ms:.2f} ms", className="text-warning mb-1"),
+                        html.P("平均绝对误差(MAE)", className="text-muted mb-0"),
+                        html.Small("已匹配按键对的延时绝对值的平均", className="text-muted", style={'fontSize': '10px'})
+                    ], className="text-center")
+                ], width=6),
+                dbc.Col([
+                    html.Div([
+                        html.H3(f"{rmse_ms:.2f} ms", className="text-success mb-1"),
+                        html.P("均方根误差(RMSE)", className="text-muted mb-0"),
+                        html.Small("对大偏差更敏感", className="text-muted", style={'fontSize': '10px'})
+                    ], className="text-center")
+                ], width=6)
             ])
         ], className="mb-3", style={'borderBottom': '1px solid #dee2e6', 'paddingBottom': '15px'})
         
