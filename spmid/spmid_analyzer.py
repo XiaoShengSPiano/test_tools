@@ -374,6 +374,16 @@ class SPMIDAnalyzer:
             return self.note_matcher.get_mean_error()
         return 0.0
     
+    def get_coefficient_of_variation(self) -> float:
+        """
+        获取已配对按键的变异系数（Coefficient of Variation, CV）
+        
+        Returns:
+            float: 变异系数（百分比，例如 15.5 表示 15.5%）
+        """
+        if self.note_matcher:
+            return self.note_matcher.get_coefficient_of_variation()
+        return 0.0
 
     
     def get_offset_statistics(self) -> Dict[str, Any]:

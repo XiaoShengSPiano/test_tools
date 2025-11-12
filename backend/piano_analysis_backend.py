@@ -337,6 +337,19 @@ class PianoAnalysisBackend:
         me_0_1ms = self.analyzer.get_mean_error()
         return me_0_1ms
     
+    def get_coefficient_of_variation(self) -> float:
+        """
+        获取已配对按键的变异系数（Coefficient of Variation, CV）
+        
+        Returns:
+            float: 变异系数（百分比，例如 15.5 表示 15.5%）
+        """
+        if not self.analyzer:
+            return 0.0
+        
+        cv = self.analyzer.get_coefficient_of_variation()
+        return cv
+    
     def generate_delay_histogram_plot(self) -> Any:
         """
         生成延时分布直方图，并叠加正态拟合曲线（基于已匹配按键对的带符号keyon_offset）。
@@ -444,6 +457,8 @@ class PianoAnalysisBackend:
                     'text': '延时分布直方图（附正态拟合曲线）',
                     'x': 0.5,
                     'xanchor': 'center',
+                    'y': 0.98,  # 稍微下移，避免被图注挤压
+                    'yanchor': 'top',
                     'font': {'size': 18, 'color': '#2c3e50'}
                 },
                 xaxis_title='延时 (ms)',
@@ -456,14 +471,14 @@ class PianoAnalysisBackend:
                 legend=dict(
                     orientation='h',
                     yanchor='bottom',
-                    y=1.02,
+                    y=1.05,  # 图注更靠上，给标题留出空间
                     xanchor='left',
-                    x=0.0,
+                    x=0.0,  # 从最左边开始
                     bgcolor='rgba(255, 255, 255, 0.9)',
                     bordercolor='gray',
                     borderwidth=1
                 ),
-                margin=dict(t=70, b=60, l=60, r=60)
+                margin=dict(t=100, b=60, l=60, r=60)  # 增加顶部边距，给图注和标题更多空间
             )
 
             return fig
@@ -1342,9 +1357,10 @@ class PianoAnalysisBackend:
             # 获取偏移对齐数据（已包含延时信息）
             offset_data = self.analyzer.note_matcher.get_offset_alignment_data()
             
-            # 提取锤速和延时数据
+            # 提取锤速和延时数据，并计算Z-Score（与按键与延时Z-Score散点图相同）
             hammer_velocities = []  # 锤速（播放音符的第一个锤速值）
-            delays_ms = []  # 延时（ms单位）
+            delays_ms = []  # 延时（ms单位，用于计算Z-Score）
+            scatter_customdata = []  # 存储record_idx和replay_idx，用于点击事件识别
             
             # 创建匹配对索引到偏移数据的映射
             offset_map = {}
@@ -1374,25 +1390,48 @@ class PianoAnalysisBackend:
                     except:
                         continue  # 如果计算失败，跳过该数据点
                 
-                # 将延时从0.1ms转换为ms，并使用绝对值
-                delay_ms = abs(keyon_offset) / 10.0
+                # 将延时从0.1ms转换为ms（带符号，用于Z-Score计算）
+                delay_ms = keyon_offset / 10.0
                 
                 hammer_velocities.append(hammer_velocity)
                 delays_ms.append(delay_ms)
+                # 存储record_idx和replay_idx，用于点击事件识别
+                scatter_customdata.append([record_idx, replay_idx])
             
             if not hammer_velocities:
                 logger.warning("⚠️ 没有有效的散点图数据")
                 return self.plot_generator._create_empty_plot("没有有效的散点图数据")
+            
+            # 计算Z-Score（与按键与延时Z-Score散点图相同的计算方式）
+            import numpy as np
+            me_0_1ms = self.get_mean_error()  # 总体均值（0.1ms单位，带符号）
+            std_0_1ms = self.get_standard_deviation()  # 总体标准差（0.1ms单位，带符号）
+            
+            mu = me_0_1ms / 10.0  # 总体均值（ms，带符号）
+            sigma = std_0_1ms / 10.0  # 总体标准差（ms，带符号）
+            
+            # 计算Z-Score：z = (x_i - μ) / σ
+            delays_array = np.array(delays_ms)
+            if sigma > 0:
+                z_scores = ((delays_array - mu) / sigma).tolist()
+            else:
+                z_scores = [0.0] * len(delays_ms)
             
             # 创建Plotly散点图
             import plotly.graph_objects as go
             
             fig = go.Figure()
             
-            # 添加散点图数据
+            # 添加散点图数据（y轴使用Z-Score值）
+            # customdata格式: [delay_ms, record_idx, replay_idx]
+            # 第一个元素用于hover显示，后两个用于点击事件识别
+            combined_customdata = [[delay_ms, record_idx, replay_idx] 
+                                  for delay_ms, (record_idx, replay_idx) 
+                                  in zip(delays_ms, scatter_customdata)]
+            
             fig.add_trace(go.Scatter(
                 x=hammer_velocities,
-                y=delays_ms,
+                y=z_scores,
                 mode='markers',
                 name='匹配对',
                 marker=dict(
@@ -1401,31 +1440,56 @@ class PianoAnalysisBackend:
                     opacity=0.6,
                     line=dict(width=1, color='#b71c1c')
                 ),
-                hovertemplate='锤速: %{x}<br>延时: %{y:.2f}ms<extra></extra>'
+                hovertemplate='锤速: %{x}<br>延时: %{customdata[0]:.2f}ms<br>Z-Score: %{y:.2f}<extra></extra>',
+                customdata=combined_customdata
             ))
             
-            # 添加全局平均延时的水平虚线（类似Z-Score图中的均值线）
+            # 添加Z-Score参考线（与按键与延时Z-Score散点图相同）
             if len(hammer_velocities) > 0:
-                # 计算全局平均延时（使用MAE，即平均绝对误差）
-                mae_0_1ms = self.get_mean_absolute_error()
-                mae_ms = mae_0_1ms / 10.0
-                
                 # 获取x轴范围
                 x_min = min(hammer_velocities) if hammer_velocities else 0
                 x_max = max(hammer_velocities) if hammer_velocities else 100
                 
-                # 添加水平虚线
+                # 添加Z=0的水平虚线（均值线）
                 fig.add_trace(go.Scatter(
                     x=[x_min, x_max],
-                    y=[mae_ms, mae_ms],
+                    y=[0, 0],
                     mode='lines',
-                    name='平均延时',
+                    name='Z=0',
                     line=dict(
                         color='#1976d2',
                         width=1.5,
                         dash='dot'
                     ),
-                    hovertemplate=f'平均延时: {mae_ms:.2f}ms<extra></extra>'
+                    hovertemplate='Z-Score = 0 (均值线)<extra></extra>'
+                ))
+                
+                # 添加Z=+3的水平虚线（上阈值）
+                fig.add_trace(go.Scatter(
+                    x=[x_min, x_max],
+                    y=[3, 3],
+                    mode='lines',
+                    name='Z=+3',
+                    line=dict(
+                        color='#1976d2',
+                        width=2,
+                        dash='dash'
+                    ),
+                    hovertemplate='Z-Score = +3 (上阈值)<extra></extra>'
+                ))
+                
+                # 添加Z=-3的水平虚线（下阈值）
+                fig.add_trace(go.Scatter(
+                    x=[x_min, x_max],
+                    y=[-3, -3],
+                    mode='lines',
+                    name='Z=-3',
+                    line=dict(
+                        color='#1976d2',
+                        width=2,
+                        dash='dash'
+                    ),
+                    hovertemplate='Z-Score = -3 (下阈值)<extra></extra>'
                 ))
             
             # 更新布局
@@ -1437,7 +1501,7 @@ class PianoAnalysisBackend:
                     'font': {'size': 18, 'color': '#2c3e50'}
                 },
                 xaxis_title='锤速',
-                yaxis_title='延时 (ms)',
+                yaxis_title='Z-Score（标准化延时）',
                 xaxis=dict(
                     showgrid=True,
                     gridcolor='lightgray',

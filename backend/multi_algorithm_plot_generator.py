@@ -736,6 +736,8 @@ class MultiAlgorithmPlotGenerator:
                     'text': '多算法延时分布直方图（附正态拟合曲线）',
                     'x': 0.5,
                     'xanchor': 'center',
+                    'y': 0.98,  # 稍微下移，避免被图注挤压
+                    'yanchor': 'top',
                     'font': {'size': 18, 'color': '#2c3e50'}
                 },
                 xaxis_title='延时 (ms)',
@@ -748,14 +750,14 @@ class MultiAlgorithmPlotGenerator:
                 legend=dict(
                     orientation='h',
                     yanchor='bottom',
-                    y=1.02,
+                    y=1.05,  # 图注更靠上，给标题留出空间
                     xanchor='left',
-                    x=0.0,
+                    x=0.0,  # 从最左边开始，避免挤压居中标题
                     bgcolor='rgba(255, 255, 255, 0.9)',
                     bordercolor='gray',
                     borderwidth=1
                 ),
-                margin=dict(t=70, b=60, l=60, r=60)
+                margin=dict(t=100, b=60, l=60, r=60)  # 增加顶部边距，给图注和标题更多空间
             )
             
             logger.info(f"✅ 多算法延时分布直方图生成成功，共 {len(ready_algorithms)} 个算法")
@@ -1342,9 +1344,10 @@ class MultiAlgorithmPlotGenerator:
                     
                     offset_data = algorithm.analyzer.note_matcher.get_offset_alignment_data()
                     
-                    # 提取锤速和延时数据
+                    # 提取锤速和延时数据，并计算Z-Score（与按键与延时Z-Score散点图相同）
                     hammer_velocities = []
-                    delays_ms = []
+                    delays_ms = []  # 延时（ms单位，带符号，用于计算Z-Score）
+                    scatter_customdata = []  # 存储record_idx、replay_idx和algorithm_name，用于点击事件识别
                     
                     # 创建匹配对索引到偏移数据的映射
                     offset_map = {}
@@ -1373,23 +1376,47 @@ class MultiAlgorithmPlotGenerator:
                             except:
                                 continue
                         
-                        delay_ms = abs(keyon_offset) / 10.0
+                        # 将延时从0.1ms转换为ms（带符号，用于Z-Score计算）
+                        delay_ms = keyon_offset / 10.0
                         
                         hammer_velocities.append(hammer_velocity)
                         delays_ms.append(delay_ms)
+                        # 存储record_idx、replay_idx和algorithm_name，用于点击事件识别
+                        scatter_customdata.append([record_idx, replay_idx, algorithm_name])
                     
                     if not hammer_velocities:
                         logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有有效的散点图数据，跳过")
                         continue
                     
+                    # 计算Z-Score（与按键与延时Z-Score散点图相同的计算方式）
+                    import numpy as np
+                    me_0_1ms = algorithm.analyzer.get_mean_error() if hasattr(algorithm.analyzer, 'get_mean_error') else 0.0
+                    std_0_1ms = algorithm.analyzer.get_standard_deviation() if hasattr(algorithm.analyzer, 'get_standard_deviation') else 0.0
+                    
+                    mu = me_0_1ms / 10.0  # 总体均值（ms，带符号）
+                    sigma = std_0_1ms / 10.0  # 总体标准差（ms，带符号）
+                    
+                    # 计算Z-Score：z = (x_i - μ) / σ
+                    delays_array = np.array(delays_ms)
+                    if sigma > 0:
+                        z_scores = ((delays_array - mu) / sigma).tolist()
+                    else:
+                        z_scores = [0.0] * len(delays_ms)
+                    
                     color = colors[alg_idx % len(colors)]
                     
-                    # 添加散点图数据
+                    # 添加散点图数据（y轴使用Z-Score值）
+                    # customdata格式: [delay_ms, record_idx, replay_idx, algorithm_name]
+                    # 第一个元素用于hover显示，后三个用于点击事件识别
+                    combined_customdata = [[delay_ms, record_idx, replay_idx, alg_name] 
+                                          for delay_ms, (record_idx, replay_idx, alg_name) 
+                                          in zip(delays_ms, scatter_customdata)]
+                    
                     fig.add_trace(go.Scatter(
                         x=hammer_velocities,
-                        y=delays_ms,
+                        y=z_scores,
                         mode='markers',
-                        name=f'{algorithm_name} - 匹配对',
+                        name=f'{algorithm_name} - Z-Score',
                         marker=dict(
                             size=8,
                             color=color,
@@ -1398,15 +1425,12 @@ class MultiAlgorithmPlotGenerator:
                         ),
                         legendgroup=algorithm_name,
                         showlegend=True,
-                        hovertemplate=f'算法: {algorithm_name}<br>锤速: %{{x}}<br>延时: %{{y:.2f}}ms<extra></extra>'
+                        hovertemplate=f'算法: {algorithm_name}<br>锤速: %{{x}}<br>延时: %{{customdata[0]:.2f}}ms<br>Z-Score: %{{y:.2f}}<extra></extra>',
+                        customdata=combined_customdata
                     ))
                     
-                    # 添加全局平均延时的水平虚线（类似Z-Score图中的均值线）
+                    # 添加Z-Score参考线（与按键与延时Z-Score散点图相同）
                     if len(hammer_velocities) > 0:
-                        # 计算该算法的全局平均延时（使用MAE，即平均绝对误差）
-                        mae_0_1ms = algorithm.analyzer.get_mean_absolute_error() if hasattr(algorithm.analyzer, 'get_mean_absolute_error') else 0.0
-                        mae_ms = mae_0_1ms / 10.0
-                        
                         # 获取x轴范围（使用所有算法的范围）
                         all_velocities = []
                         for alg in ready_algorithms:
@@ -1421,12 +1445,12 @@ class MultiAlgorithmPlotGenerator:
                         x_min = min(all_velocities) if all_velocities else 0
                         x_max = max(all_velocities) if all_velocities else 100
                         
-                        # 添加水平虚线
+                        # 添加Z=0的水平虚线（均值线）
                         fig.add_trace(go.Scatter(
                             x=[x_min, x_max],
-                            y=[mae_ms, mae_ms],
+                            y=[0, 0],
                             mode='lines',
-                            name=f'{algorithm_name} - 平均延时',
+                            name=f'{algorithm_name} - Z=0',
                             line=dict(
                                 color=color,
                                 width=1.5,
@@ -1434,7 +1458,39 @@ class MultiAlgorithmPlotGenerator:
                             ),
                             legendgroup=algorithm_name,
                             showlegend=True,
-                            hovertemplate=f'算法: {algorithm_name}<br>平均延时: {mae_ms:.2f}ms<extra></extra>'
+                            hovertemplate=f'算法: {algorithm_name}<br>Z-Score = 0 (均值线)<extra></extra>'
+                        ))
+                        
+                        # 添加Z=+3的水平虚线（上阈值）
+                        fig.add_trace(go.Scatter(
+                            x=[x_min, x_max],
+                            y=[3, 3],
+                            mode='lines',
+                            name=f'{algorithm_name} - Z=+3',
+                            line=dict(
+                                color=color,
+                                width=2,
+                                dash='dash'
+                            ),
+                            legendgroup=algorithm_name,
+                            showlegend=True,
+                            hovertemplate=f'算法: {algorithm_name}<br>Z-Score = +3 (上阈值)<extra></extra>'
+                        ))
+                        
+                        # 添加Z=-3的水平虚线（下阈值）
+                        fig.add_trace(go.Scatter(
+                            x=[x_min, x_max],
+                            y=[-3, -3],
+                            mode='lines',
+                            name=f'{algorithm_name} - Z=-3',
+                            line=dict(
+                                color=color,
+                                width=2,
+                                dash='dash'
+                            ),
+                            legendgroup=algorithm_name,
+                            showlegend=True,
+                            hovertemplate=f'算法: {algorithm_name}<br>Z-Score = -3 (下阈值)<extra></extra>'
                         ))
                     
                 except Exception as e:
@@ -1450,7 +1506,7 @@ class MultiAlgorithmPlotGenerator:
                     'font': {'size': 18, 'color': '#2c3e50'}
                 },
                 xaxis_title='锤速',
-                yaxis_title='延时 (ms)',
+                yaxis_title='Z-Score（标准化延时）',
                 xaxis=dict(
                     showgrid=True,
                     gridcolor='lightgray',

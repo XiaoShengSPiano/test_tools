@@ -144,7 +144,8 @@ class NoteMatcher:
                 # 所有候选都被占用 - 明确说明原因
                 if len(candidates) > 0:
                     # 有候选但都被占用
-                    reason = f"所有候选已被占用（候选数:{len(candidates)}, 阈值:{threshold/10:.1f}ms），录制有，播放有但已被其他录制音符匹配"
+                    # 从当前录制音符的角度：录制有，但播放数据中没有可用的匹配（所有候选已被其他录制音符占用）
+                    reason = f"录制有，播放没（所有候选已被占用，候选数:{len(candidates)}, 阈值:{threshold/10:.1f}ms）"
                 else:
                     # 这种情况理论上不应该发生（因为前面已经处理了没有候选的情况）
                     reason = f"录制有，播放无（没有可用候选）"
@@ -675,6 +676,35 @@ class NoteMatcher:
             return mae
         else:
             return 0.0
+    
+    def get_coefficient_of_variation(self) -> float:
+        """
+        计算已配对按键的变异系数（Coefficient of Variation, CV）
+        变异系数 = 总体标准差（σ）/ |总体均值（μ）| × 100%
+        
+        使用总体标准差（σ）与总体均值（μ）计算，反映相对变异程度
+        
+        注意：如果总体均值（μ）为0或接近0，变异系数可能无意义或非常大
+        
+        Returns:
+            float: 变异系数（百分比，例如 15.5 表示 15.5%）
+        """
+        if not self.matched_pairs:
+            return 0.0
+        
+        # 获取总体均值（μ，带符号）
+        mean_0_1ms = self.get_mean_error()
+        if abs(mean_0_1ms) < 1e-6:  # 如果均值接近0，无法计算CV
+            return 0.0
+        
+        # 获取总体标准差（σ）
+        std_0_1ms = self.get_standard_deviation()
+        if std_0_1ms == 0:
+            return 0.0
+        
+        # 计算变异系数：CV = (σ / |μ|) × 100%
+        cv = (std_0_1ms / abs(mean_0_1ms)) * 100.0
+        return cv
     
     def get_mean_squared_error(self) -> float:
         """

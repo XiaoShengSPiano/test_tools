@@ -2097,10 +2097,29 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 except Exception as e:
                     logger.error(f"❌ 更新瀑布图失败: {e}")
                     plot_fig = _create_empty_figure_for_callback(f"更新失败: {str(e)}")
-                    report_content = html.Div([
-                        html.H4("更新失败", className="text-center text-danger"),
-                        html.P(f"错误信息: {str(e)}", className="text-center")
-                    ])
+                    # 使用 create_report_layout 确保包含所有必需的组件
+                    try:
+                        report_content = create_report_layout(backend)
+                    except:
+                        # 如果 create_report_layout 也失败，返回包含必需组件的错误布局
+                        empty_fig = {}
+                        report_content = html.Div([
+                            html.H4("更新失败", className="text-center text-danger"),
+                            html.P(f"错误信息: {str(e)}", className="text-center"),
+                            # 包含所有必需的图表组件（隐藏），确保回调函数不会报错
+                            dcc.Graph(id='key-delay-scatter-plot', figure=empty_fig, style={'display': 'none'}),
+                            dcc.Graph(id='key-delay-zscore-scatter-plot', figure=empty_fig, style={'display': 'none'}),
+                            dcc.Graph(id='hammer-velocity-delay-scatter-plot', figure=empty_fig, style={'display': 'none'}),
+                            dcc.Graph(id='key-hammer-velocity-scatter-plot', figure=empty_fig, style={'display': 'none'}),
+                            dcc.Graph(id='offset-alignment-plot', figure=empty_fig, style={'display': 'none'}),
+                            html.Div([
+                                dash_table.DataTable(
+                                    id='offset-alignment-table',
+                                    data=[],
+                                    columns=[]
+                                )
+                            ], style={'display': 'none'})
+                        ])
             
             logger.info(f"✅ 多算法模式初始化完成")
             return upload_style, upload_area, management_style, management_area, plot_fig, report_content
@@ -2119,30 +2138,39 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             )
     
     @app.callback(
-        [Output('multi-algorithm-file-list', 'children'),
+        [Output('multi-algorithm-upload-area', 'style', allow_duplicate=True),
+         Output('multi-algorithm-management-area', 'style', allow_duplicate=True),
+         Output('multi-algorithm-file-list', 'children'),
          Output('multi-algorithm-upload-status', 'children'),
          Output('multi-algorithm-files-store', 'data')],
         [Input('upload-multi-algorithm-data', 'contents')],
         [State('upload-multi-algorithm-data', 'filename'),
          State('session-id', 'data'),
          State('multi-algorithm-files-store', 'data')],
-        prevent_initial_call=True
+        prevent_initial_call=True,
+        prevent_duplicate=True
     )
     def handle_multi_file_upload(contents_list, filename_list, session_id, store_data):
         """处理多文件上传，显示文件列表供用户输入算法名称"""
         # 获取后端实例
         backend = session_manager.get_backend(session_id)
         if not backend:
-            return no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update, no_update
         
         # 确保多算法模式已启用
         # 确保multi_algorithm_manager已初始化
         if not backend.multi_algorithm_manager:
             backend._ensure_multi_algorithm_manager()
         
+        # 确保上传区域和管理区域始终显示
+        upload_style = {'display': 'block'}
+        management_style = {'display': 'block'}
+        
         # 使用MultiFileUploadHandler处理文件上传
         upload_handler = MultiFileUploadHandler()
-        return upload_handler.process_uploaded_files(contents_list, filename_list, store_data)
+        file_list, status_text, new_store_data = upload_handler.process_uploaded_files(contents_list, filename_list, store_data)
+        
+        return upload_style, management_style, file_list, status_text, new_store_data
     
     @app.callback(
         Output({'type': 'algorithm-status', 'index': dash.dependencies.MATCH}, 'children'),
@@ -2253,10 +2281,8 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         if not active_algorithms:
             # 没有激活的算法，显示空图表
             empty_fig = _create_empty_figure_for_callback("请至少激活一个算法以查看瀑布图")
-            empty_report = html.Div([
-                html.H4("暂无数据", className="text-center text-muted"),
-                html.P("请至少激活一个算法以查看分析报告", className="text-center text-muted")
-            ])
+            # 使用 create_report_layout 确保包含所有必需的组件
+            empty_report = create_report_layout(backend)
             return empty_fig, empty_report
         
         try:
@@ -2275,10 +2301,29 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             import traceback
             logger.error(traceback.format_exc())
             error_fig = _create_empty_figure_for_callback(f"更新失败: {str(e)}")
-            error_report = html.Div([
-                html.H4("更新失败", className="text-center text-danger"),
-                html.P(f"错误信息: {str(e)}", className="text-center")
-            ])
+            # 使用 create_report_layout 确保包含所有必需的组件
+            try:
+                error_report = create_report_layout(backend)
+            except:
+                # 如果 create_report_layout 也失败，返回包含必需组件的错误布局
+                empty_fig = {}
+                error_report = html.Div([
+                    html.H4("更新失败", className="text-center text-danger"),
+                    html.P(f"错误信息: {str(e)}", className="text-center"),
+                    # 包含所有必需的图表组件（隐藏），确保回调函数不会报错
+                    dcc.Graph(id='key-delay-scatter-plot', figure=empty_fig, style={'display': 'none'}),
+                    dcc.Graph(id='key-delay-zscore-scatter-plot', figure=empty_fig, style={'display': 'none'}),
+                    dcc.Graph(id='hammer-velocity-delay-scatter-plot', figure=empty_fig, style={'display': 'none'}),
+                    dcc.Graph(id='key-hammer-velocity-scatter-plot', figure=empty_fig, style={'display': 'none'}),
+                    dcc.Graph(id='offset-alignment-plot', figure=empty_fig, style={'display': 'none'}),
+                    html.Div([
+                        dash_table.DataTable(
+                            id='offset-alignment-table',
+                            data=[],
+                            columns=[]
+                        )
+                    ], style={'display': 'none'})
+                ])
             return error_fig, error_report
     
     @app.callback(
@@ -3027,6 +3072,203 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 
             except Exception as e:
                 logger.error(f"❌ 生成按键曲线对比失败: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                modal_style = {
+                    'display': 'block',
+                    'position': 'fixed',
+                    'zIndex': '9999',
+                    'left': '0',
+                    'top': '0',
+                    'width': '100%',
+                    'height': '100%',
+                    'backgroundColor': 'rgba(0,0,0,0.6)',
+                    'backdropFilter': 'blur(5px)'
+                }
+                return modal_style, [html.Div([
+                    html.P(f"生成对比图失败: {str(e)}", className="text-danger text-center")
+                ])]
+        
+        # 其他情况，保持当前状态
+        return current_style, []
+    
+    # 锤速与延时散点图点击回调 - 显示曲线对比（悬浮窗）
+    @app.callback(
+        [Output('key-curves-modal', 'style', allow_duplicate=True),
+         Output('key-curves-comparison-container', 'children', allow_duplicate=True)],
+        [Input('hammer-velocity-delay-scatter-plot', 'clickData'),
+         Input('close-key-curves-modal', 'n_clicks'),
+         Input('close-key-curves-modal-btn', 'n_clicks')],
+        [State('session-id', 'data'),
+         State('key-curves-modal', 'style')],
+        prevent_initial_call=True,
+        prevent_duplicate=True
+    )
+    def handle_hammer_velocity_scatter_click(click_data, close_modal_clicks, close_btn_clicks, session_id, current_style):
+        """处理锤速与延时散点图点击，显示曲线对比（悬浮窗）- 参考按键与延时Z-Score标准化散点图的逻辑"""
+        from dash import callback_context
+        
+        # 检测触发源
+        ctx = callback_context
+        if not ctx.triggered:
+            logger.debug("⚠️ 散点图点击回调：没有触发源")
+            return current_style, []
+        
+        trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
+        logger.info(f"🔄 散点图点击回调触发：trigger_id={trigger_id}")
+        
+        # 如果点击了关闭按钮，隐藏模态框
+        if trigger_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
+            logger.info("✅ 关闭按键曲线对比模态框")
+            modal_style = {
+                'display': 'none',
+                'position': 'fixed',
+                'zIndex': '9999',
+                'left': '0',
+                'top': '0',
+                'width': '100%',
+                'height': '100%',
+                'backgroundColor': 'rgba(0,0,0,0.6)',
+                'backdropFilter': 'blur(5px)'
+            }
+            return modal_style, []
+        
+        # 如果是散点图点击
+        if trigger_id == 'hammer-velocity-delay-scatter-plot':
+            logger.info(f"🔄 散点图点击：click_data={click_data}")
+            backend = session_manager.get_backend(session_id)
+            if not backend:
+                logger.warning("⚠️ 没有找到backend")
+                return current_style, []
+            
+            if not click_data or 'points' not in click_data or not click_data['points']:
+                logger.warning("⚠️ click_data为空或没有points")
+                return current_style, []
+            
+            try:
+                # 获取点击的数据点
+                point = click_data['points'][0]
+                logger.info(f"🔍 散点图点击 - 点击点数据: {point}")
+                
+                if not point.get('customdata'):
+                    logger.warning("⚠️ 散点图点击 - 点没有customdata")
+                    return current_style, []
+                
+                # 安全地提取customdata（参考Z-Score散点图的逻辑）
+                raw_customdata = point['customdata']
+                logger.info(f"🔍 散点图点击 - raw_customdata类型: {type(raw_customdata)}, 值: {raw_customdata}")
+                
+                if isinstance(raw_customdata, list) and len(raw_customdata) > 0:
+                    customdata = raw_customdata[0] if isinstance(raw_customdata[0], list) else raw_customdata
+                else:
+                    customdata = raw_customdata
+                
+                # 确保customdata是列表类型
+                if not isinstance(customdata, list):
+                    logger.warning(f"⚠️ 散点图点击 - customdata不是列表类型: {type(customdata)}, 值: {customdata}")
+                    return current_style, []
+                
+                logger.info(f"🔍 散点图点击 - customdata: {customdata}, 长度: {len(customdata)}")
+                
+                # 解析customdata
+                # 单算法模式: [delay_ms, record_idx, replay_idx]
+                # 多算法模式: [delay_ms, record_idx, replay_idx, algorithm_name]
+                if len(customdata) < 3:
+                    logger.warning(f"⚠️ customdata长度不足：{len(customdata)}")
+                    return current_style, []
+                
+                delay_ms = customdata[0]
+                record_idx = customdata[1]
+                replay_idx = customdata[2]
+                algorithm_name = customdata[3] if len(customdata) > 3 else None
+                
+                logger.info(f"🖱️ 散点图点击: 算法={algorithm_name}, record_idx={record_idx}, replay_idx={replay_idx}")
+                
+                # 如果是多算法模式且有算法名称，使用generate_multi_algorithm_scatter_detail_plot_by_indices
+                if algorithm_name:
+                    # 多算法模式：使用与Z-Score散点图相同的方法
+                    detail_figure1, detail_figure2, detail_figure_combined = backend.generate_multi_algorithm_scatter_detail_plot_by_indices(
+                        algorithm_name=algorithm_name,
+                        record_index=record_idx,
+                        replay_index=replay_idx
+                    )
+                    
+                    logger.info(f"🔍 散点图点击回调 - 图表生成结果: figure1={detail_figure1 is not None}, figure2={detail_figure2 is not None}, figure_combined={detail_figure_combined is not None}")
+                    
+                    if detail_figure1 and detail_figure2 and detail_figure_combined:
+                        modal_style = {
+                            'display': 'block',
+                            'position': 'fixed',
+                            'zIndex': '9999',
+                            'left': '0',
+                            'top': '0',
+                            'width': '100%',
+                            'height': '100%',
+                            'backgroundColor': 'rgba(0,0,0,0.6)',
+                            'backdropFilter': 'blur(5px)'
+                        }
+                        logger.info("✅ 散点图点击回调 - 返回模态框和图表")
+                        # 将Plotly figure对象包装在dcc.Graph组件中
+                        return modal_style, dcc.Graph(figure=detail_figure_combined, style={'height': '600px'})
+                    else:
+                        logger.warning(f"⚠️ 散点图点击回调 - 图表生成失败，部分图表为None")
+                        modal_style = {
+                            'display': 'block',
+                            'position': 'fixed',
+                            'zIndex': '9999',
+                            'left': '0',
+                            'top': '0',
+                            'width': '100%',
+                            'height': '100%',
+                            'backgroundColor': 'rgba(0,0,0,0.6)',
+                            'backdropFilter': 'blur(5px)'
+                        }
+                        return modal_style, [html.Div([
+                            html.P("图表生成失败", className="text-danger text-center")
+                        ])]
+                else:
+                    # 单算法模式：使用generate_scatter_detail_plot_by_indices
+                    detail_figure1, detail_figure2, detail_figure_combined = backend.generate_scatter_detail_plot_by_indices(
+                        record_index=record_idx,
+                        replay_index=replay_idx
+                    )
+                    
+                    logger.info(f"🔍 散点图点击回调（单算法） - 图表生成结果: figure1={detail_figure1 is not None}, figure2={detail_figure2 is not None}, figure_combined={detail_figure_combined is not None}")
+                    
+                    if detail_figure1 and detail_figure2 and detail_figure_combined:
+                        modal_style = {
+                            'display': 'block',
+                            'position': 'fixed',
+                            'zIndex': '9999',
+                            'left': '0',
+                            'top': '0',
+                            'width': '100%',
+                            'height': '100%',
+                            'backgroundColor': 'rgba(0,0,0,0.6)',
+                            'backdropFilter': 'blur(5px)'
+                        }
+                        logger.info("✅ 散点图点击回调（单算法） - 返回模态框和图表")
+                        # 将Plotly figure对象包装在dcc.Graph组件中
+                        return modal_style, dcc.Graph(figure=detail_figure_combined, style={'height': '600px'})
+                    else:
+                        logger.warning(f"⚠️ 散点图点击回调（单算法） - 图表生成失败，部分图表为None")
+                        modal_style = {
+                            'display': 'block',
+                            'position': 'fixed',
+                            'zIndex': '9999',
+                            'left': '0',
+                            'top': '0',
+                            'width': '100%',
+                            'height': '100%',
+                            'backgroundColor': 'rgba(0,0,0,0.6)',
+                            'backdropFilter': 'blur(5px)'
+                        }
+                        return modal_style, [html.Div([
+                            html.P("图表生成失败", className="text-danger text-center")
+                        ])]
+                
+            except Exception as e:
+                logger.error(f"❌ 生成曲线对比失败: {e}")
                 import traceback
                 logger.error(traceback.format_exc())
                 modal_style = {

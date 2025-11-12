@@ -414,12 +414,22 @@ def create_main_layout():
                 ])
             ])
         ], fluid=True),
-        # 隐藏的动态组件，用于支持回调（这些组件会在report-content中实际使用）
-                                html.Div([
-            dcc.Graph(id='key-delay-scatter-plot', style={'display': 'none'}),
-            dcc.Graph(id='key-delay-zscore-scatter-plot', style={'display': 'none'}),
-            dcc.Graph(id='hammer-velocity-delay-scatter-plot', style={'display': 'none'}),
-            dcc.Graph(id='key-hammer-velocity-scatter-plot', style={'display': 'none'}),
+        # 关键：这些组件必须在主布局的顶层直接存在，用于支持回调
+        # Dash 在注册回调时会检查 Input 组件是否存在，即使设置了 suppress_callback_exceptions=True
+        # 重要：这些组件必须直接放在主布局的顶层，不能放在任何容器中，否则 Dash 可能无法识别
+        # 这些组件会被 report-content 中的同名组件覆盖（当 report-content 有内容时）
+        # 但当 report-content 为空时，这些隐藏版本会确保回调函数不会报错
+        dcc.Graph(id='key-delay-scatter-plot', figure={}, style={'display': 'none'}),
+        dcc.Graph(id='key-delay-zscore-scatter-plot', figure={}, style={'display': 'none'}),
+        dcc.Graph(id='hammer-velocity-delay-scatter-plot', figure={}, style={'display': 'none'}),
+        dcc.Graph(id='key-hammer-velocity-scatter-plot', figure={}, style={'display': 'none'}),
+        dcc.Graph(id='offset-alignment-plot', figure={}, style={'display': 'none'}),
+        html.Div([
+            dash_table.DataTable(
+                id='offset-alignment-table',
+                data=[],
+                columns=[]
+            )
         ], style={'display': 'none'}),
         # 将模态框移到主布局顶层，确保在所有Tab中都能显示
         html.Div([
@@ -675,6 +685,7 @@ def _create_single_algorithm_error_stats_row(algorithm, algorithm_name):
         std_0_1ms = algorithm.analyzer.get_standard_deviation() if hasattr(algorithm.analyzer, 'get_standard_deviation') else 0.0
         me_0_1ms = algorithm.analyzer.get_mean_error() if hasattr(algorithm.analyzer, 'get_mean_error') else 0.0
         rmse_0_1ms = algorithm.analyzer.get_root_mean_squared_error() if hasattr(algorithm.analyzer, 'get_root_mean_squared_error') else 0.0
+        cv = algorithm.analyzer.get_coefficient_of_variation() if hasattr(algorithm.analyzer, 'get_coefficient_of_variation') else 0.0
         
         variance_ms_squared = variance_0_1ms_squared / 100.0
         std_ms = std_0_1ms / 10.0
@@ -721,14 +732,21 @@ def _create_single_algorithm_error_stats_row(algorithm, algorithm_name):
                         html.P("平均绝对误差(MAE)", className="text-muted mb-0"),
                         html.Small("已匹配按键对的延时绝对值的平均", className="text-muted", style={'fontSize': '10px'})
                     ], className="text-center")
-                ], width=6),
+                ], width=4),
                 dbc.Col([
                     html.Div([
                         html.H3(f"{rmse_ms:.2f} ms", className="text-success mb-1"),
                         html.P("均方根误差(RMSE)", className="text-muted mb-0"),
                         html.Small("对大偏差更敏感", className="text-muted", style={'fontSize': '10px'})
                     ], className="text-center")
-                ], width=6)
+                ], width=4),
+                dbc.Col([
+                    html.Div([
+                        html.H3(f"{cv:.2f}%", className="text-primary mb-1"),
+                        html.P("变异系数(CV)", className="text-muted mb-0"),
+                        html.Small("标准差与均值的比值，反映相对变异程度", className="text-muted", style={'fontSize': '10px'})
+                    ], className="text-center")
+                ], width=4)
             ])
         ], className="mb-3", style={'borderBottom': '1px solid #dee2e6', 'paddingBottom': '15px'})
         
@@ -1054,9 +1072,24 @@ def create_report_layout(backend):
     
     if not active_algorithms:
         # 没有激活的算法，显示提示
+        # 关键：必须包含所有回调函数需要的组件，否则 Dash 会报错
+        empty_fig = {}
         return html.Div([
             html.H4("暂无数据", className="text-center text-muted"),
-            html.P("请至少激活一个算法以查看分析报告", className="text-center text-muted")
+            html.P("请至少激活一个算法以查看分析报告", className="text-center text-muted"),
+            # 包含所有必需的图表组件（隐藏），确保回调函数不会报错
+            dcc.Graph(id='key-delay-scatter-plot', figure=empty_fig, style={'display': 'none'}),
+            dcc.Graph(id='key-delay-zscore-scatter-plot', figure=empty_fig, style={'display': 'none'}),
+            dcc.Graph(id='hammer-velocity-delay-scatter-plot', figure=empty_fig, style={'display': 'none'}),
+            dcc.Graph(id='key-hammer-velocity-scatter-plot', figure=empty_fig, style={'display': 'none'}),
+            dcc.Graph(id='offset-alignment-plot', figure=empty_fig, style={'display': 'none'}),
+            html.Div([
+                dash_table.DataTable(
+                    id='offset-alignment-table',
+                    data=[],
+                    columns=[]
+                )
+            ], style={'display': 'none'})
         ])
     
     # 为每个算法生成数据概览和延时误差统计指标（合并到同一个卡片中）
