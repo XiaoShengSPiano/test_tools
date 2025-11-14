@@ -395,12 +395,6 @@ class SPMIDAnalyzer:
         """
         if self.note_matcher:
             return self.note_matcher.get_offset_statistics()
-            return {
-                'total_pairs': 0,
-                'keyon_offset_stats': {'average': 0.0, 'max': 0.0, 'min': 0.0, 'std': 0.0},
-                'duration_offset_stats': {'average': 0.0, 'max': 0.0, 'min': 0.0, 'std': 0.0},
-                'overall_offset_stats': {'average': 0.0, 'max': 0.0, 'min': 0.0, 'std': 0.0}
-            }
 
 
 # 其他工具函数保持不变

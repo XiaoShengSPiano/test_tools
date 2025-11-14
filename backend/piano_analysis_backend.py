@@ -214,36 +214,6 @@ class PianoAnalysisBackend:
         except Exception as e:
             logger.error(f"同步分析结果失败: {e}")
     
-    # ==================== 时间对齐分析相关方法 ====================
-    
-    # def spmid_offset_alignment(self) -> Tuple[pd.DataFrame, np.ndarray]:
-    #     """执行SPMID偏移量对齐分析"""
-    #     if not self.analyzer:
-    #         logger.error("没有可用的分析器实例")
-    #         return pd.DataFrame(), np.array([])
-        
-    #     # 从分析器获取偏移统计信息
-    #     offset_stats = self.analyzer.get_offset_statistics()
-        
-    #     # 创建DataFrame
-    #     df_stats = pd.DataFrame([{
-    #         'total_pairs': offset_stats.get('total_pairs', 0),
-    #         'keyon_avg_offset': offset_stats.get('keyon_offset_stats', {}).get('average', 0.0),
-    #         'keyon_max_offset': offset_stats.get('keyon_offset_stats', {}).get('max', 0.0),
-    #         'keyon_min_offset': offset_stats.get('keyon_offset_stats', {}).get('min', 0.0),
-    #         'keyon_std_offset': offset_stats.get('keyon_offset_stats', {}).get('std', 0.0),
-    #         'keyoff_avg_offset': offset_stats.get('keyoff_offset_stats', {}).get('average', 0.0),
-    #         'keyoff_max_offset': offset_stats.get('keyoff_offset_stats', {}).get('max', 0.0),
-    #         'keyoff_min_offset': offset_stats.get('keyoff_offset_stats', {}).get('min', 0.0),
-    #         'keyoff_std_offset': offset_stats.get('keyoff_offset_stats', {}).get('std', 0.0)
-    #     }])
-        
-    #     # 创建偏移数组
-    #     offset_data = self.analyzer.get_offset_alignment_data()
-    #     all_offsets_array = np.array([item['average_offset'] for item in offset_data])
-        
-    #     return df_stats, all_offsets_array
-    
     # TODO
     def get_global_average_delay(self) -> float:
         """
@@ -350,6 +320,173 @@ class PianoAnalysisBackend:
         cv = self.analyzer.get_coefficient_of_variation()
         return cv
     
+    def generate_delay_time_series_plot(self) -> Any:
+        """
+        生成延时时间序列图（支持单算法和多算法模式）
+        x轴：时间（record_keyon，转换为ms）
+        y轴：延时（keyon_offset，转换为ms）
+        数据来源：所有已匹配的按键对，按时间顺序排列
+        """
+        # 检查是否在多算法模式
+        if self.multi_algorithm_mode and self.multi_algorithm_manager:
+            # 多算法模式：生成多算法对比时间序列图
+            active_algorithms = self.multi_algorithm_manager.get_active_algorithms()
+            if not active_algorithms:
+                logger.warning("⚠️ 多算法模式下没有激活的算法，返回空图表")
+                return self.plot_generator._create_empty_plot("没有激活的算法")
+            
+            # 使用多算法图表生成器
+            from backend.multi_algorithm_plot_generator import MultiAlgorithmPlotGenerator
+            multi_plot_generator = MultiAlgorithmPlotGenerator(self.data_filter)
+            return multi_plot_generator.generate_multi_algorithm_delay_time_series_plot(
+                active_algorithms
+            )
+        
+        # 单算法模式
+        try:
+            if not self.analyzer or not self.analyzer.note_matcher:
+                return self.plot_generator._create_empty_plot("没有分析器")
+            
+            offset_data = self.analyzer.get_offset_alignment_data()
+            if not offset_data:
+                return self.plot_generator._create_empty_plot("无匹配数据")
+            
+            import plotly.graph_objects as go
+            fig = go.Figure()
+            
+            # 提取时间和延时数据
+            data_points = []  # 存储所有数据点，用于排序
+            
+            for item in offset_data:
+                record_keyon = item.get('record_keyon', 0)  # 单位：0.1ms
+                keyon_offset = item.get('keyon_offset', 0.0)  # 单位：0.1ms
+                key_id = item.get('key_id')
+                record_index = item.get('record_index')
+                replay_index = item.get('replay_index')
+                
+                if record_keyon is None or keyon_offset is None:
+                    continue
+                
+                # 转换为ms单位
+                time_ms = record_keyon / 10.0
+                delay_ms = keyon_offset / 10.0
+                
+                data_points.append({
+                    'time': time_ms,
+                    'delay': delay_ms,
+                    'key_id': key_id if key_id is not None else 'N/A',
+                    'record_index': record_index,
+                    'replay_index': replay_index
+                })
+            
+            if not data_points:
+                return self.plot_generator._create_empty_plot("无有效时间序列数据")
+            
+            # 按时间排序，确保按时间顺序显示
+            data_points.sort(key=lambda x: x['time'])
+            
+            # 提取排序后的数据
+            times_ms = [point['time'] for point in data_points]
+            delays_ms = [point['delay'] for point in data_points]
+            # customdata 包含 [key_id, record_index, replay_index]，用于点击时查找匹配对
+            customdata_list = [[point['key_id'], point['record_index'], point['replay_index']] 
+                              for point in data_points]
+            
+            # 添加散点图
+            fig.add_trace(go.Scatter(
+                x=times_ms,
+                y=delays_ms,
+                mode='markers+lines',  # 同时显示点和线，便于观察趋势
+                name='延时时间序列',
+                marker=dict(
+                    size=6,
+                    color='#2196F3',
+                    line=dict(width=0.5, color='#1976D2')
+                ),
+                line=dict(color='#2196F3', width=1),
+                hovertemplate='<b>时间</b>: %{x:.2f}ms<br>' +
+                             '<b>延时</b>: %{y:.2f}ms<br>' +
+                             '<b>按键ID</b>: %{customdata[0]}<br>' +
+                             '<extra></extra>',
+                customdata=customdata_list
+            ))
+            
+            # 计算统计量，用于添加参考线
+            # 使用与数据概览界面相同的方法，确保一致性
+            if delays_ms:
+                # 使用 backend 的方法获取均值和标准差，与数据概览界面保持一致
+                me_0_1ms = self.get_mean_error()  # 总体均值（0.1ms单位，带符号）
+                std_0_1ms = self.get_standard_deviation()  # 总体标准差（0.1ms单位）
+                
+                # 转换为ms单位
+                mean_delay = me_0_1ms / 10.0  # 总体均值（ms，带符号）
+                std_delay = std_0_1ms / 10.0  # 总体标准差（ms）
+                
+                # 添加均值参考线（使用 Scatter 创建，支持 hover 显示）
+                fig.add_trace(go.Scatter(
+                    x=[times_ms[0], times_ms[-1]] if times_ms else [0, 1],
+                    y=[mean_delay, mean_delay],
+                    mode='lines',
+                    name='总体均值',
+                    line=dict(dash='dash', color='red', width=2),
+                    hovertemplate=f'<b>总体均值</b>: {mean_delay:.2f}ms<extra></extra>',
+                    showlegend=False
+                ))
+                
+                # 添加±3σ参考线（使用 Scatter 创建，支持 hover 显示）
+                if std_delay > 0:
+                    fig.add_trace(go.Scatter(
+                        x=[times_ms[0], times_ms[-1]] if times_ms else [0, 1],
+                        y=[mean_delay + 3 * std_delay, mean_delay + 3 * std_delay],
+                        mode='lines',
+                        name='+3σ',
+                        line=dict(dash='dot', color='orange', width=1.5),
+                        hovertemplate=f'<b>+3σ</b>: {mean_delay + 3 * std_delay:.2f}ms<extra></extra>',
+                        showlegend=False
+                    ))
+                    fig.add_trace(go.Scatter(
+                        x=[times_ms[0], times_ms[-1]] if times_ms else [0, 1],
+                        y=[mean_delay - 3 * std_delay, mean_delay - 3 * std_delay],
+                        mode='lines',
+                        name='-3σ',
+                        line=dict(dash='dot', color='orange', width=1.5),
+                        hovertemplate=f'<b>-3σ</b>: {mean_delay - 3 * std_delay:.2f}ms<extra></extra>',
+                        showlegend=False
+                    ))
+            
+            fig.update_layout(
+                title={
+                    'text': '延时时间序列图',
+                    'x': 0.5,
+                    'xanchor': 'center',
+                    'y': 0.98,
+                    'yanchor': 'top',
+                    'font': {'size': 18, 'color': '#2c3e50'}
+                },
+                xaxis_title='时间 (ms)',
+                yaxis_title='延时 (ms)',
+                plot_bgcolor='white',
+                paper_bgcolor='white',
+                font=dict(size=12),
+                height=500,
+                hovermode='closest',
+                legend=dict(
+                    orientation='h',
+                    yanchor='bottom',
+                    y=1.02,
+                    xanchor='right',
+                    x=1
+                ),
+                margin=dict(t=80, b=60, l=60, r=60)
+            )
+            
+            return fig
+        except Exception as e:
+            logger.error(f"生成延时时间序列图失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return self.plot_generator._create_empty_plot(f"生成延时时间序列图失败: {str(e)}")
+    
     def generate_delay_histogram_plot(self) -> Any:
         """
         生成延时分布直方图，并叠加正态拟合曲线（基于已匹配按键对的带符号keyon_offset）。
@@ -390,13 +527,15 @@ class PianoAnalysisBackend:
             import math
             fig = go.Figure()
 
-            # TODO
+            # 添加直方图
             fig.add_trace(go.Histogram(
                 x=delays_ms,
                 histnorm='probability density',
                 name='延时分布',
-                marker_color='rgba(33, 150, 243, 0.6)',
-                opacity=0.7
+                marker_color='#2196F3',  # 使用更饱和的蓝色
+                opacity=0.9,  # 增加不透明度，使颜色更明显
+                marker_line_color='#1976D2',  # 添加边框颜色，增强对比度
+                marker_line_width=1
             ))
 
             # ========== 步骤1：计算统计量 ==========
@@ -468,6 +607,7 @@ class PianoAnalysisBackend:
                 paper_bgcolor='white',
                 font=dict(size=12),
                 height=500,
+                clickmode='event+select',  # 启用点击和选择事件
                 legend=dict(
                     orientation='h',
                     yanchor='bottom',
@@ -488,6 +628,74 @@ class PianoAnalysisBackend:
             logger.error(traceback.format_exc())
             return self.plot_generator._create_empty_plot(f"生成延时直方图失败: {str(e)}")
     
+    def get_delay_range_data_points(self, delay_min_ms: float, delay_max_ms: float) -> List[Dict[str, Any]]:
+        """
+        获取指定延时范围内的数据点详情（支持单算法和多算法模式）
+        
+        Args:
+            delay_min_ms: 最小延时值（ms）
+            delay_max_ms: 最大延时值（ms）
+            
+        Returns:
+            List[Dict[str, Any]]: 该延时范围内的数据点列表，每个数据点包含完整信息
+        """
+        try:
+            # 检查是否在多算法模式
+            if self.multi_algorithm_mode and self.multi_algorithm_manager:
+                # 多算法模式：合并所有激活算法的数据
+                active_algorithms = self.multi_algorithm_manager.get_active_algorithms()
+                if not active_algorithms:
+                    return []
+                
+                filtered_data = []
+                for algorithm in active_algorithms:
+                    if not algorithm.analyzer or not algorithm.analyzer.note_matcher:
+                        continue
+                    
+                    # 从算法获取原始偏移数据
+                    offset_data = algorithm.analyzer.get_offset_alignment_data()
+                    if not offset_data:
+                        continue
+                    
+                    algorithm_name = algorithm.metadata.algorithm_name
+                    
+                    # 筛选出指定延时范围内的数据点
+                    for item in offset_data:
+                        delay_ms = item.get('keyon_offset', 0.0) / 10.0
+                        if delay_min_ms <= delay_ms <= delay_max_ms:
+                            # 添加延时值（ms）和算法名称到数据中
+                            item_copy = item.copy()
+                            item_copy['delay_ms'] = delay_ms
+                            item_copy['algorithm_name'] = algorithm_name
+                            filtered_data.append(item_copy)
+                
+                return filtered_data
+            
+            # 单算法模式
+            if not self.analyzer or not self.analyzer.note_matcher:
+                return []
+            
+            offset_data = self.analyzer.get_offset_alignment_data()
+            if not offset_data:
+                return []
+            
+            # 筛选出指定延时范围内的数据点
+            # keyon_offset 单位是 0.1ms，需要转换为 ms 进行比较
+            filtered_data = []
+            for item in offset_data:
+                delay_ms = item.get('keyon_offset', 0.0) / 10.0
+                if delay_min_ms <= delay_ms <= delay_max_ms:
+                    # 添加延时值（ms）到数据中，方便显示
+                    item_copy = item.copy()
+                    item_copy['delay_ms'] = delay_ms
+                    filtered_data.append(item_copy)
+            
+            return filtered_data
+        except Exception as e:
+            logger.error(f"获取延时范围数据点失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return []
 
     
     def get_offset_alignment_data(self) -> List[Dict[str, Any]]:

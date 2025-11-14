@@ -1,6 +1,9 @@
 """
 钢琴数据分析工具 - 主应用入口
 """
+import warnings
+# 抑制来自 dash 及其依赖库的日期解析弃用警告
+warnings.filterwarnings('ignore', category=DeprecationWarning, message='.*Parsing dates.*')
 import dash
 import dash_bootstrap_components as dbc
 from utils.logger import Logger
@@ -45,7 +48,13 @@ app.config.suppress_callback_exceptions = True
 app.layout = create_main_layout()
 
 # 注册回调函数
+print("=" * 100)
+print("🔧 开始注册回调函数...")
+print("=" * 100)
 register_callbacks(app, session_manager, history_manager)
+print("=" * 100)
+print("✅ 回调函数注册完成！")
+print("=" * 100)
 
 logger = Logger.get_logger()
 

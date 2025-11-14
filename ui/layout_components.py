@@ -424,6 +424,8 @@ def create_main_layout():
         dcc.Graph(id='hammer-velocity-delay-scatter-plot', figure={}, style={'display': 'none'}),
         dcc.Graph(id='key-hammer-velocity-scatter-plot', figure={}, style={'display': 'none'}),
         dcc.Graph(id='offset-alignment-plot', figure={}, style={'display': 'none'}),
+        dcc.Graph(id='delay-time-series-plot', figure={}, style={'display': 'none'}),
+        dcc.Graph(id='delay-histogram-plot', figure={}, style={'display': 'none'}),
         html.Div([
             dash_table.DataTable(
                 id='offset-alignment-table',
@@ -431,6 +433,23 @@ def create_main_layout():
                 columns=[]
             )
         ], style={'display': 'none'}),
+        html.Div([
+            dash_table.DataTable(
+                id='delay-histogram-detail-table',
+                data=[],
+                columns=[
+                    {"name": "算法名称", "id": "algorithm_name"},
+                    {"name": "按键ID", "id": "key_id"},
+                    {"name": "延时(ms)", "id": "delay_ms"},
+                    {"name": "录制索引", "id": "record_index"},
+                    {"name": "播放索引", "id": "replay_index"},
+                    {"name": "录制开始(0.1ms)", "id": "record_keyon"},
+                    {"name": "播放开始(0.1ms)", "id": "replay_keyon"},
+                    {"name": "持续时间差(0.1ms)", "id": "duration_offset"},
+                ]
+            )
+        ], style={'display': 'none'}),
+        html.Div(id='delay-histogram-selection-info', style={'display': 'none'}),
         # 将模态框移到主布局顶层，确保在所有Tab中都能显示
         html.Div([
             html.Div([
@@ -896,7 +915,10 @@ def _create_single_algorithm_error_tables(algorithm, algorithm_name):
                     'textAlign': 'center',
                     'padding': '10px',
                     'whiteSpace': 'normal',
-                    'height': 'auto'
+                    'height': 'auto',
+                    'position': 'sticky',
+                    'top': 0,
+                    'zIndex': 1
                 },
                 style_data={
                     'border': '1px solid #dee2e6',
@@ -974,7 +996,10 @@ def _create_single_algorithm_error_tables(algorithm, algorithm_name):
                     'textAlign': 'center',
                     'padding': '10px',
                     'whiteSpace': 'normal',
-                    'height': 'auto'
+                    'height': 'auto',
+                    'position': 'sticky',
+                    'top': 0,
+                    'zIndex': 1
                 },
                 style_data={
                     'border': '1px solid #dee2e6',
@@ -1083,13 +1108,32 @@ def create_report_layout(backend):
             dcc.Graph(id='hammer-velocity-delay-scatter-plot', figure=empty_fig, style={'display': 'none'}),
             dcc.Graph(id='key-hammer-velocity-scatter-plot', figure=empty_fig, style={'display': 'none'}),
             dcc.Graph(id='offset-alignment-plot', figure=empty_fig, style={'display': 'none'}),
+            dcc.Graph(id='delay-time-series-plot', figure=empty_fig, style={'display': 'none'}),
+            dcc.Graph(id='delay-histogram-plot', figure=empty_fig, style={'display': 'none'}),
             html.Div([
                 dash_table.DataTable(
                     id='offset-alignment-table',
                     data=[],
                     columns=[]
                 )
-            ], style={'display': 'none'})
+            ], style={'display': 'none'}),
+            html.Div([
+                dash_table.DataTable(
+                    id='delay-histogram-detail-table',
+                    data=[],
+                    columns=[
+                        {"name": "算法名称", "id": "algorithm_name"},
+                        {"name": "按键ID", "id": "key_id"},
+                        {"name": "延时(ms)", "id": "delay_ms"},
+                        {"name": "录制索引", "id": "record_index"},
+                        {"name": "播放索引", "id": "replay_index"},
+                        {"name": "录制开始(0.1ms)", "id": "record_keyon"},
+                        {"name": "播放开始(0.1ms)", "id": "replay_keyon"},
+                        {"name": "持续时间差(0.1ms)", "id": "duration_offset"},
+                    ]
+                )
+            ], style={'display': 'none'}),
+            html.Div(id='delay-histogram-selection-info', style={'display': 'none'})
         ])
     
     # 为每个算法生成数据概览和延时误差统计指标（合并到同一个卡片中）
@@ -1275,6 +1319,25 @@ def create_report_layout(backend):
             ], width=12)
         ]),
 
+                # 延时时间序列图
+        dbc.Row([
+            dbc.Col([
+                html.Div([
+                    dbc.Row([
+                        dbc.Col([
+                            html.H6("延时时间序列图", className="mb-2",
+                                   style={'color': '#2c3e50', 'fontWeight': 'bold', 'borderBottom': '2px solid #2c3e50', 'paddingBottom': '5px'}),
+                        ], width=12)
+                    ]),
+                    dcc.Graph(
+                        id='delay-time-series-plot',
+                        figure={},
+                        style={'height': '500px'}
+                    ),
+                ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
+            ], width=12)
+        ]),
+        
                 # 延时分布直方图（附正态拟合曲线）
         dbc.Row([
             dbc.Col([
@@ -1290,6 +1353,54 @@ def create_report_layout(backend):
                         figure={},
                         style={'height': '500px'}
                     ),
+                    html.Div([
+                        html.P("💡 提示：点击直方图中的柱状图区域，可查看该延时范围内的数据点详情", 
+                               className="text-muted", 
+                               style={'fontSize': '12px', 'marginTop': '10px', 'marginBottom': '10px'}),
+                        html.Div(id='delay-histogram-selection-info', 
+                                style={'marginBottom': '10px', 'fontSize': '14px', 'fontWeight': 'bold', 'color': '#2c3e50'}),
+                        dash_table.DataTable(
+                            id='delay-histogram-detail-table',
+                            columns=[
+                                {"name": "算法名称", "id": "algorithm_name"},
+                                {"name": "按键ID", "id": "key_id"},
+                                {"name": "延时(ms)", "id": "delay_ms", "type": "numeric", "format": {"specifier": ".2f"}},
+                                {"name": "录制索引", "id": "record_index"},
+                                {"name": "播放索引", "id": "replay_index"},
+                                {"name": "录制开始(0.1ms)", "id": "record_keyon"},
+                                {"name": "播放开始(0.1ms)", "id": "replay_keyon"},
+                                {"name": "持续时间差(0.1ms)", "id": "duration_offset"},
+                            ],
+                            data=[],
+                            page_action='none',
+                            style_cell={
+                                'textAlign': 'center',
+                                'fontSize': '12px',
+                                'fontFamily': 'Arial, sans-serif',
+                                'padding': '8px',
+                                'overflow': 'hidden',
+                                'textOverflow': 'ellipsis',
+                            },
+                            style_header={
+                                'backgroundColor': '#f8f9fa',
+                                'fontWeight': 'bold',
+                                'border': '1px solid #dee2e6',
+                                'position': 'sticky',
+                                'top': 0,
+                                'zIndex': 1
+                            },
+                            style_data={
+                                'border': '1px solid #dee2e6'
+                            },
+                            style_data_conditional=[
+                                {
+                                    'if': {'row_index': 'odd'},
+                                    'backgroundColor': '#f8f9fa'
+                                }
+                            ],
+                            style_table={'overflowX': 'auto', 'display': 'none'}  # 默认隐藏，点击后显示
+                        )
+                    ])
                 ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
             ], width=12)
         ]),
@@ -1350,7 +1461,10 @@ def create_report_layout(backend):
                                 'textAlign': 'center',
                                     'padding': '12px',
                                 'whiteSpace': 'normal',
-                                'height': 'auto'
+                                'height': 'auto',
+                                'position': 'sticky',
+                                'top': 0,
+                                'zIndex': 1
                             },
                             style_data={
                                 'border': '1px solid #dee2e6',
@@ -1449,7 +1563,10 @@ def create_report_layout(backend):
                                 'textAlign': 'center',
                                     'padding': '12px',
                                 'whiteSpace': 'normal',
-                                'height': 'auto'
+                                'height': 'auto',
+                                'position': 'sticky',
+                                'top': 0,
+                                'zIndex': 1
                             },
                             style_data={
                                 'border': '1px solid #dee2e6',
@@ -1549,7 +1666,10 @@ def create_report_layout(backend):
                                 'textAlign': 'center',
                                     'padding': '12px',
                                 'whiteSpace': 'normal',
-                                'height': 'auto'
+                                'height': 'auto',
+                                'position': 'sticky',
+                                'top': 0,
+                                'zIndex': 1
                             },
                             style_data={
                                 'border': '1px solid #dee2e6',
@@ -1656,7 +1776,10 @@ def create_report_layout(backend):
                                 'textAlign': 'center',
                                     'padding': '12px',
                                 'whiteSpace': 'normal',
-                                'height': 'auto'
+                                'height': 'auto',
+                                'position': 'sticky',
+                                'top': 0,
+                                'zIndex': 1
                             },
                             style_data={
                                 'border': '1px solid #dee2e6',
