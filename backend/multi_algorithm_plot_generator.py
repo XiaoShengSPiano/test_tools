@@ -7,7 +7,7 @@
 负责生成支持多算法对比的图表，使用面向对象设计。
 """
 
-from typing import List, Optional, Any, Dict
+from typing import List, Optional, Any, Dict, Tuple
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import spmid
@@ -284,7 +284,7 @@ class MultiAlgorithmPlotGenerator:
             final_height = min(calculated_height, max_height)
             
             fig.update_layout(
-                title='多算法瀑布图对比（每个算法有独立的y轴范围，滚轮缩放，左键拖动）',
+                # 删除title，因为UI区域已有标题
                 xaxis_title='Time (ms)',
                 yaxis_title='Key ID (每个算法偏移100个单位，确保范围明确)',
                 yaxis=dict(
@@ -383,12 +383,12 @@ class MultiAlgorithmPlotGenerator:
                 '#7f7f7f'   # 灰色
             ]
             
-            # 创建4个子图
+            # 创建5个子图（添加相对延时图）
             fig = make_subplots(
-                rows=4, cols=1,
-                subplot_titles=('中位数偏移', '均值偏移', '标准差', '方差'),
+                rows=5, cols=1,
+                subplot_titles=('中位数偏移', '均值偏移', '标准差', '方差', '相对延时（减去各自曲子的平均延时）'),
                 vertical_spacing=0.05,
-                row_heights=[0.25, 0.25, 0.25, 0.25]
+                row_heights=[0.20, 0.20, 0.20, 0.20, 0.20]
             )
             
             # 收集所有算法的数据
@@ -412,12 +412,21 @@ class MultiAlgorithmPlotGenerator:
                     from collections import defaultdict
                     import numpy as np
                     
+                    # 计算该算法的平均延时（用于计算相对延时）
+                    me_0_1ms = algorithm.analyzer.get_mean_error() if hasattr(algorithm.analyzer, 'get_mean_error') else 0.0
+                    mean_delay = me_0_1ms / 10.0  # 平均延时（ms，带符号）
+                    
                     # 按按键ID分组有效匹配的偏移数据（只使用keyon_offset）
                     key_groups = defaultdict(list)
+                    key_groups_relative = defaultdict(list)  # 用于存储相对延时
                     for item in offset_data:
                         key_id = item.get('key_id', 'N/A')
-                        keyon_offset_abs = abs(item.get('keyon_offset', 0))  # 只使用keyon_offset
+                        keyon_offset = item.get('keyon_offset', 0)  # 原始延时（0.1ms单位，带符号）
+                        keyon_offset_abs = abs(keyon_offset)  # 绝对值用于其他统计
+                        keyon_offset_ms = keyon_offset / 10.0  # 转换为ms
+                        relative_delay = keyon_offset_ms - mean_delay  # 相对延时
                         key_groups[key_id].append(keyon_offset_abs)
+                        key_groups_relative[key_id].append(relative_delay)
                     
                     # 提取数据
                     algorithm_key_ids = []
@@ -425,6 +434,7 @@ class MultiAlgorithmPlotGenerator:
                     algorithm_mean = []
                     algorithm_std = []
                     algorithm_variance = []
+                    algorithm_relative_mean = []  # 相对延时的均值
                     
                     for key_id, offsets in key_groups.items():
                         if offsets:
@@ -435,17 +445,26 @@ class MultiAlgorithmPlotGenerator:
                                 algorithm_mean.append(np.mean(offsets) / 10.0)  # 转换为ms
                                 algorithm_std.append(np.std(offsets) / 10.0)  # 转换为ms
                                 algorithm_variance.append(np.var(offsets) / 100.0)  # 转换为ms²
+                                
+                                # 计算相对延时的均值
+                                if key_id in key_groups_relative:
+                                    relative_delays = key_groups_relative[key_id]
+                                    algorithm_relative_mean.append(np.mean(relative_delays))
+                                else:
+                                    algorithm_relative_mean.append(0.0)
                             except (ValueError, TypeError):
                                 continue
                     
                     if algorithm_key_ids:
                         all_algorithms_data.append({
                             'name': algorithm_name,
+                            'display_name': algorithm.metadata.display_name,  # 显示名称
                             'key_ids': algorithm_key_ids,
                             'median': algorithm_median,
                             'mean': algorithm_mean,
                             'std': algorithm_std,
                             'variance': algorithm_variance,
+                            'relative_mean': algorithm_relative_mean,  # 相对延时的均值
                             'color': colors[alg_idx % len(colors)],
                             'analyzer': algorithm.analyzer
                         })
@@ -471,6 +490,7 @@ class MultiAlgorithmPlotGenerator:
             
             for alg_idx, alg_data in enumerate(all_algorithms_data):
                 algorithm_name = alg_data['name']
+                display_name = alg_data.get('display_name', algorithm_name)  # 使用显示名称
                 color = alg_data['color']
                 
                 # 计算x轴位置（每个算法偏移一定距离）
@@ -479,12 +499,14 @@ class MultiAlgorithmPlotGenerator:
                 mean_values = []
                 std_values = []
                 variance_values = []
+                relative_mean_values = []
                 
                 # 创建键位到值的映射
                 key_to_median = dict(zip(alg_data['key_ids'], alg_data['median']))
                 key_to_mean = dict(zip(alg_data['key_ids'], alg_data['mean']))
                 key_to_std = dict(zip(alg_data['key_ids'], alg_data['std']))
                 key_to_variance = dict(zip(alg_data['key_ids'], alg_data['variance']))
+                key_to_relative_mean = dict(zip(alg_data['key_ids'], alg_data['relative_mean']))
                 
                 for key_id in all_key_ids:
                     if key_id in alg_data['key_ids']:
@@ -493,6 +515,7 @@ class MultiAlgorithmPlotGenerator:
                         mean_values.append(key_to_mean[key_id])
                         std_values.append(key_to_std[key_id])
                         variance_values.append(key_to_variance[key_id])
+                        relative_mean_values.append(key_to_relative_mean[key_id])
                     else:
                         # 如果该算法没有这个键位的数据，跳过
                         continue
@@ -505,7 +528,7 @@ class MultiAlgorithmPlotGenerator:
                     go.Bar(
                         x=x_positions,
                         y=median_values,
-                        name=algorithm_name,
+                        name=display_name,
                         marker_color=color,
                         opacity=0.8,
                         width=bar_width,
@@ -514,7 +537,7 @@ class MultiAlgorithmPlotGenerator:
                         textfont=dict(size=8),
                         showlegend=True,
                         legendgroup=algorithm_name,
-                        hovertemplate=f'算法: {algorithm_name}<br>键位: %{{x:.0f}}<br>中位数: %{{y:.2f}}ms<extra></extra>'
+                        hovertemplate=f'算法: {display_name}<br>键位: %{{x:.0f}}<br>中位数: %{{y:.2f}}ms<extra></extra>'
                     ),
                     row=1, col=1
                 )
@@ -524,7 +547,7 @@ class MultiAlgorithmPlotGenerator:
                     go.Bar(
                         x=x_positions,
                         y=mean_values,
-                        name=algorithm_name,
+                        name=display_name,
                         marker_color=color,
                         opacity=0.8,
                         width=bar_width,
@@ -533,7 +556,7 @@ class MultiAlgorithmPlotGenerator:
                         textfont=dict(size=8),
                         showlegend=False,  # 只在第一个子图显示图例
                         legendgroup=algorithm_name,
-                        hovertemplate=f'算法: {algorithm_name}<br>键位: %{{x:.0f}}<br>均值: %{{y:.2f}}ms<extra></extra>'
+                        hovertemplate=f'算法: {display_name}<br>键位: %{{x:.0f}}<br>均值: %{{y:.2f}}ms<extra></extra>'
                     ),
                     row=2, col=1
                 )
@@ -543,7 +566,7 @@ class MultiAlgorithmPlotGenerator:
                     go.Bar(
                         x=x_positions,
                         y=std_values,
-                        name=algorithm_name,
+                        name=display_name,
                         marker_color=color,
                         opacity=0.8,
                         width=bar_width,
@@ -552,7 +575,7 @@ class MultiAlgorithmPlotGenerator:
                         textfont=dict(size=8),
                         showlegend=False,
                         legendgroup=algorithm_name,
-                        hovertemplate=f'算法: {algorithm_name}<br>键位: %{{x:.0f}}<br>标准差: %{{y:.2f}}ms<extra></extra>'
+                        hovertemplate=f'算法: {display_name}<br>键位: %{{x:.0f}}<br>标准差: %{{y:.2f}}ms<extra></extra>'
                     ),
                     row=3, col=1
                 )
@@ -562,7 +585,7 @@ class MultiAlgorithmPlotGenerator:
                     go.Bar(
                         x=x_positions,
                         y=variance_values,
-                        name=algorithm_name,
+                        name=display_name,
                         marker_color=color,
                         opacity=0.8,
                         width=bar_width,
@@ -571,9 +594,28 @@ class MultiAlgorithmPlotGenerator:
                         textfont=dict(size=8),
                         showlegend=False,
                         legendgroup=algorithm_name,
-                        hovertemplate=f'算法: {algorithm_name}<br>键位: %{{x:.0f}}<br>方差: %{{y:.2f}}ms²<extra></extra>'
+                        hovertemplate=f'算法: {display_name}<br>键位: %{{x:.0f}}<br>方差: %{{y:.2f}}ms²<extra></extra>'
                     ),
                     row=4, col=1
+                )
+                
+                # 添加相对延时柱状图（带数值标注）
+                fig.add_trace(
+                    go.Bar(
+                        x=x_positions,
+                        y=relative_mean_values,
+                        name=display_name,
+                        marker_color=color,
+                        opacity=0.8,
+                        width=bar_width,
+                        text=[f'{val:.2f}' for val in relative_mean_values],
+                        textposition='outside',
+                        textfont=dict(size=8),
+                        showlegend=False,
+                        legendgroup=algorithm_name,
+                        hovertemplate=f'算法: {display_name}<br>键位: %{{x:.0f}}<br>相对延时: %{{y:.2f}}ms<extra></extra>'
+                    ),
+                    row=5, col=1
                 )
             
             # 确保key_ids的最小值至少为1（按键ID不可能为负数）
@@ -613,17 +655,25 @@ class MultiAlgorithmPlotGenerator:
                 range=[min_key_id - 1, max_key_id + 1],
                 row=4, col=1
             )
+            fig.update_xaxes(
+                tickmode='linear',
+                tick0=min_key_id,
+                dtick=1,
+                title_text='键位ID',
+                range=[min_key_id - 1, max_key_id + 1],
+                row=5, col=1
+            )
             
             # 设置y轴标题
             fig.update_yaxes(title_text='中位数偏移 (ms)', row=1, col=1)
             fig.update_yaxes(title_text='均值偏移 (ms)', row=2, col=1)
             fig.update_yaxes(title_text='标准差 (ms)', row=3, col=1)
             fig.update_yaxes(title_text='方差 (ms²)', row=4, col=1)
+            fig.update_yaxes(title_text='相对延时 (ms)', row=5, col=1)
             
-            # 设置布局
+            # 设置布局（删除title，因为UI区域已有标题）
             fig.update_layout(
-                title='多算法偏移对齐分析对比图',
-                height=2200,
+                height=2750,  # 增加高度以容纳5个子图（2200 * 5/4 ≈ 2750）
                 template='simple_white',
                 showlegend=True,
                 legend=dict(
@@ -776,16 +826,8 @@ class MultiAlgorithmPlotGenerator:
                 logger.warning("⚠️ 没有有效的延时数据，无法生成直方图")
                 return self._create_empty_plot("没有有效的延时数据")
             
-            # 设置布局
+            # 设置布局（删除title，因为UI区域已有标题）
             fig.update_layout(
-                title={
-                    'text': '多算法延时分布直方图（附正态拟合曲线）',
-                    'x': 0.5,
-                    'xanchor': 'center',
-                    'y': 0.98,  # 稍微下移，避免被图注挤压
-                    'yanchor': 'top',
-                    'font': {'size': 18, 'color': '#2c3e50'}
-                },
                 xaxis_title='延时 (ms)',
                 yaxis_title='概率密度',
                 bargap=0.05,
@@ -1033,12 +1075,7 @@ class MultiAlgorithmPlotGenerator:
             
             # 设置布局
             fig.update_layout(
-                title={
-                    'text': '多算法按键与延时散点图（已匹配按键对）',
-                    'x': 0.5,
-                    'xanchor': 'center',
-                    'font': {'size': 18, 'color': '#2c3e50'}
-                },
+                # 删除title，因为UI区域已有标题
                 xaxis_title='按键ID',
                 yaxis_title='延时 (ms)',
                 xaxis=dict(
@@ -1287,12 +1324,7 @@ class MultiAlgorithmPlotGenerator:
             
             # 设置布局
             fig.update_layout(
-                title={
-                    'text': '多算法按键与延时Z-Score标准化散点图',
-                    'x': 0.5,
-                    'xanchor': 'center',
-                    'font': {'size': 18, 'color': '#2c3e50'}
-                },
+                # 删除title，因为UI区域已有标题
                 xaxis_title='按键ID',
                 yaxis_title='Z-Score (标准化延时)',
                 xaxis=dict(
@@ -1546,12 +1578,7 @@ class MultiAlgorithmPlotGenerator:
             
             # 设置布局
             fig.update_layout(
-                title={
-                    'text': '多算法锤速与延时散点图（已匹配按键对）',
-                    'x': 0.5,
-                    'xanchor': 'center',
-                    'font': {'size': 18, 'color': '#2c3e50'}
-                },
+                # 删除title，因为UI区域已有标题
                 xaxis_title='锤速',
                 yaxis_title='Z-Score（标准化延时）',
                 xaxis=dict(
@@ -1731,12 +1758,7 @@ class MultiAlgorithmPlotGenerator:
             
             # 设置布局
             fig.update_layout(
-                title={
-                    'text': '多算法按键与锤速散点图（颜色表示延时）',
-                    'x': 0.5,
-                    'xanchor': 'center',
-                    'font': {'size': 18, 'color': '#2c3e50'}
-                },
+                # 删除title，因为UI区域已有标题
                 xaxis_title='按键ID',
                 yaxis_title='锤速',
                 xaxis=dict(
@@ -1797,12 +1819,66 @@ class MultiAlgorithmPlotGenerator:
         )
         return fig
     
+    def _extract_song_identifier(self, filename: str) -> str:
+        """
+        从文件名中提取曲子标识（用于判断是否是同一首曲子）
+        
+        Args:
+            filename: 原始文件名
+            
+        Returns:
+            str: 曲子标识（去掉路径和扩展名）
+        """
+        import os
+        # 去掉路径，只保留文件名
+        basename = os.path.basename(filename)
+        # 去掉扩展名
+        song_id = os.path.splitext(basename)[0]
+        return song_id
+    
+    def _should_generate_time_series_plot(self, algorithms: List[AlgorithmDataset]) -> Tuple[bool, str]:
+        """
+        判断是否应该生成延时时间序列图
+        
+        条件：
+        1. 至少有2个算法
+        2. 如果算法名称（display_name）不同，直接允许生成（不同算法的同首曲子）
+        3. 如果算法名称相同，需要检查文件名，确保是同一首曲子（同种算法的不同曲子不绘制）
+        
+        Args:
+            algorithms: 算法数据集列表
+            
+        Returns:
+            Tuple[bool, str]: (是否应该生成, 原因说明)
+        """
+        if not algorithms or len(algorithms) < 2:
+            return False, "需要至少2个算法才能进行对比"
+        
+        # 检查算法名称（display_name）
+        display_names = set(alg.metadata.display_name for alg in algorithms)
+        
+        # 如果算法名称不同，说明是不同算法的同首曲子，直接允许生成（不需要检查文件名）
+        if len(display_names) >= 2:
+            return True, ""
+        
+        # 如果算法名称相同，需要检查文件名，确保是同一首曲子
+        # 如果文件名不同，说明是同种算法的不同曲子，不应该绘制
+        song_identifiers = set(self._extract_song_identifier(alg.metadata.filename) for alg in algorithms)
+        if len(song_identifiers) > 1:
+            return False, f"检测到同种算法的不同曲子（{len(song_identifiers)}首），延时时间序列图仅支持同一首曲子的不同算法对比"
+        
+        # 算法名称相同且文件名相同（这种情况理论上不应该出现，因为内部标识是唯一的）
+        # 但为了安全，返回False
+        return False, "所有算法名称和文件名都相同，无法进行算法对比"
+    
     def generate_multi_algorithm_delay_time_series_plot(
         self,
         algorithms: List[AlgorithmDataset]
     ) -> Any:
         """
         生成多算法延时时间序列图（叠加显示，不同颜色，图例控制）
+        
+        注意：仅当存在不同算法且是同一首曲子时才绘制
         
         Args:
             algorithms: 激活的算法数据集列表
@@ -1820,6 +1896,12 @@ class MultiAlgorithmPlotGenerator:
             if not ready_algorithms:
                 logger.warning("⚠️ 没有就绪的算法，无法生成多算法延时时间序列图")
                 return self._create_empty_plot("没有就绪的算法")
+            
+            # 检查是否应该生成图表
+            should_generate, reason = self._should_generate_time_series_plot(ready_algorithms)
+            if not should_generate:
+                logger.info(f"ℹ️ 跳过延时时间序列图生成: {reason}")
+                return self._create_empty_plot(reason)
             
             logger.info(f"📊 开始生成多算法延时时间序列图，共 {len(ready_algorithms)} 个算法")
             
@@ -1841,18 +1923,20 @@ class MultiAlgorithmPlotGenerator:
             # 收集所有算法的数据，用于计算全局统计量
             all_delays = []
             
+            # 不绘制录制音轨，直接绘制各算法的播放音轨
             for alg_idx, algorithm in enumerate(ready_algorithms):
-                algorithm_name = algorithm.metadata.algorithm_name
+                algorithm_name = algorithm.metadata.algorithm_name  # 内部唯一标识
+                display_name = algorithm.metadata.display_name  # 显示名称
                 
                 if not algorithm.analyzer or not algorithm.analyzer.note_matcher:
-                    logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有分析器或匹配器，跳过")
+                    logger.warning(f"⚠️ 算法 '{display_name}' 没有分析器或匹配器，跳过")
                     continue
                 
                 try:
                     offset_data = algorithm.analyzer.get_offset_alignment_data()
                     
                     if not offset_data:
-                        logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有匹配数据，跳过")
+                        logger.warning(f"⚠️ 算法 '{display_name}' 没有匹配数据，跳过")
                         continue
                     
                     # 提取时间和延时数据
@@ -1881,28 +1965,44 @@ class MultiAlgorithmPlotGenerator:
                         })
                     
                     if not data_points:
-                        logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有有效时间序列数据，跳过")
+                        logger.warning(f"⚠️ 算法 '{display_name}' 没有有效时间序列数据，跳过")
                         continue
                     
                     # 按时间排序，确保按时间顺序显示
                     data_points.sort(key=lambda x: x['time'])
                     
-                    # 提取排序后的数据
-                    times_ms = [point['time'] for point in data_points]
-                    delays_ms = [point['delay'] for point in data_points]
-                    # customdata 包含 [key_id, record_index, replay_index, algorithm_name]，用于点击时查找匹配对
-                    customdata_list = [[point['key_id'], point['record_index'], point['replay_index'], algorithm_name] 
-                                      for point in data_points]
+                    # 计算该算法的平均延时（用于计算相对延时）
+                    me_0_1ms = algorithm.analyzer.get_mean_error() if hasattr(algorithm.analyzer, 'get_mean_error') else 0.0
+                    mean_delay = me_0_1ms / 10.0  # 平均延时（ms，带符号）
                     
-                    all_delays.extend(delays_ms)
+                    # 计算相对延时：每个点的延时减去该算法的平均延时
+                    # 标准公式：相对延时 = 延时 - 平均延时（对所有点统一适用）
+                    relative_delays_ms = []
+                    for point in data_points:
+                        delay_ms = point['delay']
+                        relative_delay = delay_ms - mean_delay
+                        relative_delays_ms.append(relative_delay)
+                    
+                    # 提取排序后的数据
+                    times_ms = [point['time'] for point in data_points]  # 录制时间
+                    delays_ms = [point['delay'] for point in data_points]  # 保留原始延时用于hover显示
+                    # 计算播放时间 = 录制时间 + 延时
+                    replay_times_ms = [point['time'] + point['delay'] for point in data_points]
+                    # X轴使用偏移后的播放时间：播放时间 - 平均延时 = 录制时间 + 相对延时
+                    replay_times_offset_ms = [replay_time - mean_delay for replay_time in replay_times_ms]
+                    # customdata 包含 [key_id, record_index, replay_index, algorithm_name, 原始延时, 平均延时, 播放时间, 录制时间]，用于点击时查找匹配对和显示原始值
+                    customdata_list = [[point['key_id'], point['record_index'], point['replay_index'], algorithm_name, point['delay'], mean_delay, replay_time, point['time']] 
+                                      for point, replay_time in zip(data_points, replay_times_ms)]
+                    
+                    all_delays.extend(relative_delays_ms)  # 使用相对延时用于统计
                     color = colors[alg_idx % len(colors)]
                     
-                    # 添加散点图
+                    # 添加播放音轨散点图（X轴=偏移后的播放时间，Y轴=相对延时）
                     fig.add_trace(go.Scatter(
-                        x=times_ms,
-                        y=delays_ms,
+                        x=replay_times_offset_ms,  # X轴使用偏移后的播放时间（播放时间 - 平均延时）
+                        y=relative_delays_ms,  # Y轴使用相对延时
                         mode='markers+lines',
-                        name=f'{algorithm_name} - 延时时间序列',
+                        name=f'{display_name} (平均延时: {mean_delay:.2f}ms)',
                         marker=dict(
                             size=5,
                             color=color,
@@ -1911,9 +2011,12 @@ class MultiAlgorithmPlotGenerator:
                         line=dict(color=color, width=1.5),
                         legendgroup=algorithm_name,
                         showlegend=True,
-                        hovertemplate='<b>算法</b>: ' + algorithm_name + '<br>' +
-                                     '<b>录制按键按下时间</b>: %{x:.2f}ms<br>' +
-                                     '<b>延时</b>: %{y:.2f}ms<br>' +
+                        hovertemplate='<b>算法</b>: ' + display_name + '<br>' +
+                                     '<b>偏移后播放时间（X轴）</b>: %{x:.2f}ms<br>' +
+                                     '<b>相对延时（Y轴）</b>: %{y:.2f}ms<br>' +
+                                     '<b>实际播放时间</b>: %{customdata[6]:.2f}ms<br>' +
+                                     '<b>录制时间</b>: %{customdata[7]:.2f}ms<br>' +
+                                     '<b>原始延时</b>: %{customdata[4]:.2f}ms<br>' +
                                      '<b>按键ID</b>: %{customdata[0]}<br>' +
                                      '<extra></extra>',
                         customdata=customdata_list
@@ -1921,55 +2024,53 @@ class MultiAlgorithmPlotGenerator:
                     
                     # 为每个算法计算独立的统计量，添加独立的参考线
                     if delays_ms and len(delays_ms) > 0:
-                        # 使用该算法自己的数据计算均值和标准差
-                        me_0_1ms = algorithm.analyzer.get_mean_error() if hasattr(algorithm.analyzer, 'get_mean_error') else 0.0
+                        # 使用该算法自己的数据计算标准差
                         std_0_1ms = algorithm.analyzer.get_standard_deviation() if hasattr(algorithm.analyzer, 'get_standard_deviation') else 0.0
                         
                         # 转换为ms单位
-                        mean_delay = me_0_1ms / 10.0
                         std_delay = std_0_1ms / 10.0
                         
-                        # 获取该算法的时间范围
-                        time_min = min(times_ms) if times_ms else 0
-                        time_max = max(times_ms) if times_ms else 1
+                        # 获取该算法的偏移后播放时间范围（用于参考线）
+                        replay_time_offset_min = min(replay_times_offset_ms) if replay_times_offset_ms else 0
+                        replay_time_offset_max = max(replay_times_offset_ms) if replay_times_offset_ms else 1
                         
-                        # 添加该算法的均值参考线（使用算法颜色，虚线）
+                        # 添加该算法的零线参考线（相对延时的均值应该为0）
                         fig.add_trace(go.Scatter(
-                            x=[time_min, time_max],
-                            y=[mean_delay, mean_delay],
+                            x=[replay_time_offset_min, replay_time_offset_max],
+                            y=[0, 0],
                             mode='lines',
-                            name=f'{algorithm_name} - 均值',
+                            name=f'{display_name} - 零线',
                             line=dict(dash='dash', color=color, width=1.5),
-                            hovertemplate=f'<b>{algorithm_name} 均值</b>: {mean_delay:.2f}ms<extra></extra>',
+                            hovertemplate=f'<b>{display_name} 零线</b>: 0.00ms<extra></extra>',
                             showlegend=False,
                             legendgroup=algorithm_name
                         ))
                         
-                        # 添加该算法的±3σ参考线（使用算法颜色，点线）
+                        # 添加该算法的±3σ参考线（相对延时的±3σ，以0为中心）
                         if std_delay > 0:
                             fig.add_trace(go.Scatter(
-                                x=[time_min, time_max],
-                                y=[mean_delay + 3 * std_delay, mean_delay + 3 * std_delay],
+                                x=[replay_time_offset_min, replay_time_offset_max],
+                                y=[3 * std_delay, 3 * std_delay],
                                 mode='lines',
-                                name=f'{algorithm_name} - +3σ',
+                                name=f'{display_name} - +3σ',
                                 line=dict(dash='dot', color=color, width=1),
-                                hovertemplate=f'<b>{algorithm_name} +3σ</b>: {mean_delay + 3 * std_delay:.2f}ms<extra></extra>',
+                                hovertemplate=f'<b>{display_name} +3σ</b>: {3 * std_delay:.2f}ms<extra></extra>',
                                 showlegend=False,
                                 legendgroup=algorithm_name
                             ))
                             fig.add_trace(go.Scatter(
-                                x=[time_min, time_max],
-                                y=[mean_delay - 3 * std_delay, mean_delay - 3 * std_delay],
+                                x=[replay_time_offset_min, replay_time_offset_max],
+                                y=[-3 * std_delay, -3 * std_delay],
                                 mode='lines',
-                                name=f'{algorithm_name} - -3σ',
+                                name=f'{display_name} - -3σ',
                                 line=dict(dash='dot', color=color, width=1),
-                                hovertemplate=f'<b>{algorithm_name} -3σ</b>: {mean_delay - 3 * std_delay:.2f}ms<extra></extra>',
+                                hovertemplate=f'<b>{display_name} -3σ</b>: {-3 * std_delay:.2f}ms<extra></extra>',
                                 showlegend=False,
                                 legendgroup=algorithm_name
                             ))
                     
                 except Exception as e:
-                    logger.warning(f"⚠️ 获取算法 '{algorithm_name}' 的时间序列数据失败: {e}")
+                    logger.warning(f"⚠️ 获取算法 '{display_name}' 的时间序列数据失败: {e}")
                     continue
             
             if not all_delays:
@@ -1978,16 +2079,9 @@ class MultiAlgorithmPlotGenerator:
             
             # 设置布局
             fig.update_layout(
-                title={
-                    'text': '多算法延时时间序列图',
-                    'x': 0.5,
-                    'xanchor': 'center',
-                    'y': 0.98,
-                    'yanchor': 'top',
-                    'font': {'size': 18, 'color': '#2c3e50'}
-                },
-                xaxis_title='录制按键按下时间 (ms)',
-                yaxis_title='延时 (ms)',
+                # 删除title，因为UI区域已有标题
+                xaxis_title='偏移后播放时间 (播放时间 - 平均延时) (ms)',
+                yaxis_title='相对延时 (ms)',
                 plot_bgcolor='white',
                 paper_bgcolor='white',
                 font=dict(size=12),

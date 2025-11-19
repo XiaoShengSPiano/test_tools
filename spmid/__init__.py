@@ -9,4 +9,5 @@ from .data_filter import DataFilter
 from .time_aligner import TimeAligner
 from .note_matcher import NoteMatcher
 from .error_detector import ErrorDetector
+from .dtw_aligner import DTWAligner
 

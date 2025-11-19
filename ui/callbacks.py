@@ -8,6 +8,7 @@ import os
 import time
 from datetime import datetime
 from dash import Input, Output, State, callback_context, no_update, html, dcc, dash_table
+import dash
 import dash.dependencies
 import dash_bootstrap_components as dbc
 from ui.layout_components import create_report_layout, empty_figure, create_multi_algorithm_upload_area, create_multi_algorithm_management_area
@@ -770,8 +771,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
     @app.callback(
         [Output('detail-modal', 'style'),
         Output('detail-plot-combined', 'figure')],
-        [Input('key-delay-scatter-plot', 'clickData'),  # 添加散点图点击输入
-        Input('key-delay-zscore-scatter-plot', 'clickData'),  # 添加Z-Score标准化散点图点击输入
+        [Input('key-delay-zscore-scatter-plot', 'clickData'),  # Z-Score标准化散点图点击输入
         Input('close-modal', 'n_clicks'),
         Input('close-modal-btn', 'n_clicks'),
         Input({'type': 'drop-hammers-table', 'index': dash.dependencies.ALL}, 'active_cell'),  # 丢锤表格点击
@@ -782,7 +782,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         State({'type': 'multi-hammers-table', 'index': dash.dependencies.ALL}, 'data')],  # 多锤表格数据
         prevent_initial_call=False
         )
-    def update_plot(scatter_clickData, zscore_scatter_clickData, close_clicks, close_btn_clicks, 
+    def update_plot(zscore_scatter_clickData, close_clicks, close_btn_clicks, 
                    drop_hammers_active_cells, multi_hammers_active_cells,
                    current_style, session_id, drop_hammers_table_data, multi_hammers_table_data):
         """更新详细图表 - 支持多用户会话"""
@@ -827,24 +827,24 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         
         logger.info(f"🔍 回调触发: trigger_id={trigger_id}, trigger_value={trigger_value}, triggered_prop_id={triggered_prop_id}")
 
-        # 处理散点图点击（点击超过阈值的点时显示曲线图）
-        if trigger_id == 'key-delay-scatter-plot' and scatter_clickData:
-            logger.info(f"🔍 散点图点击回调被触发 - scatter_clickData: {scatter_clickData is not None}")
+        # 处理Z-Score标准化散点图点击（点击任意点时显示曲线图）
+        if trigger_id == 'key-delay-zscore-scatter-plot' and zscore_scatter_clickData:
+            logger.info(f"🔍 Z-Score标准化散点图点击回调被触发 - zscore_scatter_clickData: {zscore_scatter_clickData is not None}")
             
-            if 'points' not in scatter_clickData or len(scatter_clickData['points']) == 0:
-                logger.warning("⚠️ 散点图点击回调 - scatter_clickData无效或没有points")
+            if 'points' not in zscore_scatter_clickData or len(zscore_scatter_clickData['points']) == 0:
+                logger.warning("⚠️ Z-Score标准化散点图点击回调 - zscore_scatter_clickData无效或没有points")
                 return current_style, no_update
             
-            point = scatter_clickData['points'][0]
-            logger.info(f"🔍 散点图点击 - 点击点数据: {point}")
+            point = zscore_scatter_clickData['points'][0]
+            logger.info(f"🔍 Z-Score标准化散点图点击 - 点击点数据: {point}")
             
             if not point.get('customdata'):
-                logger.warning("⚠️ 散点图点击 - 点没有customdata")
+                logger.warning("⚠️ Z-Score标准化散点图点击 - 点没有customdata")
                 return current_style, no_update
             
             # 安全地提取customdata
             raw_customdata = point['customdata']
-            logger.info(f"🔍 散点图点击 - raw_customdata类型: {type(raw_customdata)}, 值: {raw_customdata}")
+            logger.info(f"🔍 Z-Score标准化散点图点击 - raw_customdata类型: {type(raw_customdata)}, 值: {raw_customdata}")
             
             if isinstance(raw_customdata, list) and len(raw_customdata) > 0:
                 customdata = raw_customdata[0] if isinstance(raw_customdata[0], list) else raw_customdata
@@ -1725,33 +1725,25 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             empty = backend.plot_generator._create_empty_plot(f"生成失败: {str(e)}")
             return empty, no_update
 
-    # 按键与延时散点图自动生成回调函数 - 当报告内容加载时自动生成
+    # 按键与延时Z-Score标准化散点图自动生成回调函数 - 当报告内容加载时自动生成
     @app.callback(
-        [Output('key-delay-scatter-plot', 'figure'),
-         Output('key-delay-zscore-scatter-plot', 'figure')],
+        Output('key-delay-zscore-scatter-plot', 'figure'),
         [Input('report-content', 'children')],
         [State('session-id', 'data')],
         prevent_initial_call=True
     )
     def handle_generate_scatter_plot(report_content, session_id):
-        """处理按键与延时散点图自动生成 - 当报告内容更新时触发"""
+        """处理按键与延时Z-Score标准化散点图自动生成 - 当报告内容更新时触发"""
         backend = session_manager.get_backend(session_id)
         if not backend:
-            return no_update, no_update
-        
-        backend = session_manager.get_backend(session_id)
-        if not backend:
-            return no_update, no_update
+            return no_update
         
         try:
             # 检查是否有分析数据
             if not backend.analyzer and not (hasattr(backend, 'multi_algorithm_mode') and backend.multi_algorithm_mode):
-                logger.warning("⚠️ 没有分析器，无法生成散点图")
+                logger.warning("⚠️ 没有分析器，无法生成Z-Score标准化散点图")
                 empty = backend.plot_generator._create_empty_plot("没有分析器")
-                return empty, empty
-            
-            # 生成按键与延时散点图
-            fig = backend.generate_key_delay_scatter_plot()
+                return empty
             
             # 生成Z-Score标准化散点图
             zscore_fig = backend.generate_key_delay_zscore_scatter_plot()
@@ -1764,14 +1756,14 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                     first_y = first_trace.y[0] if hasattr(first_trace.y, '__getitem__') else first_trace.y
                     logger.info(f"🔍 Z-Score图表验证: 第一个数据点的y值={first_y} (应该是Z-Score值，通常在-3到3之间)")
             
-            logger.info("✅ 按键与延时散点图和Z-Score标准化散点图生成成功")
-            return fig, zscore_fig
+            logger.info("✅ 按键与延时Z-Score标准化散点图生成成功")
+            return zscore_fig
             
         except Exception as e:
-            logger.error(f"❌ 生成散点图失败: {e}")
+            logger.error(f"❌ 生成Z-Score标准化散点图失败: {e}")
             logger.error(traceback.format_exc())
-            empty = backend.plot_generator._create_empty_plot(f"生成失败: {str(e)}")
-            return empty, empty
+            empty = backend.plot_generator._create_empty_plot(f"生成Z-Score标准化散点图失败: {str(e)}")
+            return empty
 
     # 锤速与延时散点图自动生成回调函数 - 当报告内容加载时自动生成
     @app.callback(
@@ -1804,6 +1796,372 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             logger.error(traceback.format_exc())
             
             return backend.plot_generator._create_empty_plot(f"生成散点图失败: {str(e)}")
+
+    # ==========================================================================
+    # 每个按键的力度-延时关系散点图 - 已删除（功能与按键-力度交互效应图重复）
+    # ==========================================================================
+
+    # 处理算法选择：点击算法控制图注
+    @app.callback(
+        Output('key-force-interaction-selected-algorithms', 'data'),
+        [Input('key-force-interaction-plot', 'restyleData')],
+        [State('key-force-interaction-selected-algorithms', 'data'),
+         State('key-force-interaction-plot', 'figure')],
+        prevent_initial_call=True
+    )
+    def handle_key_force_interaction_algorithm_selection(restyle_data, current_selected_algorithms, figure):
+        """处理算法选择：点击算法控制图注，切换算法选择状态"""
+        ctx = dash.callback_context
+        if not ctx.triggered:
+            return current_selected_algorithms or []
+        
+        if not restyle_data or not figure or 'data' not in figure:
+            return current_selected_algorithms or []
+        
+        try:
+            if len(restyle_data) >= 2 and 'visible' in restyle_data[0]:
+                trace_indices = restyle_data[1] if len(restyle_data) > 1 else []
+                
+                selected_algorithms = current_selected_algorithms or []
+                
+                # 找到被点击的trace，检查是否是算法控制图注项
+                for idx in trace_indices:
+                    if idx < len(figure['data']):
+                        trace = figure['data'][idx]
+                        # 检查是否是算法控制图注项：legendgroup为"algorithm_control"
+                        if 'legendgroup' in trace and trace['legendgroup'] == 'algorithm_control':
+                            if 'name' in trace and trace['name']:
+                                clicked_algorithm = trace['name']
+                                
+                                # 切换算法选择状态
+                                if clicked_algorithm in selected_algorithms:
+                                    # 取消选择
+                                    selected_algorithms = [a for a in selected_algorithms if a != clicked_algorithm]
+                                    logger.info(f"🔄 取消选择算法: {clicked_algorithm}")
+                                else:
+                                    # 选择算法
+                                    selected_algorithms = selected_algorithms + [clicked_algorithm]
+                                    logger.info(f"🎯 选择算法: {clicked_algorithm}")
+                                
+                                return selected_algorithms
+        except Exception as e:
+            logger.warning(f"⚠️ 处理算法选择事件失败: {e}")
+        
+        return current_selected_algorithms or []
+    
+    # 处理按键选择：点击按键控制图注
+    @app.callback(
+        Output('key-force-interaction-selected-keys', 'data'),
+        [Input('key-force-interaction-plot', 'restyleData')],
+        [State('key-force-interaction-selected-keys', 'data'),
+         State('key-force-interaction-plot', 'figure')],
+        prevent_initial_call=True
+    )
+    def handle_key_force_interaction_key_selection(restyle_data, current_selected_keys, figure):
+        """处理按键选择：点击按键控制图注，切换按键选择状态"""
+        ctx = dash.callback_context
+        if not ctx.triggered:
+            return current_selected_keys or []
+        
+        if not restyle_data or not figure or 'data' not in figure:
+            return current_selected_keys or []
+        
+        try:
+            if len(restyle_data) >= 2 and 'visible' in restyle_data[0]:
+                trace_indices = restyle_data[1] if len(restyle_data) > 1 else []
+                
+                selected_keys = current_selected_keys or []
+                
+                # 找到被点击的trace，检查是否是按键控制图注项
+                for idx in trace_indices:
+                    if idx < len(figure['data']):
+                        trace = figure['data'][idx]
+                        # 检查是否是按键控制图注项：legendgroup为"key_control"
+                        if 'legendgroup' in trace and trace['legendgroup'] == 'key_control':
+                            if 'name' in trace and trace['name']:
+                                name = trace['name']
+                                if name.startswith('按键 '):
+                                    try:
+                                        clicked_key_id = int(name.split('按键 ')[1])
+                                        
+                                        # 切换按键选择状态
+                                        if clicked_key_id in selected_keys:
+                                            # 取消选择
+                                            selected_keys = [k for k in selected_keys if k != clicked_key_id]
+                                            logger.info(f"🔄 取消选择按键: {clicked_key_id}")
+                                        else:
+                                            # 选择按键
+                                            selected_keys = selected_keys + [clicked_key_id]
+                                            logger.info(f"🎯 选择按键: {clicked_key_id}")
+                                        
+                                        return selected_keys
+                                    except (ValueError, IndexError):
+                                        continue
+        except Exception as e:
+            logger.warning(f"⚠️ 处理按键选择事件失败: {e}")
+        
+        return current_selected_keys or []
+    
+    # 按键-力度交互效应图自动生成和更新回调函数
+    @app.callback(
+        Output('key-force-interaction-plot', 'figure'),
+        [Input('report-content', 'children'),
+         Input('key-force-interaction-selected-algorithms', 'data'),
+         Input('key-force-interaction-selected-keys', 'data')],
+        [State('session-id', 'data'),
+         State('key-force-interaction-plot', 'figure')],
+        prevent_initial_call=True
+    )
+    def handle_generate_key_force_interaction_plot(report_content, selected_algorithms, selected_keys, session_id, current_figure):
+        """处理按键-力度交互效应图自动生成和更新 - 根据选中的算法和按键更新可见性"""
+        ctx = dash.callback_context
+        if not ctx.triggered:
+            return no_update
+        
+        trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
+        
+        backend = session_manager.get_backend(session_id)
+        if not backend:
+            return no_update
+        
+        try:
+            # 根据选中的算法和按键更新可见性
+            selected_algorithms = selected_algorithms or []
+            selected_keys = selected_keys or []
+            
+            # 如果是report-content变化，需要重新生成图表
+            if trigger_id == 'report-content':
+                # 检查是否有激活的算法
+                active_algorithms = backend.get_active_algorithms()
+                if not active_algorithms:
+                    logger.warning("⚠️ 没有激活的算法，无法生成交互效应图")
+                    return backend.plot_generator._create_empty_plot("没有激活的算法")
+                
+                # 重新生成图表
+                fig = backend.generate_key_force_interaction_plot()
+            else:
+                # 如果是选择变化，使用当前图表并更新可见性
+                if current_figure and isinstance(current_figure, dict) and 'data' in current_figure:
+                    import plotly.graph_objects as go
+                    # 从dict创建Figure，确保所有属性都被正确加载
+                    fig = go.Figure(current_figure)
+                    # 确保data是trace对象列表，而不是dict列表
+                    if fig.data and isinstance(fig.data[0], dict):
+                        # 如果data是dict列表，需要转换为trace对象
+                        fig_data = []
+                        for trace_dict in fig.data:
+                            trace_type = trace_dict.get('type', 'scatter')
+                            if trace_type == 'scatter':
+                                fig_data.append(go.Scatter(trace_dict))
+                            else:
+                                fig_data.append(trace_dict)
+                        fig.data = fig_data
+                else:
+                    active_algorithms = backend.get_active_algorithms()
+                    if not active_algorithms:
+                        return no_update
+                    fig = backend.generate_key_force_interaction_plot()
+            
+            # 如果没有选择任何算法或按键，不显示任何数据；只有选择后才显示
+            show_all = False  # 默认不显示，需要选择后才显示
+            
+            # 辅助函数：检查trace是否属于指定的算法
+            def trace_belongs_to_algorithm(trace, algorithm_name):
+                if not algorithm_name:
+                    return False
+                
+                # 处理dict类型的trace
+                if isinstance(trace, dict):
+                    customdata = trace.get('customdata')
+                    if customdata:
+                        try:
+                            if isinstance(customdata, list) and len(customdata) > 0:
+                                first_point_data = customdata[0]
+                                if isinstance(first_point_data, list) and len(first_point_data) >= 2:
+                                    if first_point_data[1] == algorithm_name:
+                                        return True
+                        except (IndexError, TypeError):
+                            pass
+                    legendgroup = trace.get('legendgroup')
+                    if legendgroup:
+                        return legendgroup.startswith(f'data_{algorithm_name}_')
+                else:
+                    # 处理Plotly trace对象
+                    if hasattr(trace, 'customdata') and trace.customdata:
+                        try:
+                            if isinstance(trace.customdata, list) and len(trace.customdata) > 0:
+                                first_point_data = trace.customdata[0]
+                                if isinstance(first_point_data, list) and len(first_point_data) >= 2:
+                                    if first_point_data[1] == algorithm_name:
+                                        return True
+                        except (IndexError, TypeError):
+                            pass
+                    if hasattr(trace, 'legendgroup') and trace.legendgroup:
+                        return trace.legendgroup.startswith(f'data_{algorithm_name}_')
+                return False
+            
+            # 辅助函数：检查trace是否属于指定的按键
+            def trace_belongs_to_key(trace, key_id):
+                if key_id is None:
+                    return False
+                
+                # 处理dict类型的trace
+                if isinstance(trace, dict):
+                    customdata = trace.get('customdata')
+                    if customdata:
+                        try:
+                            if isinstance(customdata, list) and len(customdata) > 0:
+                                first_point_data = customdata[0]
+                                if isinstance(first_point_data, list):
+                                    if first_point_data[0] == key_id:
+                                        return True
+                                else:
+                                    if first_point_data == key_id:
+                                        return True
+                        except (IndexError, TypeError):
+                            pass
+                    legendgroup = trace.get('legendgroup')
+                    if legendgroup:
+                        return f'_key_{key_id}' in legendgroup
+                else:
+                    # 处理Plotly trace对象
+                    if hasattr(trace, 'customdata') and trace.customdata:
+                        try:
+                            if isinstance(trace.customdata, list) and len(trace.customdata) > 0:
+                                first_point_data = trace.customdata[0]
+                                if isinstance(first_point_data, list):
+                                    if first_point_data[0] == key_id:
+                                        return True
+                                else:
+                                    if first_point_data == key_id:
+                                        return True
+                        except (IndexError, TypeError):
+                            pass
+                    if hasattr(trace, 'legendgroup') and trace.legendgroup:
+                        return f'_key_{key_id}' in trace.legendgroup
+                return False
+            
+            # 将fig.data转换为可修改的list
+            data_list = list(fig.data)
+            
+            logger.info(f"🎨 开始更新图注透明度: 选中算法={selected_algorithms}, 选中按键={selected_keys}")
+            
+            # 更新算法控制图注的透明度
+            # 逻辑：选中的算法 -> 不透明（1.0），未选中的算法 -> 透明（0.2）
+            for trace_idx, trace in enumerate(data_list):
+                # 处理dict类型的trace
+                if isinstance(trace, dict):
+                    if trace.get('legendgroup') == 'algorithm_control':
+                        if 'name' in trace and trace['name']:
+                            algorithm_name = trace['name']
+                            # 选中的算法：不透明（1.0），未选中的算法：透明（0.2）
+                            target_opacity = 1.0 if algorithm_name in selected_algorithms else 0.2
+                            if 'marker' not in trace:
+                                trace['marker'] = {}
+                            trace['marker']['opacity'] = target_opacity
+                            data_list[trace_idx] = trace
+                            logger.info(f"✏️ 更新算法控制图注 '{algorithm_name}' 透明度: {target_opacity} (选中: {algorithm_name in selected_algorithms})")
+                else:
+                    # 处理Plotly trace对象
+                    if hasattr(trace, 'legendgroup') and trace.legendgroup == 'algorithm_control':
+                        if hasattr(trace, 'name') and trace.name:
+                            algorithm_name = trace.name
+                            # 选中的算法：不透明（1.0），未选中的算法：透明（0.2）
+                            target_opacity = 1.0 if algorithm_name in selected_algorithms else 0.2
+                            # 直接修改marker.opacity属性（对象引用已修改，不需要重新赋值）
+                            if hasattr(trace, 'marker') and trace.marker is not None:
+                                trace.marker.opacity = target_opacity
+                            logger.info(f"✏️ 更新算法控制图注 '{algorithm_name}' 透明度: {target_opacity} (选中: {algorithm_name in selected_algorithms})")
+                
+            # 更新按键控制图注的透明度
+            # 逻辑：选中的按键 -> 不透明（1.0），未选中的按键 -> 透明（0.2）
+            for trace_idx, trace in enumerate(data_list):
+                # 处理dict类型的trace
+                if isinstance(trace, dict):
+                    if trace.get('legendgroup') == 'key_control':
+                        if 'name' in trace and trace['name']:
+                            name = trace['name']
+                            if name.startswith('按键 '):
+                                try:
+                                    key_id = int(name.split('按键 ')[1])
+                                    # 选中的按键：不透明（1.0），未选中的按键：透明（0.2）
+                                    target_opacity = 1.0 if key_id in selected_keys else 0.2
+                                    if 'marker' not in trace:
+                                        trace['marker'] = {}
+                                    trace['marker']['opacity'] = target_opacity
+                                    data_list[trace_idx] = trace
+                                    logger.info(f"✏️ 更新按键控制图注 '按键 {key_id}' 透明度: {target_opacity} (选中: {key_id in selected_keys})")
+                                except (ValueError, IndexError):
+                                    continue
+                else:
+                    # 处理Plotly trace对象
+                    if hasattr(trace, 'legendgroup') and trace.legendgroup == 'key_control':
+                        if hasattr(trace, 'name') and trace.name:
+                            name = trace.name
+                            if name.startswith('按键 '):
+                                try:
+                                    key_id = int(name.split('按键 ')[1])
+                                    # 选中的按键：不透明（1.0），未选中的按键：透明（0.2）
+                                    target_opacity = 1.0 if key_id in selected_keys else 0.2
+                                    # 直接修改marker.opacity属性（对象引用已修改，不需要重新赋值）
+                                    if hasattr(trace, 'marker') and trace.marker is not None:
+                                        trace.marker.opacity = target_opacity
+                                    logger.info(f"✏️ 更新按键控制图注 '按键 {key_id}' 透明度: {target_opacity} (选中: {key_id in selected_keys})")
+                                except (ValueError, IndexError):
+                                    continue
+            
+            # 更新数据trace的可见性
+            for trace_idx, trace in enumerate(data_list):
+                # 跳过控制图注项
+                legendgroup = trace.get('legendgroup') if isinstance(trace, dict) else (trace.legendgroup if hasattr(trace, 'legendgroup') else None)
+                if legendgroup in ['algorithm_control', 'key_control']:
+                    continue
+                
+                # 数据trace：只有同时满足算法和按键条件时才显示
+                # 如果没有选择任何算法或按键，不显示任何数据
+                if len(selected_algorithms) == 0 and len(selected_keys) == 0:
+                    target_visible = False
+                else:
+                    # 检查是否属于选中的算法
+                    belongs_to_selected_algorithm = False
+                    if len(selected_algorithms) == 0:
+                        belongs_to_selected_algorithm = True  # 如果没有选择算法，显示所有算法
+                    else:
+                        for alg in selected_algorithms:
+                            if trace_belongs_to_algorithm(trace, alg):
+                                belongs_to_selected_algorithm = True
+                                break
+                    
+                    # 检查是否属于选中的按键
+                    belongs_to_selected_key = False
+                    if len(selected_keys) == 0:
+                        belongs_to_selected_key = True  # 如果没有选择按键，显示所有按键
+                    else:
+                        for key_id in selected_keys:
+                            if trace_belongs_to_key(trace, key_id):
+                                belongs_to_selected_key = True
+                                break
+                    
+                    # 只有同时满足算法和按键条件时才显示
+                    target_visible = belongs_to_selected_algorithm and belongs_to_selected_key
+                
+                # 更新可见性
+                if isinstance(trace, dict):
+                    trace['visible'] = target_visible
+                    data_list[trace_idx] = trace
+                else:
+                    trace.visible = target_visible
+            
+            # 将修改后的trace列表赋值回fig.data
+            fig.data = data_list
+            
+            logger.info("✅ 按键-力度交互效应图更新成功")
+            return fig
+            
+        except Exception as e:
+            logger.error(f"❌ 生成/更新按键-力度交互效应图失败: {e}")
+            logger.error(traceback.format_exc())
+            return backend.plot_generator._create_empty_plot(f"生成交互效应图失败: {str(e)}")
 
     # 按键与锤速散点图自动生成回调函数（颜色表示延时）- 当报告内容加载时自动生成
     @app.callback(
@@ -1987,9 +2345,33 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                     logger.warning("⚠️ 未找到匹配对")
                     return current_style, []
                 
-                # 生成对比曲线
+                # 在多算法模式下，查找所有算法中匹配到同一个录制音符的播放音符
+                other_algorithm_notes = []  # [(algorithm_name, play_note), ...]
+                if backend.multi_algorithm_mode and backend.multi_algorithm_manager:
+                    active_algorithms = backend.multi_algorithm_manager.get_active_algorithms()
+                    for alg in active_algorithms:
+                        if alg.metadata.algorithm_name == algorithm_name:
+                            continue  # 跳过当前算法（已经绘制）
+                        
+                        if not alg.analyzer or not hasattr(alg.analyzer, 'matched_pairs'):
+                            continue
+                        
+                        matched_pairs = alg.analyzer.matched_pairs
+                        # 查找匹配到同一个record_index的播放音符
+                        for r_idx, p_idx, r_note, p_note in matched_pairs:
+                            if r_idx == record_index:
+                                other_algorithm_notes.append((alg.metadata.algorithm_name, p_note))
+                                logger.info(f"✅ 找到算法 '{alg.metadata.algorithm_name}' 的匹配播放音符")
+                                break
+                
+                # 生成对比曲线（包含其他算法的播放曲线）
                 import spmid
-                detail_figure_combined = spmid.plot_note_comparison_plotly(record_note, replay_note, algorithm_name=final_algorithm_name)
+                detail_figure_combined = spmid.plot_note_comparison_plotly(
+                    record_note, 
+                    replay_note, 
+                    algorithm_name=final_algorithm_name,
+                    other_algorithm_notes=other_algorithm_notes  # 传递其他算法的播放音符
+                )
                 
                 if not detail_figure_combined:
                     logger.error("❌ 曲线生成失败")
@@ -2343,9 +2725,33 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                     # 单算法模式，algorithm_name 可能为 None
                     final_algorithm_name = algorithm_name if algorithm_name and algorithm_name != 'N/A' else None
                 
-                # 生成对比曲线图
+                # 在多算法模式下，查找所有算法中匹配到同一个录制音符的播放音符
+                other_algorithm_notes = []  # [(algorithm_name, play_note), ...]
+                if backend.multi_algorithm_mode and backend.multi_algorithm_manager:
+                    active_algorithms = backend.multi_algorithm_manager.get_active_algorithms()
+                    for alg in active_algorithms:
+                        if alg.metadata.algorithm_name == final_algorithm_name:
+                            continue  # 跳过当前算法（已经绘制）
+                        
+                        if not alg.analyzer or not hasattr(alg.analyzer, 'matched_pairs'):
+                            continue
+                        
+                        matched_pairs = alg.analyzer.matched_pairs
+                        # 查找匹配到同一个record_index的播放音符
+                        for r_idx, p_idx, r_note, p_note in matched_pairs:
+                            if r_idx == record_index:
+                                other_algorithm_notes.append((alg.metadata.algorithm_name, p_note))
+                                logger.info(f"✅ 找到算法 '{alg.metadata.algorithm_name}' 的匹配播放音符")
+                                break
+                
+                # 生成对比曲线图（包含其他算法的播放曲线）
                 import spmid
-                detail_figure_combined = spmid.plot_note_comparison_plotly(record_note, replay_note, algorithm_name=final_algorithm_name)
+                detail_figure_combined = spmid.plot_note_comparison_plotly(
+                    record_note, 
+                    replay_note, 
+                    algorithm_name=final_algorithm_name,
+                    other_algorithm_notes=other_algorithm_notes  # 传递其他算法的播放音符
+                )
                 
                 if not detail_figure_combined:
                     logger.error("❌ 曲线生成失败")
@@ -2842,7 +3248,8 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             
             algorithm_items = []
             for alg_info in algorithms:
-                alg_name = alg_info['algorithm_name']
+                alg_name = alg_info['algorithm_name']  # 内部唯一标识（用于查找）
+                display_name = alg_info.get('display_name', alg_name)  # 显示名称（用于UI显示）
                 filename = alg_info['filename']
                 status = alg_info['status']
                 # 获取is_active，如果未设置或为None，则默认为True（新上传的文件应该默认显示）
@@ -2853,7 +3260,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                     algorithm = backend.multi_algorithm_manager.get_algorithm(alg_name) if hasattr(backend, 'multi_algorithm_manager') else None
                     if algorithm:
                         algorithm.is_active = True
-                        logger.info(f"✅ 确保算法 '{alg_name}' 默认显示: is_active={is_active}")
+                        logger.info(f"✅ 确保算法 '{display_name}' 默认显示: is_active={is_active}")
                 color = alg_info['color']
                 is_ready = alg_info['is_ready']
                 
@@ -2884,7 +3291,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                         dbc.CardBody([
                             html.Div([
                                 html.Div([
-                                    html.Span(alg_name, style={'fontWeight': 'bold', 'fontSize': '14px', 'color': color}),
+                                    html.Span(display_name, style={'fontWeight': 'bold', 'fontSize': '14px', 'color': color}),
                                     html.Br(),
                                     html.Small(filename, style={'color': '#6c757d', 'fontSize': '11px'}),
                                     html.Br(),
@@ -3599,8 +4006,32 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 # 步骤2：根据判断结果生成曲线
                 import spmid
                 if has_matched_pair:
-                    # 有匹配对：绘制录制+播放对比曲线（在同一个悬浮窗上）
-                    detail_figure_combined = spmid.plot_note_comparison_plotly(record_note, replay_note, algorithm_name=algorithm_name)
+                    # 在多算法模式下，查找所有算法中匹配到同一个录制音符的播放音符
+                    other_algorithm_notes = []  # [(algorithm_name, play_note), ...]
+                    if backend.multi_algorithm_mode and backend.multi_algorithm_manager:
+                        active_algorithms = backend.multi_algorithm_manager.get_active_algorithms()
+                        for alg in active_algorithms:
+                            if alg.metadata.algorithm_name == algorithm_name:
+                                continue  # 跳过当前算法（已经绘制）
+                            
+                            if not alg.analyzer or not hasattr(alg.analyzer, 'matched_pairs'):
+                                continue
+                            
+                            alg_matched_pairs = alg.analyzer.matched_pairs
+                            # 查找匹配到同一个record_index的播放音符
+                            for r_idx, p_idx, r_note, p_note in alg_matched_pairs:
+                                if r_idx == index and r_note.id == key_id:
+                                    other_algorithm_notes.append((alg.metadata.algorithm_name, p_note))
+                                    logger.info(f"✅ 找到算法 '{alg.metadata.algorithm_name}' 的匹配播放音符")
+                                    break
+                    
+                    # 有匹配对：绘制录制+播放对比曲线（在同一个悬浮窗上，包含其他算法的播放曲线）
+                    detail_figure_combined = spmid.plot_note_comparison_plotly(
+                        record_note, 
+                        replay_note, 
+                        algorithm_name=algorithm_name,
+                        other_algorithm_notes=other_algorithm_notes  # 传递其他算法的播放音符
+                    )
                     print(f"✅ 按键ID {key_id} 有匹配对，绘制录制+播放对比曲线")
                 else:
                     # 没有匹配对：只绘制这个数据点的数据（可能是录制，也可能是播放）

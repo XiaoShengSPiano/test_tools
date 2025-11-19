@@ -362,7 +362,7 @@ def plot_bar_plotly(record, play, time_range=None):
 import plotly.graph_objects as go
 import numpy as np
 
-def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None):
+def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None, other_algorithm_notes=None):
     """
     使用 Plotly 绘制音符的触后数据和锤子数据对比图（在同一图中）
     
@@ -370,7 +370,10 @@ def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None):
     record_note: 录制音轨数据，如果为None则不绘制录制数据
     play_note: 回放音轨数据，如果为None则不绘制回放数据
     algorithm_name: 算法名称（可选），用于在标题中显示
+    other_algorithm_notes: 其他算法的播放音符列表，格式为 [(algorithm_name, play_note), ...]
     """
+    if other_algorithm_notes is None:
+        other_algorithm_notes = []
     
     # 创建图表
     fig = go.Figure()
@@ -396,6 +399,7 @@ def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None):
                         name='录制触后',
                         line=dict(color='blue', width=3),
                         showlegend=True,
+                        legendgroup='record',  # 录制数据分组（触后和锤子一组）
                         hovertemplate='时间: %{x:.2f} ms<br>触后压力: %{y}<extra></extra>'
                     )
                 )
@@ -413,6 +417,7 @@ def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None):
                         name='录制锤子',
                         marker=dict(color='blue', size=8, symbol='circle'),
                         showlegend=True,
+                        legendgroup='record',  # 录制数据分组（触后和锤子一组）
                         hovertemplate='时间: %{x:.2f} ms<br>锤子速度: %{y}<extra></extra>'
                     )
                 )
@@ -426,14 +431,18 @@ def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None):
                 # 计算绝对时间：相对时间 + offset，然后转换为 ms
                 x_after_touch = (play_note.after_touch.index + play_note.offset) / 10.0
                 y_after_touch = play_note.after_touch.values  # 触后压力值
+                play_name = f'回放触后 ({algorithm_name})' if algorithm_name else '回放触后'
+                # 当前算法的触后和锤子为一组
+                alg_group = f'algorithm_{algorithm_name}' if algorithm_name else 'algorithm_default'
                 fig.add_trace(
                     go.Scatter(
                         x=x_after_touch,
                         y=y_after_touch,
                         mode='lines',
-                        name='回放触后',
+                        name=play_name,
                         line=dict(color='red', width=3),
                         showlegend=True,
+                        legendgroup=alg_group,  # 当前算法的触后和锤子一组
                         hovertemplate='时间: %{x:.2f} ms<br>触后压力: %{y}<extra></extra>'
                     )
                 )
@@ -443,19 +452,71 @@ def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None):
                 # 计算绝对时间：相对时间 + offset，然后转换为 ms
                 x_hammers = (play_note.hammers.index + play_note.offset) / 10.0
                 y_hammers = play_note.hammers.values  # 锤子速度值
+                play_name = f'回放锤子 ({algorithm_name})' if algorithm_name else '回放锤子'
+                # 当前算法的触后和锤子为一组
+                alg_group = f'algorithm_{algorithm_name}' if algorithm_name else 'algorithm_default'
                 fig.add_trace(
                     go.Scatter(
                         x=x_hammers,
                         y=y_hammers,
                         mode='markers',
-                        name='回放锤子',
+                        name=play_name,
                         marker=dict(color='red', size=8, symbol='circle'),
                         showlegend=True,
+                        legendgroup=alg_group,  # 当前算法的触后和锤子一组
                         hovertemplate='时间: %{x:.2f} ms<br>锤子速度: %{y}<extra></extra>'
                     )
                 )
         except Exception as e:
             logger.warning(f"⚠️ 绘制回放数据时出错: {e}")
+    
+    # 绘制其他算法的播放曲线
+    # 为不同算法分配不同颜色
+    other_colors = ['green', 'orange', 'purple', 'brown', 'pink', 'gray', 'olive', 'cyan']
+    for idx, (other_alg_name, other_play_note) in enumerate(other_algorithm_notes):
+        if other_play_note is None:
+            continue
+        
+        color = other_colors[idx % len(other_colors)]
+        try:
+            # 每个算法的触后和锤子为一组
+            other_alg_group = f'algorithm_{other_alg_name}'
+            
+            # 绘制其他算法的触后数据
+            if hasattr(other_play_note, 'after_touch') and other_play_note.after_touch is not None and not other_play_note.after_touch.empty:
+                x_after_touch = (other_play_note.after_touch.index + other_play_note.offset) / 10.0
+                y_after_touch = other_play_note.after_touch.values
+                fig.add_trace(
+                    go.Scatter(
+                        x=x_after_touch,
+                        y=y_after_touch,
+                        mode='lines',
+                        name=f'回放触后 ({other_alg_name})',
+                        line=dict(color=color, width=2, dash='dash'),
+                        showlegend=True,
+                        legendgroup=other_alg_group,  # 该算法的触后和锤子一组
+                        hovertemplate=f'算法: {other_alg_name}<br>时间: %{{x:.2f}} ms<br>触后压力: %{{y}}<extra></extra>'
+                    )
+                )
+            
+            # 绘制其他算法的锤子数据
+            if hasattr(other_play_note, 'hammers') and other_play_note.hammers is not None and not other_play_note.hammers.empty:
+                x_hammers = (other_play_note.hammers.index + other_play_note.offset) / 10.0
+                y_hammers = other_play_note.hammers.values
+                fig.add_trace(
+                    go.Scatter(
+                        x=x_hammers,
+                        y=y_hammers,
+                        mode='markers',
+                        name=f'回放锤子 ({other_alg_name})',
+                        marker=dict(color=color, size=6, symbol='square'),
+                        showlegend=True,
+                        legendgroup=other_alg_group,  # 该算法的触后和锤子一组
+                        hovertemplate=f'算法: {other_alg_name}<br>时间: %{{x:.2f}} ms<br>锤子速度: %{{y}}<extra></extra>'
+                    )
+                )
+        except Exception as e:
+            logger.warning(f"⚠️ 绘制算法 '{other_alg_name}' 的回放数据时出错: {e}")
     
     # 生成标题
     title_parts = []
@@ -503,19 +564,29 @@ def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None):
             linecolor='black',
             mirror=True
         ),
-        height=500,
-        width=800,
+        height=600,  # 增加高度（往下扩展）
+        width=800,  # 增加宽度（往右扩展）
         template='simple_white',
         showlegend=True,
         legend=dict(
             orientation="h",
             yanchor="top",
-            y=1.10,  # 将图注放在标题正下方（标题在图表上方，图注在标题下方）
+            y=1.40,  # 图注在标题下方（标题在y=1.0，图注在y=1.40，留出空间）
             xanchor="center",
-            x=0.5  # 图注居中，与标题对齐
+            x=0.5,  # 图注居中，与标题对齐
+            traceorder='grouped',  # 按组排序（录制、算法1、算法2...分组）
+            tracegroupgap=150,  # 组之间的间距（像素），大幅增大间距让不同算法图注分开
+            itemwidth=35,  # 每个图注项的宽度
+            font=dict(size=11),  # 图注字体大小
+            bgcolor='rgba(255,255,255,0.9)',  # 图注背景色（更不透明）
+            bordercolor='gray',
+            borderwidth=1.5,  # 边框宽度
+            entrywidthmode='fraction',  # 使用分数模式控制图注项宽度
+            entrywidth=0.20,  # 每个图注项占用的宽度（分数，大幅增大让文字完整显示）
+            groupclick='toggleitem'  # 点击时只切换单个item，而不是整个组
         ),
         hovermode='x unified',  # 统一悬停模式
-        margin=dict(l=60, r=20, t=100, b=60)  # 增加顶部边距，为标题和图注留出足够空间
+        margin=dict(l=60, r=40, t=250, b=80)  # 增加右边距和下边距，为图表扩展留出空间
     )
     
     return fig

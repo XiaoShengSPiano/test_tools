@@ -677,3 +677,264 @@ class PlotGenerator:
             import traceback
             logger.error(traceback.format_exc())
             return self._create_empty_plot(f"生成分析图失败: {str(e)}")
+    
+    # generate_force_delay_by_key_scatter_plot 已删除（功能与按键-力度交互效应图重复）
+    
+    def _generate_force_delay_by_key_scatter_plot_deleted(self, analysis_result: Dict[str, Any]) -> Any:
+        """
+        【已删除】此函数已被删除，因为与按键-力度交互效应图功能重复
+        
+        如需恢复，请参考 git 历史记录
+        """
+        return self._create_empty_plot("此图表已删除（功能重复）")
+    
+    def _create_algorithm_control_legends(self, fig, algorithm_names, algorithm_colors):
+        """创建算法控制图注（独立的图例组）"""
+        import plotly.graph_objects as go
+        
+        for alg_idx, algorithm_name in enumerate(algorithm_names):
+            algorithm_color = algorithm_colors[alg_idx % len(algorithm_colors)]
+            
+            fig.add_trace(go.Scatter(
+                x=[None],  # 使用None，不显示在图表上
+                y=[None],
+                mode='markers',
+                name=algorithm_name,  # 算法名称
+                marker=dict(
+                    size=12,
+                    color=algorithm_color,
+                    symbol='circle',  # 算法用圆形
+                    line=dict(width=2, color='black'),
+                    opacity=0.2  # 默认较透明（未选中状态）
+                ),
+                legendgroup='algorithm_control',  # 算法控制图例组（独立）
+                visible=True,  # 图例始终可见
+                showlegend=True,
+                hovertemplate=f'<b>{algorithm_name}</b><br>点击选择/取消选择此算法<extra></extra>'
+            ))
+    
+    def _create_key_control_legends(self, fig, all_key_ids, key_color_hex):
+        """创建按键控制图注（独立的图例组）"""
+        import plotly.graph_objects as go
+        
+        for key_idx, key_id in enumerate(all_key_ids):
+            key_color = key_color_hex[key_idx % len(key_color_hex)]
+            
+            fig.add_trace(go.Scatter(
+                x=[None],  # 使用None，不显示在图表上
+                y=[None],
+                mode='markers',
+                name=f'按键 {key_id}',
+                marker=dict(
+                    size=15,
+                    color=key_color,
+                    symbol='square',  # 按键用方形
+                    line=dict(width=2, color='black'),
+                    opacity=0.2  # 默认较透明（未选中状态）
+                ),
+                legendgroup='key_control',  # 按键控制图例组（独立）
+                visible=True,  # 图例始终可见
+                showlegend=True,
+                hovertemplate=f'<b>按键 {key_id}</b><br>点击选择/取消选择此按键<extra></extra>'
+            ))
+    
+    def _add_data_traces_multi_algorithm(self, fig, all_key_ids, algorithm_names, algorithm_results, algorithm_colors):
+        """为多算法模式添加数据traces"""
+        import plotly.graph_objects as go
+        
+        # 为每个算法的每个按键生成数据trace（只显示散点）
+        for key_idx, key_id in enumerate(all_key_ids):
+            for alg_idx, algorithm_name in enumerate(algorithm_names):
+                alg_result = algorithm_results[algorithm_name]
+                interaction_plot_data = alg_result.get('interaction_plot_data', {})
+                key_data = interaction_plot_data.get('key_data', {})
+                
+                if key_id not in key_data:
+                    continue  # 如果该算法没有这个按键的数据，跳过
+                
+                # 使用算法颜色，而不是按键颜色，便于区分不同算法
+                algorithm_color = algorithm_colors[alg_idx % len(algorithm_colors)]
+                
+                data = key_data[key_id]
+                forces = data.get('forces', [])
+                delays = data.get('delays', [])  # 相对延时
+                absolute_delays = data.get('absolute_delays', delays)  # 原始延时
+                mean_delay = data.get('mean_delay', 0)  # 整体平均延时
+                
+                if forces and delays:
+                    fig.add_trace(go.Scatter(
+                        x=forces,
+                        y=delays,
+                        mode='markers',
+                        name=None,
+                        marker=dict(
+                            size=8,
+                            color=algorithm_color,
+                            opacity=0.9,
+                            line=dict(width=1, color='white')
+                        ),
+                        legendgroup=f'data_{algorithm_name}_key_{key_id}',
+                        showlegend=False,
+                        customdata=[[key_id, algorithm_name, abs_delay, rel_delay] 
+                                   for abs_delay, rel_delay in zip(absolute_delays, delays)],
+                        visible=False,  # 默认不显示，需要选择后才显示
+                        hovertemplate=f'<b>{algorithm_name}</b><br>' +
+                                     f'<b>按键 {key_id}</b><br>' +
+                                     '<b>力度</b>: %{x}<br>' +
+                                     '<b>相对延时</b>: %{y:.2f}ms<br>' +
+                                     '<b>原始延时</b>: %{customdata[2]:.2f}ms<br>' +
+                                     f'<i>平均延时: {mean_delay:.2f}ms</i><extra></extra>'
+                    ))
+    
+    def _add_data_traces_single_algorithm(self, fig, key_data, color_hex):
+        """为单算法模式添加数据traces"""
+        import plotly.graph_objects as go
+        
+        key_ids = sorted(key_data.keys())
+        
+        for idx, key_id in enumerate(key_ids):
+            data = key_data[key_id]
+            color = color_hex[idx % len(color_hex)]
+            
+            forces = data.get('forces', [])
+            delays = data.get('delays', [])  # 相对延时
+            absolute_delays = data.get('absolute_delays', delays)  # 原始延时
+            mean_delay = data.get('mean_delay', 0)  # 整体平均延时
+            
+            if forces and delays:
+                fig.add_trace(go.Scatter(
+                    x=forces,
+                    y=delays,
+                    mode='markers',
+                    name=f'按键 {key_id}',
+                    marker=dict(
+                        size=10,
+                        color=color,
+                        opacity=0.9,
+                        line=dict(width=1, color='white')
+                    ),
+                    legendgroup=f'key_{key_id}',
+                    showlegend=True,
+                    customdata=[[key_id, abs_delay, rel_delay] 
+                               for abs_delay, rel_delay in zip(absolute_delays, delays)],
+                    visible='legendonly',  # 默认隐藏，点击图例可显示
+                    hovertemplate=f'<b>按键 {key_id}</b><br>' +
+                                 '<b>力度</b>: %{x}<br>' +
+                                 '<b>相对延时</b>: %{y:.2f}ms<br>' +
+                                 '<b>原始延时</b>: %{customdata[1]:.2f}ms<br>' +
+                                 f'<i>平均延时: {mean_delay:.2f}ms</i><extra></extra>'
+                ))
+    
+    def generate_key_force_interaction_plot(self, analysis_result: Dict[str, Any]) -> Any:
+        """
+        生成按键-力度交互效应图
+        
+        Args:
+            analysis_result: analyze_key_force_interaction()的返回结果
+            
+        Returns:
+            Any: Plotly图表对象
+        """
+        try:
+            import plotly.graph_objects as go
+            import numpy as np
+            import matplotlib.cm as cm
+            import matplotlib.colors as mcolors
+            
+            if analysis_result.get('status') != 'success':
+                return self._create_empty_plot("分析失败或数据不足")
+            
+            # 检查是否是多算法模式
+            is_multi_algorithm = analysis_result.get('multi_algorithm_mode', False)
+            algorithm_results = analysis_result.get('algorithm_results', {})
+            
+            fig = go.Figure()
+            
+            # 为算法分配颜色
+            algorithm_colors = [
+                '#1f77b4',  # 蓝色
+                '#ff7f0e',  # 橙色
+                '#2ca02c',  # 绿色
+                '#d62728',  # 红色
+                '#9467bd',  # 紫色
+                '#8c564b',  # 棕色
+                '#e377c2',  # 粉色
+                '#7f7f7f'   # 灰色
+            ]
+            
+            if is_multi_algorithm and algorithm_results:
+                # 多算法模式
+                algorithm_names = sorted(algorithm_results.keys())
+                
+                # 收集所有按键ID
+                all_key_ids = set()
+                for alg_result in algorithm_results.values():
+                    interaction_plot_data = alg_result.get('interaction_plot_data', {})
+                    key_data = interaction_plot_data.get('key_data', {})
+                    all_key_ids.update(key_data.keys())
+                
+                all_key_ids = sorted(all_key_ids)
+                n_keys = len(all_key_ids)
+                
+                # 为按键分配颜色
+                if n_keys <= 20:
+                    key_colors = cm.get_cmap('tab20')(np.linspace(0, 1, n_keys))
+                else:
+                    key_colors = cm.get_cmap('viridis')(np.linspace(0, 1, n_keys))
+                key_color_hex = [mcolors.rgb2hex(c[:3]) for c in key_colors]
+                
+                # 创建控制图注
+                self._create_algorithm_control_legends(fig, algorithm_names, algorithm_colors)
+                self._create_key_control_legends(fig, all_key_ids, key_color_hex)
+                
+                # 添加数据traces
+                self._add_data_traces_multi_algorithm(fig, all_key_ids, algorithm_names, algorithm_results, algorithm_colors)
+            else:
+                # 单算法模式
+                interaction_plot_data = analysis_result.get('interaction_plot_data', {})
+                key_data = interaction_plot_data.get('key_data', {})
+                
+                if not key_data:
+                    return self._create_empty_plot("没有交互效应图数据")
+                
+                n_keys = len(key_data)
+                
+                # 为按键分配颜色
+                if n_keys <= 20:
+                    colors = cm.get_cmap('tab20')(np.linspace(0, 1, n_keys))
+                else:
+                    colors = cm.get_cmap('viridis')(np.linspace(0, 1, n_keys))
+                
+                color_hex = [mcolors.rgb2hex(c[:3]) for c in colors]
+                
+                # 添加数据traces
+                self._add_data_traces_single_algorithm(fig, key_data, color_hex)
+            
+            # 删除title，因为UI区域已有标题
+            fig.update_layout(
+                xaxis_title='力度（锤速）',
+                yaxis_title='相对延时 (ms)',  # 使用相对延时
+                showlegend=True,
+                template='plotly_white',
+                height=600,
+                hovermode='closest',
+                legend=dict(
+                    orientation='v',
+                    yanchor='top',
+                    y=1,
+                    xanchor='left',
+                    x=1.02,
+                    groupclick='toggleitem',  # 点击按键图例时，切换该按键的所有算法数据
+                    itemclick='toggle'  # 点击图例项时切换显示/隐藏
+                ),
+                uirevision='key-force-interaction'
+            )
+            
+            
+            return fig
+            
+        except Exception as e:
+            logger.error(f"生成交互效应图失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return self._create_empty_plot(f"生成交互效应图失败: {str(e)}")

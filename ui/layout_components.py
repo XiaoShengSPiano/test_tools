@@ -423,6 +423,10 @@ def create_main_layout():
         dcc.Graph(id='key-delay-zscore-scatter-plot', figure={}, style={'display': 'none'}),
         dcc.Graph(id='hammer-velocity-delay-scatter-plot', figure={}, style={'display': 'none'}),
         dcc.Graph(id='key-hammer-velocity-scatter-plot', figure={}, style={'display': 'none'}),
+        # force-delay-by-key-scatter-plot 已删除（功能与按键-力度交互效应图重复）
+        dcc.Graph(id='key-force-interaction-plot', figure={}, style={'display': 'none'}),
+        dcc.Store(id='key-force-interaction-selected-algorithms', data=[]),  # 存储选中的算法列表
+        dcc.Store(id='key-force-interaction-selected-keys', data=[]),  # 存储选中的按键列表
         dcc.Graph(id='offset-alignment-plot', figure={}, style={'display': 'none'}),
         dcc.Graph(id='delay-time-series-plot', figure={}, style={'display': 'none'}),
         dcc.Graph(id='delay-histogram-plot', figure={}, style={'display': 'none'}),
@@ -725,22 +729,22 @@ def _create_single_algorithm_error_stats_row(algorithm, algorithm_name):
                 dbc.Col([
                     html.Div([
                         html.H3(f"{me_ms:.2f} ms", className="text-secondary mb-1"),
-                        html.P("总体均值", className="text-muted mb-0"),
-                        html.Small("所有已匹配按键对的keyon_offset的算术平均", className="text-muted", style={'fontSize': '10px'})
+                        html.P("平均延时", className="text-muted mb-0"),
+                        html.Small("所有已匹配按键对的keyon_offset的算术平均（带符号）", className="text-muted", style={'fontSize': '10px'})
                     ], className="text-center")
                 ], width=4),
                 dbc.Col([
                     html.Div([
                         html.H3(f"{variance_ms_squared:.2f} ms²", className="text-danger mb-1"),
-                        html.P("总体方差", className="text-muted mb-0"),
-                        html.Small("所有已匹配按键对的keyon_offset的总体方差", className="text-muted", style={'fontSize': '10px'})
+                        html.P("方差", className="text-muted mb-0"),
+                        html.Small("所有已匹配按键对的keyon_offset的方差", className="text-muted", style={'fontSize': '10px'})
                     ], className="text-center")
                 ], width=4),
                 dbc.Col([
                     html.Div([
                         html.H3(f"{std_ms:.2f} ms", className="text-info mb-1"),
-                        html.P("总体标准差", className="text-muted mb-0"),
-                        html.Small("所有已匹配按键对的keyon_offset的总体标准差", className="text-muted", style={'fontSize': '10px'})
+                        html.P("标准差", className="text-muted mb-0"),
+                        html.Small("所有已匹配按键对的keyon_offset的标准差", className="text-muted", style={'fontSize': '10px'})
                     ], className="text-center")
                 ], width=4)
             ], className="mb-3"),
@@ -1107,6 +1111,10 @@ def create_report_layout(backend):
             dcc.Graph(id='key-delay-zscore-scatter-plot', figure=empty_fig, style={'display': 'none'}),
             dcc.Graph(id='hammer-velocity-delay-scatter-plot', figure=empty_fig, style={'display': 'none'}),
             dcc.Graph(id='key-hammer-velocity-scatter-plot', figure=empty_fig, style={'display': 'none'}),
+            # force-delay-by-key-scatter-plot 已删除（功能与按键-力度交互效应图重复）
+            dcc.Graph(id='key-force-interaction-plot', figure=empty_fig, style={'display': 'none'}),
+            dcc.Store(id='key-force-interaction-selected-algorithms', data=[]),
+            dcc.Store(id='key-force-interaction-selected-keys', data=[]),
             dcc.Graph(id='offset-alignment-plot', figure=empty_fig, style={'display': 'none'}),
             dcc.Graph(id='delay-time-series-plot', figure=empty_fig, style={'display': 'none'}),
             dcc.Graph(id='delay-histogram-plot', figure=empty_fig, style={'display': 'none'}),
@@ -1237,24 +1245,24 @@ def create_report_layout(backend):
                     dcc.Graph(
                         id='offset-alignment-plot',
                         figure={},
-                                style={'height': '2200px'}
+                                style={'height': '2750px'}  # 增加高度以容纳5个子图（包括相对延时图）
                     ),
                 ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
             ], width=12)
         ]),
         
-                # 按键与延时散点图区域
+                # 按键与延时Z-Score标准化散点图区域
         dbc.Row([
             dbc.Col([
                 html.Div([
                     dbc.Row([
                         dbc.Col([
-                            html.H6("按键与延时散点图", className="mb-2",
-                                   style={'color': '#1976d2', 'fontWeight': 'bold', 'borderBottom': '2px solid #1976d2', 'paddingBottom': '5px'}),
+                                    html.H6("按键与延时Z-Score标准化散点图", className="mb-2",
+                                           style={'color': '#9c27b0', 'fontWeight': 'bold', 'borderBottom': '2px solid #9c27b0', 'paddingBottom': '5px'}),
                         ], width=12)
                     ]),
                     dcc.Graph(
-                        id='key-delay-scatter-plot',
+                                id='key-delay-zscore-scatter-plot',
                         figure={},
                         style={'height': '500px'}
                     ),
@@ -1262,41 +1270,22 @@ def create_report_layout(backend):
                     ], width=12)
                 ]),
                 
-                # 按键与延时Z-Score标准化散点图区域 - 在按键与延时散点图下方
+                # 锤速与延时散点图区域
                 dbc.Row([
                     dbc.Col([
                         html.Div([
                             dbc.Row([
                                 dbc.Col([
-                                    html.H6("按键与延时Z-Score标准化散点图", className="mb-2",
-                                           style={'color': '#9c27b0', 'fontWeight': 'bold', 'borderBottom': '2px solid #9c27b0', 'paddingBottom': '5px'}),
+                            html.H6("锤速与延时散点图", className="mb-2",
+                                   style={'color': '#d32f2f', 'fontWeight': 'bold', 'borderBottom': '2px solid #d32f2f', 'paddingBottom': '5px'}),
                                 ], width=12)
                             ]),
                             dcc.Graph(
-                                id='key-delay-zscore-scatter-plot',
+                        id='hammer-velocity-delay-scatter-plot',
                                 figure={},
                                 style={'height': '500px'}
                             ),
                         ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
-            ], width=12)
-        ]),
-        
-                # 锤速与延时散点图区域
-        dbc.Row([
-            dbc.Col([
-                html.Div([
-                    dbc.Row([
-                        dbc.Col([
-                            html.H6("锤速与延时散点图", className="mb-2",
-                                   style={'color': '#d32f2f', 'fontWeight': 'bold', 'borderBottom': '2px solid #d32f2f', 'paddingBottom': '5px'}),
-                        ], width=12)
-                    ]),
-                    dcc.Graph(
-                        id='hammer-velocity-delay-scatter-plot',
-                        figure={},
-                        style={'height': '500px'}
-                    ),
-                ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
             ], width=12)
         ]),
         
@@ -1315,6 +1304,29 @@ def create_report_layout(backend):
                         figure={},
                         style={'height': '500px'}
                     ),
+                ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
+            ], width=12)
+        ]),
+        
+                # 每个按键的力度-延时散点图已删除（功能与按键-力度交互效应图重复）
+        
+                # 按键-力度交互效应图
+        dbc.Row([
+            dbc.Col([
+                html.Div([
+                    dbc.Row([
+                        dbc.Col([
+                            html.H6("按键-力度交互效应图", className="mb-2",
+                                   style={'color': '#c2185b', 'fontWeight': 'bold', 'borderBottom': '2px solid #c2185b', 'paddingBottom': '5px'}),
+                        ], width=12)
+                    ]),
+                    dcc.Graph(
+                        id='key-force-interaction-plot',
+                        figure={},
+                        style={'height': '600px'}
+                    ),
+                    dcc.Store(id='key-force-interaction-selected-algorithms', data=[]),  # 存储选中的算法列表
+                    dcc.Store(id='key-force-interaction-selected-keys', data=[]),  # 存储选中的按键列表
                 ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
             ], width=12)
         ]),

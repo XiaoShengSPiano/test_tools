@@ -31,7 +31,8 @@ class AlgorithmStatus(Enum):
 @dataclass
 class AlgorithmMetadata:
     """算法元数据"""
-    algorithm_name: str  # 算法名称（用户自定义或文件名）
+    algorithm_name: str  # 算法名称（内部唯一标识：算法名_文件名（无扩展名））
+    display_name: str  # 显示名称（用户输入的原始算法名称）
     filename: str  # 原始文件名
     upload_time: float  # 上传时间戳
     status: AlgorithmStatus = AlgorithmStatus.PENDING
@@ -58,17 +59,19 @@ class AlgorithmDataset:
         '#7f7f7f',  # 灰色
     ]
     
-    def __init__(self, algorithm_name: str, filename: str, color_index: int = 0):
+    def __init__(self, algorithm_name: str, display_name: str, filename: str, color_index: int = 0):
         """
         初始化算法数据集
         
         Args:
-            algorithm_name: 算法名称（用户自定义或基于文件名）
+            algorithm_name: 算法名称（内部唯一标识：算法名_文件名（无扩展名））
+            display_name: 显示名称（用户输入的原始算法名称）
             filename: 原始文件名
             color_index: 颜色索引（用于分配图表颜色）
         """
         self.metadata = AlgorithmMetadata(
             algorithm_name=algorithm_name,
+            display_name=display_name,
             filename=filename,
             upload_time=0.0
         )
@@ -129,7 +132,8 @@ class AlgorithmDataset:
             return {}
         
         return {
-            'algorithm_name': self.metadata.algorithm_name,
+            'algorithm_name': self.metadata.algorithm_name,  # 内部唯一标识
+            'display_name': self.metadata.display_name,  # 显示名称
             'filename': self.metadata.filename,
             'offset_statistics': self.analyzer.get_offset_statistics() if self.analyzer.note_matcher else {},
             'global_average_delay': self.analyzer.get_global_average_delay() if self.analyzer.note_matcher else 0.0,
@@ -165,18 +169,21 @@ class MultiAlgorithmManager:
     - 算法显示控制
     """
     
-    def __init__(self, max_algorithms: int = 4):
+    def __init__(self, max_algorithms: Optional[int] = None):
         """
         初始化多算法管理器
         
         Args:
-            max_algorithms: 最大算法数量（需要用户确认）
+            max_algorithms: 最大算法数量（None表示无限制）
         """
         self.algorithms: Dict[str, AlgorithmDataset] = {}  # algorithm_name -> AlgorithmDataset
         self.max_algorithms = max_algorithms
-        self.executor = ThreadPoolExecutor(max_workers=max_algorithms)  # 线程池用于并发处理
+        # 线程池用于并发处理，如果无限制则使用默认值10
+        executor_workers = max_algorithms if max_algorithms is not None else 10
+        self.executor = ThreadPoolExecutor(max_workers=executor_workers)
         
-        logger.info(f"✅ MultiAlgorithmManager初始化完成 (最大算法数: {max_algorithms})")
+        limit_text = "无限制" if max_algorithms is None else str(max_algorithms)
+        logger.info(f"✅ MultiAlgorithmManager初始化完成 (最大算法数: {limit_text})")
     
     def get_algorithm_count(self) -> int:
         """获取当前算法数量"""
@@ -184,6 +191,8 @@ class MultiAlgorithmManager:
     
     def can_add_algorithm(self) -> bool:
         """检查是否可以添加新算法"""
+        if self.max_algorithms is None:
+            return True  # 无限制
         return self.get_algorithm_count() < self.max_algorithms
     
     def validate_algorithm_name(self, algorithm_name: str) -> Tuple[bool, str]:
@@ -206,15 +215,35 @@ class MultiAlgorithmManager:
         
         return True, ""
     
+    def _generate_unique_algorithm_name(self, algorithm_name: str, filename: str) -> str:
+        """
+        生成唯一的算法名称（算法名_文件名（无扩展名））
+        
+        Args:
+            algorithm_name: 用户输入的算法名称
+            filename: 文件名
+            
+        Returns:
+            str: 唯一的算法名称
+        """
+        import os
+        # 去掉路径和扩展名，只保留文件名（无扩展名）
+        basename = os.path.basename(filename)
+        filename_without_ext = os.path.splitext(basename)[0]
+        # 生成组合名称：算法名_文件名
+        unique_name = f"{algorithm_name}_{filename_without_ext}"
+        return unique_name
+    
     async def add_algorithm_async(self, algorithm_name: str, filename: str,
                                   record_data: List[Note], replay_data: List[Note]) -> Tuple[bool, str]:
         """
         异步添加算法（支持并发处理）
         
         使用 ThreadPoolExecutor 进行并发处理，因为数据分析是 CPU 密集型任务。
+        自动通过"算法名_文件名（无扩展名）"生成唯一标识，区分同种算法的不同曲子。
         
         Args:
-            algorithm_name: 算法名称（必须由用户指定）
+            algorithm_name: 算法名称（用户输入的原始名称）
             filename: 文件名
             record_data: 录制数据
             replay_data: 播放数据
@@ -222,18 +251,22 @@ class MultiAlgorithmManager:
         Returns:
             Tuple[bool, str]: (是否成功, 错误信息)
         """
-        # 验证算法名称
-        is_valid, error_msg = self.validate_algorithm_name(algorithm_name)
+        # 生成唯一的算法名称（算法名_文件名（无扩展名））
+        unique_algorithm_name = self._generate_unique_algorithm_name(algorithm_name, filename)
+        
+        # 验证唯一算法名称
+        is_valid, error_msg = self.validate_algorithm_name(unique_algorithm_name)
         if not is_valid:
             return False, error_msg
         
         # 检查是否超过最大数量
         if not self.can_add_algorithm():
-            return False, f"已达到最大算法数量限制 ({self.max_algorithms})"
+            limit_text = str(self.max_algorithms) if self.max_algorithms is not None else "无限制"
+            return False, f"已达到最大算法数量限制 ({limit_text})"
         
-        # 创建算法数据集
+        # 创建算法数据集（使用唯一名称作为内部标识，原始名称作为显示名称）
         color_index = len(self.algorithms)
-        algorithm = AlgorithmDataset(algorithm_name, filename, color_index)
+        algorithm = AlgorithmDataset(unique_algorithm_name, algorithm_name, filename, color_index)
         
         # 在线程池中执行数据加载（CPU密集型任务，使用线程池更高效）
         loop = asyncio.get_event_loop()
@@ -245,12 +278,12 @@ class MultiAlgorithmManager:
         )
         
         if success:
-            self.algorithms[algorithm_name] = algorithm
-            logger.info(f"✅ 算法 '{algorithm_name}' 添加成功")
+            self.algorithms[unique_algorithm_name] = algorithm
+            logger.info(f"✅ 算法 '{algorithm_name}' (文件: {filename}) 添加成功，内部标识: '{unique_algorithm_name}'")
             return True, ""
         else:
             error_msg = algorithm.metadata.error_message or "未知错误"
-            logger.error(f"❌ 算法 '{algorithm_name}' 添加失败: {error_msg}")
+            logger.error(f"❌ 算法 '{algorithm_name}' (文件: {filename}) 添加失败: {error_msg}")
             return False, error_msg
     
     def remove_algorithm(self, algorithm_name: str) -> bool:

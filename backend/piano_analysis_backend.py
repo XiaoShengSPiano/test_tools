@@ -385,19 +385,31 @@ class PianoAnalysisBackend:
             # 按时间排序，确保按时间顺序显示
             data_points.sort(key=lambda x: x['time'])
             
+            # 计算平均延时（用于计算相对延时）
+            me_0_1ms = self.get_mean_error()  # 平均延时（0.1ms单位，带符号）
+            mean_delay = me_0_1ms / 10.0  # 平均延时（ms，带符号）
+            
+            # 计算相对延时：每个点的延时减去平均延时
+            # 标准公式：相对延时 = 延时 - 平均延时（对所有点统一适用）
+            relative_delays_ms = []
+            for point in data_points:
+                delay_ms = point['delay']
+                relative_delay = delay_ms - mean_delay
+                relative_delays_ms.append(relative_delay)
+            
             # 提取排序后的数据
             times_ms = [point['time'] for point in data_points]
-            delays_ms = [point['delay'] for point in data_points]
-            # customdata 包含 [key_id, record_index, replay_index]，用于点击时查找匹配对
-            customdata_list = [[point['key_id'], point['record_index'], point['replay_index']] 
+            delays_ms = [point['delay'] for point in data_points]  # 保留原始延时用于hover显示
+            # customdata 包含 [key_id, record_index, replay_index, 原始延时, 平均延时]，用于点击时查找匹配对和显示原始值
+            customdata_list = [[point['key_id'], point['record_index'], point['replay_index'], point['delay'], mean_delay] 
                               for point in data_points]
             
-            # 添加散点图
+            # 添加散点图（使用相对延时）
             fig.add_trace(go.Scatter(
                 x=times_ms,
-                y=delays_ms,
+                y=relative_delays_ms,
                 mode='markers+lines',  # 同时显示点和线，便于观察趋势
-                name='延时时间序列',
+                name=f'相对延时时间序列 (平均延时: {mean_delay:.2f}ms)',
                 marker=dict(
                     size=6,
                     color='#2196F3',
@@ -405,7 +417,9 @@ class PianoAnalysisBackend:
                 ),
                 line=dict(color='#2196F3', width=1),
                 hovertemplate='<b>时间</b>: %{x:.2f}ms<br>' +
-                             '<b>延时</b>: %{y:.2f}ms<br>' +
+                             '<b>相对延时</b>: %{y:.2f}ms<br>' +
+                             '<b>原始延时</b>: %{customdata[3]:.2f}ms<br>' +
+                             '<b>平均延时</b>: %{customdata[4]:.2f}ms<br>' +
                              '<b>按键ID</b>: %{customdata[0]}<br>' +
                              '<extra></extra>',
                 customdata=customdata_list
@@ -414,57 +428,47 @@ class PianoAnalysisBackend:
             # 计算统计量，用于添加参考线
             # 使用与数据概览界面相同的方法，确保一致性
             if delays_ms:
-                # 使用 backend 的方法获取均值和标准差，与数据概览界面保持一致
-                me_0_1ms = self.get_mean_error()  # 总体均值（0.1ms单位，带符号）
-                std_0_1ms = self.get_standard_deviation()  # 总体标准差（0.1ms单位）
+                std_0_1ms = self.get_standard_deviation()  # 标准差（0.1ms单位）
                 
                 # 转换为ms单位
-                mean_delay = me_0_1ms / 10.0  # 总体均值（ms，带符号）
-                std_delay = std_0_1ms / 10.0  # 总体标准差（ms）
+                std_delay = std_0_1ms / 10.0  # 标准差（ms）
                 
-                # 添加均值参考线（使用 Scatter 创建，支持 hover 显示）
+                # 添加零线参考线（相对延时的均值应该为0）
                 fig.add_trace(go.Scatter(
                     x=[times_ms[0], times_ms[-1]] if times_ms else [0, 1],
-                    y=[mean_delay, mean_delay],
+                    y=[0, 0],
                     mode='lines',
-                    name='总体均值',
+                    name='平均延时（零线）',
                     line=dict(dash='dash', color='red', width=2),
-                    hovertemplate=f'<b>总体均值</b>: {mean_delay:.2f}ms<extra></extra>',
+                    hovertemplate=f'<b>平均延时（零线）</b>: 0.00ms<extra></extra>',
                     showlegend=False
                 ))
                 
-                # 添加±3σ参考线（使用 Scatter 创建，支持 hover 显示）
+                # 添加±3σ参考线（相对延时的±3σ，以0为中心）
                 if std_delay > 0:
                     fig.add_trace(go.Scatter(
                         x=[times_ms[0], times_ms[-1]] if times_ms else [0, 1],
-                        y=[mean_delay + 3 * std_delay, mean_delay + 3 * std_delay],
+                        y=[3 * std_delay, 3 * std_delay],
                         mode='lines',
                         name='+3σ',
                         line=dict(dash='dot', color='orange', width=1.5),
-                        hovertemplate=f'<b>+3σ</b>: {mean_delay + 3 * std_delay:.2f}ms<extra></extra>',
+                        hovertemplate=f'<b>+3σ</b>: {3 * std_delay:.2f}ms<extra></extra>',
                         showlegend=False
                     ))
                     fig.add_trace(go.Scatter(
                         x=[times_ms[0], times_ms[-1]] if times_ms else [0, 1],
-                        y=[mean_delay - 3 * std_delay, mean_delay - 3 * std_delay],
+                        y=[-3 * std_delay, -3 * std_delay],
                         mode='lines',
                         name='-3σ',
                         line=dict(dash='dot', color='orange', width=1.5),
-                        hovertemplate=f'<b>-3σ</b>: {mean_delay - 3 * std_delay:.2f}ms<extra></extra>',
+                        hovertemplate=f'<b>-3σ</b>: {-3 * std_delay:.2f}ms<extra></extra>',
                         showlegend=False
                     ))
             
             fig.update_layout(
-                title={
-                    'text': '延时时间序列图',
-                    'x': 0.5,
-                    'xanchor': 'center',
-                    'y': 0.98,
-                    'yanchor': 'top',
-                    'font': {'size': 18, 'color': '#2c3e50'}
-                },
+                # 删除title，因为UI区域已有标题
                 xaxis_title='时间 (ms)',
-                yaxis_title='延时 (ms)',
+                yaxis_title='相对延时 (ms)',
                 plot_bgcolor='white',
                 paper_bgcolor='white',
                 font=dict(size=12),
@@ -592,14 +596,7 @@ class PianoAnalysisBackend:
                 ))
 
             fig.update_layout(
-                title={
-                    'text': '延时分布直方图（附正态拟合曲线）',
-                    'x': 0.5,
-                    'xanchor': 'center',
-                    'y': 0.98,  # 稍微下移，避免被图注挤压
-                    'yanchor': 'top',
-                    'font': {'size': 18, 'color': '#2c3e50'}
-                },
+                # 删除title，因为UI区域已有标题
                 xaxis_title='延时 (ms)',
                 yaxis_title='概率密度',
                 bargap=0.05,
@@ -1243,12 +1240,7 @@ class PianoAnalysisBackend:
             
             # 更新布局 - 增大图表区域
             fig.update_layout(
-                title={
-                    'text': '偏移对齐分析柱状图',
-                    'x': 0.5,
-                    'xanchor': 'center',
-                    'font': {'size': 28}
-                },
+                # 删除title，因为UI区域已有标题
                 height=2000,  # 进一步增加高度，确保参考线可见
                 showlegend=False,
                 margin=dict(l=100, r=150, t=180, b=120)  # 增加顶部和右侧边距，为参考线标注留空间
@@ -1453,14 +1445,8 @@ class PianoAnalysisBackend:
                 hovertemplate=f"μ-3σ = {lower_threshold:.2f}ms<extra></extra>"
             ))
             
-            # 更新布局
+            # 更新布局（删除title，因为UI区域已有标题）
             fig.update_layout(
-                title={
-                    'text': '按键与延时散点图（已匹配按键对）',
-                    'x': 0.5,
-                    'xanchor': 'center',
-                    'font': {'size': 18, 'color': '#2c3e50'}
-                },
                 xaxis_title='按键ID',
                 yaxis_title='延时 (ms)',
                 xaxis=dict(
@@ -1702,12 +1688,7 @@ class PianoAnalysisBackend:
             
             # 更新布局
             fig.update_layout(
-                title={
-                    'text': '锤速与延时散点图（已匹配按键对）',
-                    'x': 0.5,
-                    'xanchor': 'center',
-                    'font': {'size': 18, 'color': '#2c3e50'}
-                },
+                # 删除title，因为UI区域已有标题
                 xaxis_title='锤速',
                 yaxis_title='Z-Score（标准化延时）',
                 xaxis=dict(
@@ -1874,12 +1855,7 @@ class PianoAnalysisBackend:
             
             # 更新布局
             fig.update_layout(
-                title={
-                    'text': '按键与锤速散点图（颜色表示延时，已匹配按键对）',
-                    'x': 0.5,
-                    'xanchor': 'center',
-                    'font': {'size': 18, 'color': '#2c3e50'}
-                },
+                # 删除title，因为UI区域已有标题
                 xaxis_title='按键ID',
                 yaxis_title='锤速',
                 xaxis=dict(
@@ -2634,25 +2610,221 @@ class PianoAnalysisBackend:
             logger.error(traceback.format_exc())
             return self.plot_generator._create_empty_plot(f"生成失败: {str(e)}")
     
+    def get_force_delay_by_key_analysis(self) -> Dict[str, Any]:
+        """
+        获取每个按键的力度与延时关系分析结果
+        
+        按按键ID分组，对每个按键分析其内部的力度（锤速）与延时的统计关系。
+        包括：相关性分析、回归分析、描述性统计等。
+        
+        支持多算法模式：返回所有激活算法的数据。
+        
+        Returns:
+            Dict[str, Any]: 分析结果，包含：
+                - key_analysis: 每个按键的分析结果列表（单算法模式）
+                - overall_summary: 整体摘要统计
+                - scatter_data: 散点图数据（按按键分组）
+                - algorithm_results: 多算法模式下的各算法结果（多算法模式）
+                - status: 状态标识
+        """
+        try:
+            # 多算法模式：返回所有激活算法的数据
+            if self.multi_algorithm_mode and self.multi_algorithm_manager:
+                active_algorithms = self.multi_algorithm_manager.get_active_algorithms()
+                if not active_algorithms:
+                    logger.warning("⚠️ 没有激活的算法，无法进行按键力度-延时分析")
+                    return {
+                        'status': 'error',
+                        'message': '没有激活的算法'
+                    }
+                
+                # 为每个算法生成分析结果
+                algorithm_results = {}
+                for algorithm in active_algorithms:
+                    if not algorithm.analyzer:
+                        logger.warning(f"⚠️ 算法 '{algorithm.metadata.algorithm_name}' 没有分析器，跳过")
+                        continue
+                    
+                    algorithm_name = algorithm.metadata.algorithm_name
+                    delay_analysis = DelayAnalysis(algorithm.analyzer)
+                    result = delay_analysis.analyze_force_delay_by_key()
+                    
+                    if result.get('status') == 'success':
+                        algorithm_results[algorithm_name] = result
+                        logger.info(f"✅ 算法 '{algorithm_name}' 的按键力度-延时分析完成")
+                
+                if not algorithm_results:
+                    logger.warning("⚠️ 没有成功分析的算法")
+                    return {
+                        'status': 'error',
+                        'message': '没有成功分析的算法'
+                    }
+                
+                # 返回多算法结果
+                return {
+                    'status': 'success',
+                    'multi_algorithm_mode': True,
+                    'algorithm_results': algorithm_results,
+                    # 为了向后兼容，也包含第一个算法的结果
+                    'key_analysis': list(algorithm_results.values())[0].get('key_analysis', []),
+                    'overall_summary': list(algorithm_results.values())[0].get('overall_summary', {}),
+                    'scatter_data': list(algorithm_results.values())[0].get('scatter_data', {}),
+                }
+            
+            # 单算法模式（向后兼容）
+            if not self.delay_analysis:
+                if self.analyzer:
+                    self.delay_analysis = DelayAnalysis(self.analyzer)
+                else:
+                    logger.warning("⚠️ 分析器不存在，无法进行按键力度-延时分析")
+                    return {
+                        'status': 'error',
+                        'message': '分析器不存在'
+                    }
+            
+            result = self.delay_analysis.analyze_force_delay_by_key()
+            logger.info("✅ 按键力度-延时分析完成")
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ 按键力度-延时分析失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {
+                'status': 'error',
+                'message': f'分析失败: {str(e)}'
+            }
+    
+    def get_key_force_interaction_analysis(self) -> Dict[str, Any]:
+        """
+        获取按键与力度的联合统计关系分析结果（多因素分析）
+        
+        使用多因素ANOVA和交互效应分析，评估：
+        1. 按键对延时的主效应
+        2. 力度对延时的主效应
+        3. 按键×力度的交互效应
+        
+        支持多算法模式：使用第一个激活算法的数据进行分析。
+        
+        Returns:
+            Dict[str, Any]: 分析结果，包含：
+                - two_way_anova: 双因素ANOVA结果
+                - interaction_effect: 交互效应分析结果
+                - stratified_regression: 分层回归分析结果
+                - interaction_plot_data: 交互效应图数据
+                - status: 状态标识
+        """
+        try:
+            # 多算法模式：返回所有激活算法的数据
+            if self.multi_algorithm_mode and self.multi_algorithm_manager:
+                active_algorithms = self.multi_algorithm_manager.get_active_algorithms()
+                if not active_algorithms:
+                    logger.warning("⚠️ 没有激活的算法，无法进行按键-力度交互分析")
+                    return {
+                        'status': 'error',
+                        'message': '没有激活的算法'
+                    }
+                
+                # 为每个算法生成分析结果
+                algorithm_results = {}
+                for algorithm in active_algorithms:
+                    if not algorithm.analyzer:
+                        logger.warning(f"⚠️ 算法 '{algorithm.metadata.algorithm_name}' 没有分析器，跳过")
+                        continue
+                    
+                    algorithm_name = algorithm.metadata.algorithm_name
+                    delay_analysis = DelayAnalysis(algorithm.analyzer)
+                    result = delay_analysis.analyze_key_force_interaction()
+                    
+                    if result.get('status') == 'success':
+                        algorithm_results[algorithm_name] = result
+                        logger.info(f"✅ 算法 '{algorithm_name}' 的按键-力度交互分析完成")
+                
+                if not algorithm_results:
+                    logger.warning("⚠️ 没有成功分析的算法")
+                    return {
+                        'status': 'error',
+                        'message': '没有成功分析的算法'
+                    }
+                
+                # 返回多算法结果
+                return {
+                    'status': 'success',
+                    'multi_algorithm_mode': True,
+                    'algorithm_results': algorithm_results,
+                    # 为了向后兼容，也包含第一个算法的结果（用于交互效应强度等统计信息）
+                    'two_way_anova': list(algorithm_results.values())[0].get('two_way_anova', {}),
+                    'interaction_effect': list(algorithm_results.values())[0].get('interaction_effect', {}),
+                    'stratified_regression': list(algorithm_results.values())[0].get('stratified_regression', {}),
+                }
+            
+            # 单算法模式（向后兼容）
+            if not self.delay_analysis:
+                if self.analyzer:
+                    self.delay_analysis = DelayAnalysis(self.analyzer)
+                else:
+                    logger.warning("⚠️ 分析器不存在，无法进行按键-力度交互分析")
+                    return {
+                        'status': 'error',
+                        'message': '分析器不存在'
+                    }
+            
+            result = self.delay_analysis.analyze_key_force_interaction()
+            logger.info("✅ 按键-力度交互分析完成")
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ 按键-力度交互分析失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {
+                'status': 'error',
+                'message': f'分析失败: {str(e)}'
+            }
+    
+    # generate_force_delay_by_key_plot 已删除（功能与按键-力度交互效应图重复）
+    
+    def generate_key_force_interaction_plot(self) -> Any:
+        """
+        生成按键-力度交互效应图
+        
+        Returns:
+            Any: Plotly图表对象
+        """
+        try:
+            analysis_result = self.get_key_force_interaction_analysis()
+            
+            if analysis_result.get('status') != 'success':
+                return self.plot_generator._create_empty_plot("分析失败")
+            
+            return self.plot_generator.generate_key_force_interaction_plot(analysis_result)
+            
+        except Exception as e:
+            logger.error(f"❌ 生成交互效应图失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return self.plot_generator._create_empty_plot(f"生成失败: {str(e)}")
+    
     # ==================== 多算法对比模式相关方法 ====================
     
-    def _ensure_multi_algorithm_manager(self, max_algorithms: int = 4) -> None:
+    def _ensure_multi_algorithm_manager(self, max_algorithms: Optional[int] = None) -> None:
         """
         确保multi_algorithm_manager已初始化（多算法模式始终启用）
         
         Args:
-            max_algorithms: 最大算法数量
+            max_algorithms: 最大算法数量（None表示无限制）
         """
         if self.multi_algorithm_manager is None:
             self.multi_algorithm_manager = MultiAlgorithmManager(max_algorithms=max_algorithms)
-            logger.info(f"✅ 初始化多算法管理器 (最大算法数: {max_algorithms})")
+            limit_text = "无限制" if max_algorithms is None else str(max_algorithms)
+            logger.info(f"✅ 初始化多算法管理器 (最大算法数: {limit_text})")
     
-    def enable_multi_algorithm_mode(self, max_algorithms: int = 4) -> Tuple[bool, bool, Optional[str]]:
+    def enable_multi_algorithm_mode(self, max_algorithms: Optional[int] = None) -> Tuple[bool, bool, Optional[str]]:
         """
         启用多算法对比模式（向后兼容方法，现在只是确保管理器已初始化）
         
         Args:
-            max_algorithms: 最大算法数量
+            max_algorithms: 最大算法数量（None表示无限制）
             
         Returns:
             Tuple[bool, bool, Optional[str]]: (是否成功, 是否有现有数据需要迁移, 文件名)
@@ -2706,9 +2878,12 @@ class PianoAnalysisBackend:
             data_source_info = self.get_data_source_info()
             filename = data_source_info.get('filename', '未知文件')
             
-            # 创建算法数据集
+            # 生成唯一的算法名称（算法名_文件名（无扩展名））
+            unique_algorithm_name = self.multi_algorithm_manager._generate_unique_algorithm_name(algorithm_name, filename)
+            
+            # 创建算法数据集（使用唯一名称作为内部标识，原始名称作为显示名称）
             color_index = 0
-            algorithm = AlgorithmDataset(algorithm_name, filename, color_index)
+            algorithm = AlgorithmDataset(unique_algorithm_name, algorithm_name, filename, color_index)
             
             # 直接使用现有的 analyzer，而不是重新分析
             algorithm.analyzer = self.analyzer
@@ -2717,7 +2892,7 @@ class PianoAnalysisBackend:
             algorithm.metadata.status = AlgorithmStatus.READY
             
             # 添加到管理器
-            self.multi_algorithm_manager.algorithms[algorithm_name] = algorithm
+            self.multi_algorithm_manager.algorithms[unique_algorithm_name] = algorithm
             
             logger.info(f"✅ 现有数据已迁移为算法: {algorithm_name}")
             return True, ""
@@ -2817,7 +2992,8 @@ class PianoAnalysisBackend:
                 logger.info(f"✅ 确保算法 '{alg.metadata.algorithm_name}' 默认显示: is_active={is_active}")
             
             algorithms.append({
-                'algorithm_name': alg.metadata.algorithm_name,
+                'algorithm_name': alg.metadata.algorithm_name,  # 内部唯一标识（用于查找）
+                'display_name': alg.metadata.display_name,  # 显示名称（用于UI显示）
                 'filename': alg.metadata.filename,
                 'status': alg.metadata.status.value,
                 'is_active': is_active,

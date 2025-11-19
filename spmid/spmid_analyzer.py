@@ -18,6 +18,7 @@ from .motor_threshold_checker import MotorThresholdChecker
 from .data_filter import DataFilter
 from .note_matcher import NoteMatcher
 from .error_detector import ErrorDetector
+from .dtw_aligner import DTWAligner
 from typing import List, Tuple, Optional, Dict, Any
 from utils.logger import Logger
 
@@ -42,6 +43,7 @@ class SPMIDAnalyzer:
         self.data_filter: Optional[DataFilter] = None
         self.note_matcher: Optional[NoteMatcher] = None
         self.error_detector: Optional[ErrorDetector] = None
+        self.dtw_aligner: Optional[DTWAligner] = None
         
         # 分析结果
         self.multi_hammers: List[ErrorNote] = []
@@ -132,6 +134,7 @@ class SPMIDAnalyzer:
         # self.time_aligner = TimeAligner()  # 已删除时序对齐功能
         self.note_matcher = NoteMatcher()
         self.error_detector = ErrorDetector()
+        self.dtw_aligner = DTWAligner()  # DTW时间对齐器
         
         logger.info("✅ 所有分析组件初始化完成")
     
@@ -283,6 +286,55 @@ class SPMIDAnalyzer:
         if self.note_matcher:
             return self.note_matcher.get_offset_alignment_data()
         return []
+    
+    def perform_dtw_alignment(self, window_size: Optional[int] = None) -> Dict[str, Any]:
+        """
+        基于已匹配的按键对执行DTW时间对齐
+        
+        Args:
+            window_size: DTW窗口大小，None表示无限制。用于限制对齐范围，避免过度扭曲
+        
+        Returns:
+            Dict[str, Any]: DTW对齐结果，包含：
+                - alignment_path: DTW对齐路径
+                - record_times: 录制时间序列（ms单位）
+                - replay_times: 播放时间序列（ms单位）
+                - dtw_distance: DTW距离
+                - fixed_delay: 固定延迟估计（ms）
+                - time_warping: 时间扭曲系数
+                等其他字段
+        """
+        if not self.dtw_aligner:
+            logger.warning("⚠️ DTW对齐器未初始化")
+            return {}
+        
+        if not self.note_matcher:
+            logger.warning("⚠️ 按键匹配器未初始化，无法执行DTW对齐")
+            return {}
+        
+        # 获取偏移对齐数据
+        offset_data = self.get_offset_alignment_data()
+        if not offset_data:
+            logger.warning("⚠️ 没有偏移对齐数据，无法执行DTW对齐")
+            return {}
+        
+        # 如果指定了窗口大小，更新对齐器配置
+        if window_size is not None:
+            self.dtw_aligner.window_size = window_size
+        
+        # 执行DTW对齐
+        return self.dtw_aligner.align(offset_data)
+    
+    def get_dtw_alignment_result(self) -> Optional[Dict[str, Any]]:
+        """
+        获取DTW对齐结果（如果已执行）
+        
+        Returns:
+            Optional[Dict[str, Any]]: DTW对齐结果，如果未执行则返回None
+        """
+        if self.dtw_aligner:
+            return self.dtw_aligner.get_alignment_result()
+        return None
     
     def get_invalid_notes_offset_analysis(self) -> List[Dict[str, Any]]:
         """
