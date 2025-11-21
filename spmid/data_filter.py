@@ -173,7 +173,7 @@ class DataFilter:
             - 数据完整性：after_touch和hammers数据不能为空
             - 锤速检查：第一个锤子的速度不能为0
             - 持续时间：音符持续时间不能少于30ms（内部单位0.1ms）
-            - 阈值检查：通过电机阈值检查器验证是否能够发声
+            - 阈值检查：已注释（原逻辑不靠谱）
             Tuple[bool, str]: (是否有效, 无效原因)
         """
         try:
@@ -206,36 +206,38 @@ class DataFilter:
                 self._log_invalid_note_details(note, "持续时间过短", f"持续时间={difference_value/10:.2f}ms (<30ms)")
                 return False, 'duration_too_short'
             
-            # 使用电机阈值检查器判断是否发声（必须存在）
-            if not self.threshold_checker:
-                error_msg = "电机阈值检查器不存在，无法进行数据过滤。请确保在初始化DataFilter时提供了MotorThresholdChecker实例。"
-                logger.error(f"❌ {error_msg}")
-                raise RuntimeError(error_msg)
-            
-            motor_name = f"motor_{note.id}"
-            
-            # 先计算PWM值，检查是否达到阈值
-            pwm_value = self.threshold_checker.calculate_pwm(first_hammer_velocity, motor_name)
-            if pwm_value is None:
-                # 无法计算PWM值（电机不存在），判定为无效
-                self._log_invalid_note_details(note, "无法计算PWM值", f"锤速={first_hammer_velocity}, 电机={motor_name}")
-                logger.info(f"🔇 音符ID={note.id} 被识别为不发声音符: 无法计算PWM值, 电机={motor_name}")
-                return False, 'silent_notes'
-            
-            # 检查电机阈值是否存在
-            if motor_name not in self.threshold_checker.pwm_thresholds:
-                # 电机阈值不存在，判定为无效
-                self._log_invalid_note_details(note, "电机阈值不存在", f"锤速={first_hammer_velocity}, 电机={motor_name}")
-                logger.info(f"🔇 音符ID={note.id} 被识别为不发声音符: 电机阈值不存在, 电机={motor_name}")
-                return False, 'silent_notes'
-            
-            threshold = self.threshold_checker.pwm_thresholds[motor_name]
-            
-            # 核心检查：PWM值必须 >= 阈值
-            if pwm_value < threshold:
-                self._log_invalid_note_details(note, "阈值检查失败", f"锤速={first_hammer_velocity}, PWM={pwm_value:.2f} < 阈值={threshold}, 电机={motor_name}")
-                logger.info(f"🔇 音符ID={note.id} 被识别为不发声音符: 阈值检查失败, 锤速={first_hammer_velocity}, PWM={pwm_value:.2f} < 阈值={threshold}")
-                return False, 'silent_notes'  # 阈值检查失败视为不发声音符
+            # ========== 电机阈值检查逻辑已注释（用户反馈逻辑不靠谱） ==========
+            # # 使用电机阈值检查器判断是否发声（必须存在）
+            # if not self.threshold_checker:
+            #     error_msg = "电机阈值检查器不存在，无法进行数据过滤。请确保在初始化DataFilter时提供了MotorThresholdChecker实例。"
+            #     logger.error(f"❌ {error_msg}")
+            #     raise RuntimeError(error_msg)
+            # 
+            # motor_name = f"motor_{note.id}"
+            # 
+            # # 先计算PWM值，检查是否达到阈值
+            # pwm_value = self.threshold_checker.calculate_pwm(first_hammer_velocity, motor_name)
+            # if pwm_value is None:
+            #     # 无法计算PWM值（电机不存在），判定为无效
+            #     self._log_invalid_note_details(note, "无法计算PWM值", f"锤速={first_hammer_velocity}, 电机={motor_name}")
+            #     logger.info(f"🔇 音符ID={note.id} 被识别为不发声音符: 无法计算PWM值, 电机={motor_name}")
+            #     return False, 'silent_notes'
+            # 
+            # # 检查电机阈值是否存在
+            # if motor_name not in self.threshold_checker.pwm_thresholds:
+            #     # 电机阈值不存在，判定为无效
+            #     self._log_invalid_note_details(note, "电机阈值不存在", f"锤速={first_hammer_velocity}, 电机={motor_name}")
+            #     logger.info(f"🔇 音符ID={note.id} 被识别为不发声音符: 电机阈值不存在, 电机={motor_name}")
+            #     return False, 'silent_notes'
+            # 
+            # threshold = self.threshold_checker.pwm_thresholds[motor_name]
+            # 
+            # # 核心检查：PWM值必须 >= 阈值
+            # if pwm_value < threshold:
+            #     self._log_invalid_note_details(note, "阈值检查失败", f"锤速={first_hammer_velocity}, PWM={pwm_value:.2f} < 阈值={threshold}, 电机={motor_name}")
+            #     logger.info(f"🔇 音符ID={note.id} 被识别为不发声音符: 阈值检查失败, 锤速={first_hammer_velocity}, PWM={pwm_value:.2f} < 阈值={threshold}")
+            #     return False, 'silent_notes'  # 阈值检查失败视为不发声音符
+            # ====================================================================
             
             return True, 'valid'
             

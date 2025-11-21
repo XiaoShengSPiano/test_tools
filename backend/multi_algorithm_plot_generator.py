@@ -706,6 +706,10 @@ class MultiAlgorithmPlotGenerator:
         
         为每个算法生成直方图和正态拟合曲线，使用不同颜色区分，叠加显示在同一图表中。
         
+        使用相对时延（原始时延 - 平均时延）：
+        - 消除整体偏移，更公平地比较不同算法的稳定性
+        - 均值接近0，标准差保持不变
+        
         Args:
             algorithms: 激活的算法数据集列表
             
@@ -759,19 +763,29 @@ class MultiAlgorithmPlotGenerator:
                         logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有匹配数据，跳过")
                         continue
                     
-                    # 注意：这里使用带符号的keyon_offset，而非绝对值
-                    delays_ms = [item.get('keyon_offset', 0.0) / 10.0 for item in offset_data]
+                    # 步骤1：提取原始延时数据（带符号的keyon_offset）
+                    absolute_delays_ms = [item.get('keyon_offset', 0.0) / 10.0 for item in offset_data]
                     
-                    if not delays_ms:
+                    if not absolute_delays_ms:
                         logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有有效延时数据，跳过")
                         continue
                     
+                    # 步骤2：计算该算法的平均延时（用于计算相对延时）
+                    n = len(absolute_delays_ms)
+                    mean_delay_ms = sum(absolute_delays_ms) / n
+                    
+                    # 步骤3：计算相对延时（消除整体偏移）
+                    # 相对延时 = 原始延时 - 平均延时
+                    # 这样均值接近0，标准差保持不变，更适合评估稳定性
+                    delays_ms = [delay - mean_delay_ms for delay in absolute_delays_ms]
+                    
                     all_delays.extend(delays_ms)
                     
-                    # 计算统计量
-                    n = len(delays_ms)
-                    mean_val = sum(delays_ms) / n
+                    # 步骤4：计算统计量（基于相对延时）
+                    # 注意：相对延时的均值应该接近0（理论上为0，但由于浮点运算可能有微小偏差）
+                    mean_val = sum(delays_ms) / n  # 均值 ≈ 0
                     if n > 1:
+                        # 样本方差：相对延时的方差和标准差与原始延时相同（因为减去常数不改变方差）
                         var = sum((x - mean_val) ** 2 for x in delays_ms) / (n - 1)
                         std_val = var ** 0.5
                     else:
@@ -828,7 +842,7 @@ class MultiAlgorithmPlotGenerator:
             
             # 设置布局（删除title，因为UI区域已有标题）
             fig.update_layout(
-                xaxis_title='延时 (ms)',
+                xaxis_title='相对延时 (ms)',
                 yaxis_title='概率密度',
                 bargap=0.05,
                 plot_bgcolor='white',
@@ -2105,6 +2119,264 @@ class MultiAlgorithmPlotGenerator:
             
         except Exception as e:
             logger.error(f"❌ 生成多算法延时时间序列图失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return self._create_empty_plot(f"生成失败: {str(e)}")
+    
+    def generate_relative_delay_distribution_plot(self, analysis_result: Dict[str, Any]) -> Any:
+        """
+        生成相对延时分布直方图 + 密度曲线
+        
+        每个曲子单独一个子图，最后是汇总图
+        
+        Args:
+            analysis_result: get_same_algorithm_relative_delay_analysis()的返回结果
+            
+        Returns:
+            go.Figure: Plotly图表对象（包含多个子图）
+        """
+        try:
+            if analysis_result.get('status') != 'success':
+                return self._create_empty_plot(analysis_result.get('message', '分析失败'))
+            
+            algorithm_groups = analysis_result.get('algorithm_groups', {})
+            overall_relative_delays = analysis_result.get('overall_relative_delays', [])
+            statistics = analysis_result.get('statistics', {})
+            
+            if not overall_relative_delays:
+                return self._create_empty_plot("没有有效的相对延时数据")
+            
+            import numpy as np
+            from scipy import stats
+            
+            # 收集所有需要绘制的曲子信息
+            all_songs = []  # [(display_name, filename_display, relative_delays, group_relative_delays), ...]
+            for display_name, group_data in algorithm_groups.items():
+                song_data = group_data.get('song_data', [])
+                group_relative_delays = group_data.get('relative_delays', [])
+                
+                if not group_relative_delays:
+                    continue
+                
+                # 添加每个曲子
+                for song_info in song_data:
+                    song_relative_delays = song_info.get('relative_delays', [])
+                    if song_relative_delays:
+                        filename_display = song_info.get('filename_display', song_info.get('filename', '未知文件'))
+                        all_songs.append((display_name, filename_display, song_relative_delays, None))
+                
+                # 添加汇总（每个算法组一个汇总）
+                all_songs.append((display_name, '汇总', None, group_relative_delays))
+            
+            if not all_songs:
+                return self._create_empty_plot("没有有效的相对延时数据")
+            
+            # 创建子图：每个曲子一个子图 + 每个算法组一个汇总子图
+            num_subplots = len(all_songs)
+            subplot_titles = []
+            for display_name, filename_display, _, _ in all_songs:
+                if filename_display == '汇总':
+                    subplot_titles.append(f'{display_name} (汇总)')
+                else:
+                    subplot_titles.append(f'{display_name} - {filename_display}')
+            
+            # 创建子图
+            fig = make_subplots(
+                rows=num_subplots,
+                cols=1,
+                subplot_titles=subplot_titles,
+                vertical_spacing=0.06,  # 减小子图之间的间距
+                row_heights=[1.0] * num_subplots  # 每个子图高度相等
+            )
+            
+            # 颜色方案
+            colors = [
+                '#1f77b4',  # 蓝色
+                '#ff7f0e',  # 橙色
+                '#2ca02c',  # 绿色
+                '#d62728',  # 红色
+                '#9467bd',  # 紫色
+                '#8c564b',  # 棕色
+                '#e377c2',  # 粉色
+                '#7f7f7f'   # 灰色
+            ]
+            
+            # 为每个子图绘制数据
+            algorithm_color_map = {}  # 记录每个算法使用的颜色
+            color_idx = 0
+            
+            for subplot_idx, (display_name, filename_display, song_relative_delays, group_relative_delays) in enumerate(all_songs, 1):
+                # 确定使用的数据
+                if filename_display == '汇总':
+                    # 汇总图：使用合并后的数据
+                    delays_array = np.array(group_relative_delays)
+                else:
+                    # 单个曲子：使用该曲子的数据
+                    delays_array = np.array(song_relative_delays)
+                
+                # 获取或分配颜色
+                if display_name not in algorithm_color_map:
+                    algorithm_color_map[display_name] = colors[color_idx % len(colors)]
+                    color_idx += 1
+                base_color = algorithm_color_map[display_name]
+                r = int(base_color[1:3], 16)
+                g = int(base_color[3:5], 16)
+                b = int(base_color[5:7], 16)
+                
+                # 计算直方图数据
+                hist, bin_edges = np.histogram(delays_array, bins=50, density=False)
+                bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+                
+                # 计算密度曲线（KDE）
+                try:
+                    kde = stats.gaussian_kde(delays_array)
+                    x_density = np.linspace(delays_array.min(), delays_array.max(), 200)
+                    y_density = kde(x_density) * len(delays_array)  # 转换为频数
+                except:
+                    # 如果KDE失败，使用正态分布近似
+                    mean = np.mean(delays_array)
+                    std = np.std(delays_array)
+                    x_density = np.linspace(delays_array.min(), delays_array.max(), 200)
+                    y_density = stats.norm.pdf(x_density, mean, std) * len(delays_array) * (bin_edges[1] - bin_edges[0])
+                
+                # 添加直方图
+                fig.add_trace(
+                    go.Bar(
+                        x=bin_centers,
+                        y=hist,
+                        name='相对延时分布',
+                        marker=dict(
+                            color=f'rgba({r}, {g}, {b}, 0.6)',
+                            line=dict(color=base_color, width=1.5 if filename_display == '汇总' else 1)
+                        ),
+                        opacity=0.7,
+                        showlegend=False,  # 不在图注中显示，因为每个子图独立
+                        hovertemplate=f'相对延时: %{{x:.2f}} ms<br>频数: %{{y}}<extra></extra>'
+                    ),
+                    row=subplot_idx,
+                    col=1
+                )
+                
+                # 添加密度曲线
+                fig.add_trace(
+                    go.Scatter(
+                        x=x_density,
+                        y=y_density,
+                        mode='lines',
+                        name='密度曲线',
+                        line=dict(
+                            color=base_color,
+                            width=3 if filename_display == '汇总' else 2,
+                            dash='dash' if filename_display == '汇总' else 'solid'
+                        ),
+                        showlegend=False,  # 不在图注中显示
+                        hovertemplate=f'相对延时: %{{x:.2f}} ms<br>密度: %{{y:.2f}}<extra></extra>'
+                    ),
+                    row=subplot_idx,
+                    col=1
+                )
+            
+            # 为每个子图添加统计量标注和布局设置
+            for subplot_idx, (display_name, filename_display, song_relative_delays, group_relative_delays) in enumerate(all_songs, 1):
+                # 确定使用的数据
+                if filename_display == '汇总':
+                    delays_array = np.array(group_relative_delays)
+                else:
+                    delays_array = np.array(song_relative_delays)
+                
+                # 计算统计量
+                mean = np.mean(delays_array)
+                std = np.std(delays_array)
+                median = np.median(delays_array)
+                count = len(delays_array)
+                
+                # 计算±1σ、±2σ、±3σ的百分比
+                within_1sigma = np.sum(np.abs(delays_array - mean) <= std) / count * 100
+                within_2sigma = np.sum(np.abs(delays_array - mean) <= 2 * std) / count * 100
+                within_3sigma = np.sum(np.abs(delays_array - mean) <= 3 * std) / count * 100
+                
+                # 添加±1σ、±2σ、±3σ区间（简洁显示：只显示背景色区域，不显示文字标注）
+                for sigma, color in [(1, 'rgba(255, 0, 0, 0.08)'),   # ±1σ：浅红色，透明度低
+                                     (2, 'rgba(255, 0, 0, 0.12)'),   # ±2σ：稍深红色
+                                     (3, 'rgba(255, 0, 0, 0.15)')]:  # ±3σ：更深红色
+                    fig.add_vrect(
+                        x0=mean - sigma * std,
+                        x1=mean + sigma * std,
+                        fillcolor=color,
+                        layer="below",
+                        line_width=0,
+                        row=subplot_idx,
+                        col=1
+                    )
+                
+                # 添加均值线（简化：只显示线条，不显示文字标注）
+                fig.add_vline(
+                    x=mean,
+                    line_dash="dash",
+                    line_color="green",
+                    line_width=1.5,
+                    row=subplot_idx,
+                    col=1
+                )
+                
+                # 添加中位数线（简化：只显示线条，不显示文字标注）
+                fig.add_vline(
+                    x=median,
+                    line_dash="dot",
+                    line_color="orange",
+                    line_width=1.5,
+                    row=subplot_idx,
+                    col=1
+                )
+                
+                # 添加统计信息文本标注（只在最后一个子图添加整体统计信息）
+                if subplot_idx == len(all_songs):
+                    # 使用整体统计信息
+                    overall_mean = statistics.get('mean', 0)
+                    overall_std = statistics.get('std', 0)
+                    overall_median = statistics.get('median', 0)
+                    overall_count = statistics.get('count', 0)
+                    overall_1sigma = statistics.get('within_1sigma_percent', 0)
+                    overall_2sigma = statistics.get('within_2sigma_percent', 0)
+                    overall_3sigma = statistics.get('within_3sigma_percent', 0)
+                    
+                    fig.add_annotation(
+                        x=0.02,
+                        y=0.98,
+                        xref=f'x{subplot_idx} domain',
+                        yref=f'y{subplot_idx} domain',
+                        text=f"整体统计:<br>均值: {overall_mean:.2f} ms<br>标准差: {overall_std:.2f} ms<br>中位数: {overall_median:.2f} ms<br>数据点数: {overall_count}<br>±1σ: {overall_1sigma:.1f}%<br>±2σ: {overall_2sigma:.1f}%<br>±3σ: {overall_3sigma:.1f}%",
+                        showarrow=False,
+                        align='left',
+                        bgcolor='rgba(255, 255, 255, 0.8)',
+                        bordercolor='rgba(0, 0, 0, 0.3)',
+                        borderwidth=1,
+                        font=dict(size=9)
+                    )
+                
+                # 更新每个子图的坐标轴
+                fig.update_xaxes(title_text='相对延时 (ms)', row=subplot_idx, col=1)
+                fig.update_yaxes(title_text='频数', row=subplot_idx, col=1)
+            
+            # 根据子图数量调整图表高度（增加每个子图的高度，避免挤压）
+            base_height_per_subplot = 500  # 增加每个子图的高度
+            total_height = base_height_per_subplot * num_subplots
+            
+            # 更新整体布局
+            fig.update_layout(
+                title='',
+                height=total_height,
+                hovermode='x unified',
+                template='plotly_white',
+                showlegend=False,  # 不使用图注，因为每个子图独立
+                margin=dict(l=80, r=60, t=60, b=80)  # 增加上下边距
+            )
+            
+            logger.info(f"✅ 相对延时分布图生成成功，共 {len(overall_relative_delays)} 个数据点")
+            return fig
+            
+        except Exception as e:
+            logger.error(f"❌ 生成相对延时分布图失败: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return self._create_empty_plot(f"生成失败: {str(e)}")

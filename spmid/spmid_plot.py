@@ -431,7 +431,7 @@ def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None, oth
                 # 计算绝对时间：相对时间 + offset，然后转换为 ms
                 x_after_touch = (play_note.after_touch.index + play_note.offset) / 10.0
                 y_after_touch = play_note.after_touch.values  # 触后压力值
-                play_name = f'回放触后 ({algorithm_name})' if algorithm_name else '回放触后'
+                play_name = '回放触后'  # 移除算法名，悬浮时会显示
                 # 当前算法的触后和锤子为一组
                 alg_group = f'algorithm_{algorithm_name}' if algorithm_name else 'algorithm_default'
                 fig.add_trace(
@@ -443,7 +443,7 @@ def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None, oth
                         line=dict(color='red', width=3),
                         showlegend=True,
                         legendgroup=alg_group,  # 当前算法的触后和锤子一组
-                        hovertemplate='时间: %{x:.2f} ms<br>触后压力: %{y}<extra></extra>'
+                        hovertemplate=f'算法: {algorithm_name if algorithm_name else "未知"}<br>时间: %{{x:.2f}} ms<br>触后压力: %{{y}}<extra></extra>'
                     )
                 )
             
@@ -452,7 +452,7 @@ def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None, oth
                 # 计算绝对时间：相对时间 + offset，然后转换为 ms
                 x_hammers = (play_note.hammers.index + play_note.offset) / 10.0
                 y_hammers = play_note.hammers.values  # 锤子速度值
-                play_name = f'回放锤子 ({algorithm_name})' if algorithm_name else '回放锤子'
+                play_name = '回放锤子'  # 移除算法名，悬浮时会显示
                 # 当前算法的触后和锤子为一组
                 alg_group = f'algorithm_{algorithm_name}' if algorithm_name else 'algorithm_default'
                 fig.add_trace(
@@ -464,7 +464,7 @@ def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None, oth
                         marker=dict(color='red', size=8, symbol='circle'),
                         showlegend=True,
                         legendgroup=alg_group,  # 当前算法的触后和锤子一组
-                        hovertemplate='时间: %{x:.2f} ms<br>锤子速度: %{y}<extra></extra>'
+                        hovertemplate=f'算法: {algorithm_name if algorithm_name else "未知"}<br>时间: %{{x:.2f}} ms<br>锤子速度: %{{y}}<extra></extra>'
                     )
                 )
         except Exception as e:
@@ -491,7 +491,7 @@ def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None, oth
                         x=x_after_touch,
                         y=y_after_touch,
                         mode='lines',
-                        name=f'回放触后 ({other_alg_name})',
+                        name='回放触后',  # 移除算法名，悬浮时会显示
                         line=dict(color=color, width=2, dash='dash'),
                         showlegend=True,
                         legendgroup=other_alg_group,  # 该算法的触后和锤子一组
@@ -508,7 +508,7 @@ def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None, oth
                         x=x_hammers,
                         y=y_hammers,
                         mode='markers',
-                        name=f'回放锤子 ({other_alg_name})',
+                        name='回放锤子',  # 移除算法名，悬浮时会显示
                         marker=dict(color=color, size=6, symbol='square'),
                         showlegend=True,
                         legendgroup=other_alg_group,  # 该算法的触后和锤子一组
@@ -544,9 +544,11 @@ def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None, oth
     fig.update_layout(
         title=dict(
             text=title,
-            x=0.5,  # 标题居中
-            xanchor='center',
-            font=dict(size=16)
+            x=0.8,  # 标题在右侧
+            xanchor='right',  # 右对齐
+            y=0.98,  # 标题更靠近顶部
+            yanchor='top',  # 顶部对齐
+            font=dict(size=14)  # 稍微减小字体以适应右上角
         ),
         xaxis=dict(
             title=dict(text='时间 (ms)', font=dict(size=14)),
@@ -564,29 +566,31 @@ def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None, oth
             linecolor='black',
             mirror=True
         ),
-        height=600,  # 增加高度（往下扩展）
-        width=800,  # 增加宽度（往右扩展）
+        height=650,  # 略微减小高度（从700改为650），让曲线图缩小一点
+        width=1200,  # 增加宽度（往右扩展），为更多图注留出空间
         template='simple_white',
         showlegend=True,
         legend=dict(
             orientation="h",
-            yanchor="top",
-            y=1.40,  # 图注在标题下方（标题在y=1.0，图注在y=1.40，留出空间）
-            xanchor="center",
-            x=0.5,  # 图注居中，与标题对齐
+            yanchor="bottom",  # 底部对齐，让图注在图表上方
+            y=1.02,  # 图注位置稍微上移（从1.0改为1.02），与曲线图留出一点间距
+            xanchor="left",  # 左对齐，让图注框从左边开始
+            x=0.0,  # 图注从左边开始
             traceorder='grouped',  # 按组排序（录制、算法1、算法2...分组）
-            tracegroupgap=150,  # 组之间的间距（像素），大幅增大间距让不同算法图注分开
-            itemwidth=35,  # 每个图注项的宽度
-            font=dict(size=11),  # 图注字体大小
-            bgcolor='rgba(255,255,255,0.9)',  # 图注背景色（更不透明）
+            tracegroupgap=150,  # 组之间的间距（像素），移除算法名后可以减小
+            itemwidth=50,  # 每个图注项的宽度，移除算法名后可以减小
+            font=dict(size=10),  # 图注字体大小
+            bgcolor='rgba(255,255,255,0.95)',  # 图注背景色（更不透明）
             bordercolor='gray',
-            borderwidth=1.5,  # 边框宽度
-            entrywidthmode='fraction',  # 使用分数模式控制图注项宽度
-            entrywidth=0.20,  # 每个图注项占用的宽度（分数，大幅增大让文字完整显示）
-            groupclick='toggleitem'  # 点击时只切换单个item，而不是整个组
+            borderwidth=2,  # 边框宽度，稍微增大使边框更明显
+            entrywidthmode='pixels',  # 使用像素模式，让图注项根据内容自动调整宽度
+            entrywidth=100,  # 每个图注项的最小宽度（像素），移除算法名后可以减小
+            groupclick='toggleitem',  # 点击时只切换单个item，而不是整个组
+            itemsizing='trace',  # 使用trace模式，让图注项根据文字内容自动调整大小
+            itemclick='toggle'  # 点击时切换当前项的显示/隐藏状态
         ),
         hovermode='x unified',  # 统一悬停模式
-        margin=dict(l=60, r=40, t=250, b=80)  # 增加右边距和下边距，为图表扩展留出空间
+        margin=dict(l=60, r=40, t=100, b=80)  # 减少上边距（从120改为100），为图注留出空间但不覆盖曲线
     )
     
     return fig

@@ -309,7 +309,7 @@ def create_main_layout():
                                 }),
                                 html.Button(
                                     "×",
-                                    id="close-modal",
+                                    id="close-modal-old",
                                     className="close",
                                     style={
                                         'float': 'right',
@@ -343,7 +343,7 @@ def create_main_layout():
                                             'fontWeight': 'bold'
                                         }),
                                         dcc.Graph(
-                                        id='detail-plot-combined',
+                                        id='detail-plot-combined-old',
                                         style={'height': '800px'},
                                             config={
                                                 'displayModeBar': True,
@@ -355,7 +355,7 @@ def create_main_layout():
                                     'width': '100%',
                                         'padding': '10px'
                                 })
-                            ], id='modal-content', className="modal-body", style={
+                            ], id='modal-content-old', className="modal-body", style={
                                 'padding': '20px',
                                 'maxHeight': '90vh',
                                 'overflowY': 'auto'
@@ -365,7 +365,7 @@ def create_main_layout():
                                     html.Div([
                                 html.Button(
                                     "关闭",
-                                    id="close-modal-btn",
+                                    id="close-modal-btn-old",
                                     className="btn btn-primary",
                                     style={
                                         'backgroundColor': '#007bff',
@@ -422,11 +422,12 @@ def create_main_layout():
         dcc.Graph(id='key-delay-scatter-plot', figure={}, style={'display': 'none'}),
         dcc.Graph(id='key-delay-zscore-scatter-plot', figure={}, style={'display': 'none'}),
         dcc.Graph(id='hammer-velocity-delay-scatter-plot', figure={}, style={'display': 'none'}),
-        dcc.Graph(id='key-hammer-velocity-scatter-plot', figure={}, style={'display': 'none'}),
+        # key-hammer-velocity-scatter-plot 已删除（功能与按键-力度交互效应图重复）
         # force-delay-by-key-scatter-plot 已删除（功能与按键-力度交互效应图重复）
         dcc.Graph(id='key-force-interaction-plot', figure={}, style={'display': 'none'}),
         dcc.Store(id='key-force-interaction-selected-algorithms', data=[]),  # 存储选中的算法列表
         dcc.Store(id='key-force-interaction-selected-keys', data=[]),  # 存储选中的按键列表
+        dcc.Graph(id='relative-delay-distribution-plot', figure={}, style={'display': 'none'}),
         dcc.Graph(id='offset-alignment-plot', figure={}, style={'display': 'none'}),
         dcc.Graph(id='delay-time-series-plot', figure={}, style={'display': 'none'}),
         dcc.Graph(id='delay-histogram-plot', figure={}, style={'display': 'none'}),
@@ -540,7 +541,7 @@ def create_main_layout():
                 html.Div([
                     html.Div([
                         html.Div([
-                            html.H4("按键曲线对比", style={'margin': '0', 'padding': '15px 20px', 'borderBottom': '1px solid #dee2e6'}),
+                            html.H4("按键曲线对比", style={'margin': '0', 'padding': '10px 20px', 'borderBottom': '1px solid #dee2e6'}),  # 减少顶部padding：从15px改为10px
                             html.Button("×", id="close-key-curves-modal", className="close", style={
                                 'position': 'absolute',
                                 'right': '15px',
@@ -556,7 +557,7 @@ def create_main_layout():
                         html.Div([
                             html.Div(id='key-curves-comparison-container', children=[])
                         ], id='key-curves-modal-content', className="modal-body", style={
-                            'padding': '20px',
+                            'padding': '10px 20px 20px 20px',  # 减少顶部padding：从20px改为10px
                             'maxHeight': '90vh',
                             'overflowY': 'auto'
                         }),
@@ -582,7 +583,7 @@ def create_main_layout():
                         })
                     ], className="modal-content", style={
                         'backgroundColor': 'white',
-                        'margin': '1% auto',
+                        'margin': '0.5% auto',  # 减少顶部margin：从1%改为0.5%
                         'padding': '0',
                         'border': 'none',
                         'width': '95%',
@@ -716,6 +717,33 @@ def _create_single_algorithm_error_stats_row(algorithm, algorithm_name):
         me_ms = me_0_1ms / 10.0
         rmse_ms = rmse_0_1ms / 10.0
         
+        # 计算按键延时的最大值和最小值（从已匹配按键的keyon_offset）
+        max_delay_ms = None
+        min_delay_ms = None
+        max_delay_item = None  # 保存最大延迟对应的完整数据项
+        min_delay_item = None  # 保存最小延迟对应的完整数据项
+        if hasattr(algorithm.analyzer, 'note_matcher') and algorithm.analyzer.note_matcher:
+            try:
+                offset_data = algorithm.analyzer.note_matcher.get_offset_alignment_data()
+                if offset_data:
+                    # 提取所有keyon_offset（单位：0.1ms，带符号）
+                    keyon_offsets = [item.get('keyon_offset', 0) for item in offset_data]
+                    if keyon_offsets:
+                        # 转换为ms单位
+                        keyon_offsets_ms = [offset / 10.0 for offset in keyon_offsets]
+                        max_delay_ms = max(keyon_offsets_ms)
+                        min_delay_ms = min(keyon_offsets_ms)
+                        
+                        # 找到对应的数据项
+                        for item in offset_data:
+                            item_delay_ms = item.get('keyon_offset', 0) / 10.0
+                            if max_delay_item is None or item_delay_ms == max_delay_ms:
+                                max_delay_item = item
+                            if min_delay_item is None or item_delay_ms == min_delay_ms:
+                                min_delay_item = item
+            except Exception as e:
+                logger.warning(f"⚠️ 计算按键延时最大值/最小值失败: {e}")
+        
         # 生成延时误差统计指标行（带算法名称标识）
         error_stats_row = html.Div([
                             dbc.Row([
@@ -770,6 +798,46 @@ def _create_single_algorithm_error_stats_row(algorithm, algorithm_name):
                         html.Small("标准差与均值的比值，反映相对变异程度", className="text-muted", style={'fontSize': '10px'})
                     ], className="text-center")
                 ], width=4)
+            ], className="mb-3"),
+            dbc.Row([
+                dbc.Col([
+                    html.Div([
+                        html.Div(
+                            f"{max_delay_ms:.2f} ms" if max_delay_ms is not None else "N/A", 
+                            className="text-danger mb-1",
+                            id={"type": "max-delay-value", "algorithm": algorithm_name},
+                            style={
+                                'cursor': 'pointer', 
+                                'userSelect': 'none',
+                                'fontSize': '1.75rem',
+                                'fontWeight': '500',
+                                'lineHeight': '1.2'
+                            },
+                            title="点击查看对应按键的曲线对比图"
+                        ),
+                        html.P("最大延时", className="text-muted mb-0"),
+                        html.Small("已匹配按键中的最大延时（点击数值查看曲线）", className="text-muted", style={'fontSize': '10px'})
+                    ], className="text-center")
+                ], width=6),
+                dbc.Col([
+                    html.Div([
+                        html.Div(
+                            f"{min_delay_ms:.2f} ms" if min_delay_ms is not None else "N/A", 
+                            className="text-info mb-1",
+                            id={"type": "min-delay-value", "algorithm": algorithm_name},
+                            style={
+                                'cursor': 'pointer', 
+                                'userSelect': 'none',
+                                'fontSize': '1.75rem',
+                                'fontWeight': '500',
+                                'lineHeight': '1.2'
+                            },
+                            title="点击查看对应按键的曲线对比图"
+                        ),
+                        html.P("最小延时", className="text-muted mb-0"),
+                        html.Small("已匹配按键中的最小延时（点击数值查看曲线）", className="text-muted", style={'fontSize': '10px'})
+                    ], className="text-center")
+                ], width=6)
             ])
         ], className="mb-3", style={'borderBottom': '1px solid #dee2e6', 'paddingBottom': '15px'})
         
@@ -1110,11 +1178,12 @@ def create_report_layout(backend):
             dcc.Graph(id='key-delay-scatter-plot', figure=empty_fig, style={'display': 'none'}),
             dcc.Graph(id='key-delay-zscore-scatter-plot', figure=empty_fig, style={'display': 'none'}),
             dcc.Graph(id='hammer-velocity-delay-scatter-plot', figure=empty_fig, style={'display': 'none'}),
-            dcc.Graph(id='key-hammer-velocity-scatter-plot', figure=empty_fig, style={'display': 'none'}),
+            # key-hammer-velocity-scatter-plot 已删除（功能与按键-力度交互效应图重复）
             # force-delay-by-key-scatter-plot 已删除（功能与按键-力度交互效应图重复）
             dcc.Graph(id='key-force-interaction-plot', figure=empty_fig, style={'display': 'none'}),
             dcc.Store(id='key-force-interaction-selected-algorithms', data=[]),
             dcc.Store(id='key-force-interaction-selected-keys', data=[]),
+            dcc.Graph(id='relative-delay-distribution-plot', figure=empty_fig, style={'display': 'none'}),
             dcc.Graph(id='offset-alignment-plot', figure=empty_fig, style={'display': 'none'}),
             dcc.Graph(id='delay-time-series-plot', figure=empty_fig, style={'display': 'none'}),
             dcc.Graph(id='delay-histogram-plot', figure=empty_fig, style={'display': 'none'}),
@@ -1289,25 +1358,6 @@ def create_report_layout(backend):
             ], width=12)
         ]),
         
-                # 按键与锤速散点图区域（颜色表示延时）
-        dbc.Row([
-            dbc.Col([
-                html.Div([
-                    dbc.Row([
-                        dbc.Col([
-                            html.H6("按键与锤速散点图（颜色表示延时）", className="mb-2",
-                                   style={'color': '#7b1fa2', 'fontWeight': 'bold', 'borderBottom': '2px solid #7b1fa2', 'paddingBottom': '5px'}),
-                        ], width=12)
-                    ]),
-                    dcc.Graph(
-                        id='key-hammer-velocity-scatter-plot',
-                        figure={},
-                        style={'height': '500px'}
-                    ),
-                ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
-            ], width=12)
-        ]),
-        
                 # 每个按键的力度-延时散点图已删除（功能与按键-力度交互效应图重复）
         
                 # 按键-力度交互效应图
@@ -1330,6 +1380,28 @@ def create_report_layout(backend):
                 ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
             ], width=12)
         ]),
+        
+                # 同种算法相对延时分布图
+        dbc.Row([
+            dbc.Col([
+                html.Div([
+                    dbc.Row([
+                        dbc.Col([
+                            html.H6("同种算法不同曲子的相对延时分布图", className="mb-2",
+                                   style={'color': '#9c27b0', 'fontWeight': 'bold', 'borderBottom': '2px solid #9c27b0', 'paddingBottom': '5px'}),
+                        ], width=12)
+                    ]),
+                    dcc.Graph(
+                        id='relative-delay-distribution-plot',
+                        figure={},
+                        style={'height': 'auto', 'minHeight': '800px'}
+                    ),
+                ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
+            ], width=12)
+        ]),
+        
+        # 曲线对齐测试区域
+        create_curve_alignment_test_area(),
 
                 # 延时时间序列图
         dbc.Row([
@@ -1350,7 +1422,7 @@ def create_report_layout(backend):
             ], width=12)
         ]),
         
-                # 延时分布直方图（附正态拟合曲线）
+                # 延时分布直方图（附正态拟合曲线）- 使用相对时延
         dbc.Row([
             dbc.Col([
                 html.Div([
@@ -2037,3 +2109,35 @@ def create_detail_content(error_note):
         )
 
     return details
+
+
+def create_curve_alignment_test_area():
+    """创建曲线对齐测试区域"""
+    return dbc.Row([
+        dbc.Col([
+            html.Div([
+                dbc.Row([
+                    dbc.Col([
+                        html.H6("曲线对齐测试", className="mb-2",
+                               style={'color': '#2c3e50', 'fontWeight': 'bold', 'borderBottom': '2px solid #2c3e50', 'paddingBottom': '5px'}),
+                        html.P("使用延时时间序列图的第一个数据点测试曲线对齐功能", 
+                               className="text-muted", 
+                               style={'fontSize': '12px', 'marginBottom': '10px'}),
+                    ], width=12)
+                ]),
+                dbc.Row([
+                    dbc.Col([
+                        dbc.Button([
+                            html.I(className="fas fa-play me-2"),
+                            "开始测试"
+                        ], id='btn-test-curve-alignment', color='primary', size='md', className='mb-3'),
+                    ], width=12)
+                ]),
+                html.Div(id='curve-alignment-test-result', children=[
+                    html.Div("点击按钮开始测试", 
+                            className="text-muted text-center",
+                            style={'padding': '20px', 'fontSize': '14px'})
+                ])
+            ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
+        ], width=12)
+    ])

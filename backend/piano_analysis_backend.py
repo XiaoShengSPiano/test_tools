@@ -493,8 +493,13 @@ class PianoAnalysisBackend:
     
     def generate_delay_histogram_plot(self) -> Any:
         """
-        生成延时分布直方图，并叠加正态拟合曲线（基于已匹配按键对的带符号keyon_offset）。
-        x轴：延时 (ms)，y轴：概率密度（支持单算法和多算法模式）
+        生成延时分布直方图，并叠加正态拟合曲线（基于相对时延）。
+        
+        相对时延 = 原始时延 - 平均时延
+        - 消除了整体偏移，更公平地比较不同算法的稳定性
+        - 均值接近0，标准差保持不变
+        
+        x轴：相对延时 (ms)，y轴：概率密度（支持单算法和多算法模式）
         """
         # 检查是否在多算法模式
         if self.multi_algorithm_mode and self.multi_algorithm_manager:
@@ -520,12 +525,21 @@ class PianoAnalysisBackend:
             if not offset_data:
                 return self.plot_generator._create_empty_plot("无匹配数据")
 
-            # 注意：这里使用带符号的keyon_offset，而非绝对值
+            # 步骤1：提取原始延时数据（带符号的keyon_offset）
             # keyon_offset = replay_keyon - record_keyon
             # 正值表示延迟，负值表示提前，零值表示无延时
-            delays_ms = [item.get('keyon_offset', 0.0) / 10.0 for item in offset_data]
-            if not delays_ms:
+            absolute_delays_ms = [item.get('keyon_offset', 0.0) / 10.0 for item in offset_data]
+            if not absolute_delays_ms:
                 return self.plot_generator._create_empty_plot("无有效延时数据")
+            
+            # 步骤2：计算平均延时（用于计算相对延时）
+            n = len(absolute_delays_ms)
+            mean_delay_ms = sum(absolute_delays_ms) / n
+            
+            # 步骤3：计算相对延时（消除整体偏移）
+            # 相对延时 = 原始延时 - 平均延时
+            # 这样均值接近0，标准差保持不变，更适合评估稳定性
+            delays_ms = [delay - mean_delay_ms for delay in absolute_delays_ms]
 
             import plotly.graph_objects as go
             import math
@@ -542,12 +556,13 @@ class PianoAnalysisBackend:
                 marker_line_width=1
             ))
 
-            # ========== 步骤1：计算统计量 ==========
+            # ========== 步骤4：计算统计量（基于相对延时）==========
             # 计算样本均值和样本标准差（使用n-1作为分母，无偏估计）
-            n = len(delays_ms)
-            mean_val = sum(delays_ms) / n  # 样本均值：μ = (1/n) * Σx_i
+            # 注意：相对延时的均值应该接近0（理论上为0，但由于浮点运算可能有微小偏差）
+            mean_val = sum(delays_ms) / n  # 样本均值：μ ≈ 0（相对延时的均值）
             if n > 1:
                 # 样本方差：s² = (1/(n-1)) * Σ(x_i - μ)²
+                # 注意：相对延时的方差和标准差与原始延时相同（因为减去常数不改变方差）
                 var = sum((x - mean_val) ** 2 for x in delays_ms) / (n - 1)
                 std_val = var ** 0.5  # 样本标准差：s = √s²
             else:
@@ -597,7 +612,7 @@ class PianoAnalysisBackend:
 
             fig.update_layout(
                 # 删除title，因为UI区域已有标题
-                xaxis_title='延时 (ms)',
+                xaxis_title='相对延时 (ms)',
                 yaxis_title='概率密度',
                 bargap=0.05,
                 plot_bgcolor='white',
@@ -627,14 +642,19 @@ class PianoAnalysisBackend:
     
     def get_delay_range_data_points(self, delay_min_ms: float, delay_max_ms: float) -> List[Dict[str, Any]]:
         """
-        获取指定延时范围内的数据点详情（支持单算法和多算法模式）
+        获取指定相对延时范围内的数据点详情（支持单算法和多算法模式）
+        
+        注意：由于图表现在使用相对时延，这里的范围是相对时延的范围
         
         Args:
-            delay_min_ms: 最小延时值（ms）
-            delay_max_ms: 最大延时值（ms）
+            delay_min_ms: 最小相对延时值（ms）
+            delay_max_ms: 最大相对延时值（ms）
             
         Returns:
-            List[Dict[str, Any]]: 该延时范围内的数据点列表，每个数据点包含完整信息
+            List[Dict[str, Any]]: 该相对延时范围内的数据点列表，每个数据点包含：
+                - 原始时延（absolute_delay_ms）
+                - 相对时延（relative_delay_ms）
+                - 其他完整信息
         """
         try:
             # 检查是否在多算法模式
@@ -656,13 +676,25 @@ class PianoAnalysisBackend:
                     
                     algorithm_name = algorithm.metadata.algorithm_name
                     
-                    # 筛选出指定延时范围内的数据点
+                    # 计算该算法的平均延时（用于计算相对延时）
+                    absolute_delays_ms = [item.get('keyon_offset', 0.0) / 10.0 for item in offset_data]
+                    if not absolute_delays_ms:
+                        continue
+                    
+                    mean_delay_ms = sum(absolute_delays_ms) / len(absolute_delays_ms)
+                    
+                    # 筛选出指定相对延时范围内的数据点
                     for item in offset_data:
-                        delay_ms = item.get('keyon_offset', 0.0) / 10.0
-                        if delay_min_ms <= delay_ms <= delay_max_ms:
-                            # 添加延时值（ms）和算法名称到数据中
+                        absolute_delay_ms = item.get('keyon_offset', 0.0) / 10.0
+                        relative_delay_ms = absolute_delay_ms - mean_delay_ms
+                        
+                        # 使用相对时延进行筛选（因为图表显示的是相对时延）
+                        if delay_min_ms <= relative_delay_ms <= delay_max_ms:
+                            # 添加原始时延、相对时延和算法名称到数据中
                             item_copy = item.copy()
-                            item_copy['delay_ms'] = delay_ms
+                            item_copy['absolute_delay_ms'] = absolute_delay_ms  # 原始时延
+                            item_copy['relative_delay_ms'] = relative_delay_ms  # 相对时延
+                            item_copy['delay_ms'] = relative_delay_ms  # 保持兼容性，使用相对时延
                             item_copy['algorithm_name'] = algorithm_name
                             filtered_data.append(item_copy)
                 
@@ -676,15 +708,26 @@ class PianoAnalysisBackend:
             if not offset_data:
                 return []
             
-            # 筛选出指定延时范围内的数据点
-            # keyon_offset 单位是 0.1ms，需要转换为 ms 进行比较
+            # 计算平均延时（用于计算相对延时）
+            absolute_delays_ms = [item.get('keyon_offset', 0.0) / 10.0 for item in offset_data]
+            if not absolute_delays_ms:
+                return []
+            
+            mean_delay_ms = sum(absolute_delays_ms) / len(absolute_delays_ms)
+            
+            # 筛选出指定相对延时范围内的数据点
             filtered_data = []
             for item in offset_data:
-                delay_ms = item.get('keyon_offset', 0.0) / 10.0
-                if delay_min_ms <= delay_ms <= delay_max_ms:
-                    # 添加延时值（ms）到数据中，方便显示
+                absolute_delay_ms = item.get('keyon_offset', 0.0) / 10.0
+                relative_delay_ms = absolute_delay_ms - mean_delay_ms
+                
+                # 使用相对时延进行筛选（因为图表显示的是相对时延）
+                if delay_min_ms <= relative_delay_ms <= delay_max_ms:
+                    # 添加原始时延和相对时延到数据中
                     item_copy = item.copy()
-                    item_copy['delay_ms'] = delay_ms
+                    item_copy['absolute_delay_ms'] = absolute_delay_ms  # 原始时延
+                    item_copy['relative_delay_ms'] = relative_delay_ms  # 相对时延
+                    item_copy['delay_ms'] = relative_delay_ms  # 保持兼容性，使用相对时延
                     filtered_data.append(item_copy)
             
             return filtered_data
@@ -735,12 +778,12 @@ class PianoAnalysisBackend:
                     offset_data = algorithm.analyzer.get_offset_alignment_data()
                     invalid_offset_data = algorithm.analyzer.get_invalid_notes_offset_analysis()
                     
-                    # 按按键ID分组有效匹配的偏移数据（只使用keyon_offset）
+                    # 按按键ID分组有效匹配的偏移数据（使用带符号的keyon_offset，保留正负值）
                     key_groups = defaultdict(list)
                     for item in offset_data:
                         key_id = item.get('key_id', 'N/A')
-                        keyon_offset_abs = abs(item.get('keyon_offset', 0))  # 只使用keyon_offset
-                        key_groups[key_id].append(keyon_offset_abs)
+                        keyon_offset = item.get('keyon_offset', 0)  # 使用带符号的keyon_offset（正数=延迟，负数=提前）
+                        key_groups[key_id].append(keyon_offset)
                     
                     # 按按键ID分组无效音符数据
                     invalid_key_groups = defaultdict(list)
@@ -854,12 +897,12 @@ class PianoAnalysisBackend:
             from collections import defaultdict
             import numpy as np
             
-            # 按按键ID分组有效匹配的偏移数据（只使用keyon_offset）
+            # 按按键ID分组有效匹配的偏移数据（使用带符号的keyon_offset，保留正负值）
             key_groups = defaultdict(list)
             for item in offset_data:
                 key_id = item.get('key_id', 'N/A')
-                keyon_offset_abs = abs(item.get('keyon_offset', 0))  # 只使用keyon_offset
-                key_groups[key_id].append(keyon_offset_abs)
+                keyon_offset = item.get('keyon_offset', 0)  # 使用带符号的keyon_offset（正数=延迟，负数=提前）
+                key_groups[key_id].append(keyon_offset)
             
             # 按按键ID分组无效音符数据
             invalid_key_groups = defaultdict(list)
@@ -1936,6 +1979,297 @@ class PianoAnalysisBackend:
         """根据索引生成瀑布图对比图"""
         return self.plot_generator.generate_watefall_conbine_plot_by_index(index, is_record)
     
+    def get_notes_by_delay_type(self, algorithm_name: str, delay_type: str) -> Optional[Tuple[Any, Any]]:
+        """
+        根据延迟类型（最大/最小）获取对应的音符
+        
+        Args:
+            algorithm_name: 算法名称
+            delay_type: 延迟类型，'max' 或 'min'
+        
+        Returns:
+            Tuple[Note, Note]: (record_note, replay_note)，如果失败则返回None
+        """
+        try:
+            if not self.multi_algorithm_mode or not self.multi_algorithm_manager:
+                logger.warning("⚠️ 多算法模式未启用")
+                return None
+            
+            active_algorithms = self.multi_algorithm_manager.get_active_algorithms()
+            algorithm = None
+            for alg in active_algorithms:
+                if alg.metadata.algorithm_name == algorithm_name:
+                    algorithm = alg
+                    break
+            
+            if not algorithm:
+                logger.warning(f"⚠️ 未找到算法: {algorithm_name}")
+                return None
+            
+            if not algorithm.analyzer or not algorithm.analyzer.note_matcher:
+                logger.warning(f"⚠️ 算法 '{algorithm_name}' 的分析器或匹配器不存在")
+                return None
+            
+            note_matcher = algorithm.analyzer.note_matcher
+            
+            # 获取偏移数据
+            offset_data = note_matcher.get_offset_alignment_data()
+            if not offset_data:
+                logger.warning("⚠️ 没有匹配数据")
+                return None
+            
+            # 找到最大或最小延迟对应的数据项
+            target_item = None
+            if delay_type == 'max':
+                # 找到所有具有最大延迟的数据项
+                max_delay = max(item.get('keyon_offset', 0) for item in offset_data)
+                max_delay_items = [item for item in offset_data if item.get('keyon_offset', 0) == max_delay]
+                if max_delay_items:
+                    # 如果有多个，选择第一个（也可以选择其他策略，比如按时间排序）
+                    target_item = max_delay_items[0]
+                    logger.info(f"🔍 最大延迟: {max_delay/10.0:.2f}ms, 找到{len(max_delay_items)}个匹配项, 选择record_index={target_item.get('record_index')}, replay_index={target_item.get('replay_index')}, key_id={target_item.get('key_id')}")
+                    if len(max_delay_items) > 1:
+                        logger.warning(f"⚠️ 找到{len(max_delay_items)}个具有最大延迟({max_delay/10.0:.2f}ms)的数据项，选择第一个")
+                else:
+                    logger.warning(f"⚠️ 未找到最大延迟对应的数据项")
+            elif delay_type == 'min':
+                # 找到所有具有最小延迟的数据项
+                # 注意：这里使用带符号的keyon_offset，与UI显示保持一致
+                all_delays = [item.get('keyon_offset', 0) for item in offset_data]
+                min_delay = min(all_delays)
+                min_delay_ms = min_delay / 10.0
+                
+                # 使用与UI相同的逻辑：遍历所有数据项，找到最后一个匹配的（与UI保持一致）
+                # UI中的逻辑：if min_delay_item is None or item_delay_ms == min_delay_ms: min_delay_item = item
+                # 这意味着如果有多个匹配项，UI会保存最后一个
+                target_item = None
+                for item in offset_data:
+                    item_delay_ms = item.get('keyon_offset', 0) / 10.0
+                    if target_item is None or item_delay_ms == min_delay_ms:
+                        target_item = item
+                
+                # 验证：检查是否真的找到了最小值
+                logger.info(f"🔍 所有延迟值范围: [{min(all_delays)/10.0:.2f}ms, {max(all_delays)/10.0:.2f}ms]")
+                logger.info(f"🔍 最小延迟值: {min_delay_ms:.2f}ms")
+                
+                if target_item:
+                    # 统计有多少个匹配项
+                    min_delay_items = [item for item in offset_data if abs(item.get('keyon_offset', 0) / 10.0 - min_delay_ms) < 0.001]
+                    logger.info(f"🔍 找到{len(min_delay_items)}个具有最小延迟({min_delay_ms:.2f}ms)的数据项")
+                    logger.info(f"🔍 选择的数据项（与UI逻辑一致，最后一个匹配项）: record_index={target_item.get('record_index')}, replay_index={target_item.get('replay_index')}, key_id={target_item.get('key_id')}, keyon_offset={target_item.get('keyon_offset', 0)/10.0:.2f}ms")
+                    if len(min_delay_items) > 1:
+                        logger.warning(f"⚠️ 找到{len(min_delay_items)}个具有最小延迟({min_delay_ms:.2f}ms)的数据项，选择最后一个（与UI逻辑一致）")
+                        # 列出所有匹配项的信息
+                        for idx, item in enumerate(min_delay_items):
+                            logger.info(f"  匹配项{idx+1}: record_index={item.get('record_index')}, replay_index={item.get('replay_index')}, key_id={item.get('key_id')}")
+                else:
+                    logger.warning(f"⚠️ 未找到最小延迟对应的数据项")
+            else:
+                logger.warning(f"⚠️ 无效的延迟类型: {delay_type}")
+                return None
+            
+            if not target_item:
+                logger.warning(f"⚠️ 未找到{delay_type}延迟对应的数据项")
+                return None
+            
+            record_index = target_item.get('record_index')
+            replay_index = target_item.get('replay_index')
+            
+            if record_index is None or replay_index is None:
+                logger.warning(f"⚠️ 数据项缺少索引信息")
+                return None
+            
+            # 从matched_pairs中查找对应的Note对象
+            matched_pairs = note_matcher.get_matched_pairs()
+            record_note = None
+            replay_note = None
+            
+            for r_idx, p_idx, r_note, p_note in matched_pairs:
+                if r_idx == record_index and p_idx == replay_index:
+                    record_note = r_note
+                    replay_note = p_note
+                    break
+            
+            if record_note is None or replay_note is None:
+                logger.warning(f"⚠️ 未找到匹配对: record_index={record_index}, replay_index={replay_index}")
+                return None
+            
+            delay_ms = target_item.get('keyon_offset', 0) / 10.0
+            key_id = target_item.get('key_id', 'N/A')
+            delay_type_name = "最大" if delay_type == 'max' else "最小"
+            logger.info(f"✅ 找到{delay_type_name}延迟对应的音符: 算法={algorithm_name}, 按键ID={key_id}, record_index={record_index}, replay_index={replay_index}, delay={delay_ms:.2f}ms")
+            return (record_note, replay_note)
+            
+        except Exception as e:
+            logger.error(f"❌ 获取{delay_type}延迟对应的音符失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
+    
+    def get_first_data_point_notes(self) -> Optional[Tuple[Any, Any]]:
+        """
+        获取延时时间序列图的第一个数据点对应的音符
+        
+        支持单算法模式和多算法模式：
+        - 单算法模式：使用 self.analyzer
+        - 多算法模式：使用第一个激活的算法
+        
+        Returns:
+            Tuple[Note, Note]: (record_note, replay_note)，如果失败则返回None
+        """
+        try:
+            # 多算法模式：使用第一个激活的算法
+            if self.multi_algorithm_mode and self.multi_algorithm_manager:
+                active_algorithms = self.multi_algorithm_manager.get_active_algorithms()
+                if not active_algorithms:
+                    logger.warning("⚠️ 多算法模式下没有激活的算法")
+                    return None
+                
+                # 使用第一个激活的算法
+                algorithm = active_algorithms[0]
+                if not algorithm.analyzer or not algorithm.analyzer.note_matcher:
+                    logger.warning(f"⚠️ 算法 '{algorithm.metadata.algorithm_name}' 的分析器或匹配器不存在")
+                    return None
+                
+                analyzer = algorithm.analyzer
+                note_matcher = analyzer.note_matcher
+                
+            else:
+                # 单算法模式（向后兼容）
+                if not self.analyzer or not self.analyzer.note_matcher:
+                    logger.warning("⚠️ 分析器或匹配器不存在")
+                    return None
+                
+                analyzer = self.analyzer
+                note_matcher = analyzer.note_matcher
+            
+            # 获取偏移数据
+            offset_data = note_matcher.get_offset_alignment_data()
+            if not offset_data:
+                logger.warning("⚠️ 没有匹配数据")
+                return None
+            
+            # 提取数据点并排序
+            data_points = []
+            for item in offset_data:
+                record_keyon = item.get('record_keyon', 0)
+                record_index = item.get('record_index')
+                replay_index = item.get('replay_index')
+                
+                if record_keyon is None or record_index is None or replay_index is None:
+                    continue
+                
+                data_points.append({
+                    'time': record_keyon / 10.0,  # 转换为ms
+                    'record_index': record_index,
+                    'replay_index': replay_index
+                })
+            
+            if not data_points:
+                logger.warning("⚠️ 没有有效数据点")
+                return None
+            
+            # 按时间排序，获取第一个数据点
+            data_points.sort(key=lambda x: x['time'])
+            first_point = data_points[0]
+            
+            record_index = first_point['record_index']
+            replay_index = first_point['replay_index']
+            
+            # 从matched_pairs中查找对应的Note对象
+            matched_pairs = note_matcher.get_matched_pairs()
+            record_note = None
+            replay_note = None
+            
+            for r_idx, p_idx, r_note, p_note in matched_pairs:
+                if r_idx == record_index and p_idx == replay_index:
+                    record_note = r_note
+                    replay_note = p_note
+                    break
+            
+            if record_note is None or replay_note is None:
+                logger.warning(f"⚠️ 未找到匹配对: record_index={record_index}, replay_index={replay_index}")
+                return None
+            
+            logger.info(f"✅ 找到第一个数据点: record_index={record_index}, replay_index={replay_index}")
+            return (record_note, replay_note)
+            
+        except Exception as e:
+            logger.error(f"❌ 获取第一个数据点失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
+    
+    def test_curve_alignment(self) -> Optional[Dict[str, Any]]:
+        """
+        测试曲线对齐功能，使用延时时间序列图的第一个数据点
+        
+        Returns:
+            Dict[str, Any]: 测试结果，包含对齐前后的对比图和相似度
+        """
+        try:
+            from backend.force_curve_analyzer import ForceCurveAnalyzer
+            
+            # 获取第一个数据点的音符
+            notes = self.get_first_data_point_notes()
+            if notes is None:
+                return {
+                    'status': 'error',
+                    'message': '无法获取第一个数据点的音符'
+                }
+            
+            record_note, replay_note = notes
+            
+            # 创建曲线分析器
+            # 对于平滑曲线，使用更严格的DTW窗口约束，避免过度扭曲
+            analyzer = ForceCurveAnalyzer(
+                smooth_sigma=1.0,
+                dtw_distance_metric='manhattan',
+                dtw_window_size_ratio=0.2  # 减小窗口大小，从0.5改为0.2，避免过度扭曲平滑曲线
+            )
+            
+            # 对比曲线（播放曲线对齐到录制曲线）
+            result = analyzer.compare_curves(
+                record_note, 
+                replay_note,
+                record_note=record_note,
+                replay_note=replay_note
+            )
+            
+            if result is None:
+                return {
+                    'status': 'error',
+                    'message': '曲线对比失败'
+                }
+            
+            # 生成所有处理阶段的对比图
+            all_stages_fig = None
+            if 'processing_stages' in result:
+                all_stages_fig = analyzer.visualize_all_processing_stages(result)
+            
+            # 生成对齐前后对比图（保持向后兼容）
+            comparison_fig = None
+            if 'alignment_comparison' in result:
+                comparison_fig = analyzer.visualize_alignment_comparison(result)
+            
+            return {
+                'status': 'success',
+                'result': result,
+                'comparison_figure': comparison_fig,  # 对齐前后对比图（向后兼容）
+                'all_stages_figure': all_stages_fig,  # 所有处理阶段的对比图
+                'record_index': record_note.id if hasattr(record_note, 'id') else 'N/A',
+                'replay_index': replay_note.id if hasattr(replay_note, 'id') else 'N/A'
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ 测试曲线对齐失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {
+                'status': 'error',
+                'message': f'测试失败: {str(e)}'
+            }
+    
     def generate_scatter_detail_plot_by_indices(self, record_index: int, replay_index: int) -> Tuple[Any, Any, Any]:
         """
         根据record_index和replay_index生成散点图点击的详细曲线图
@@ -2726,19 +3060,24 @@ class PianoAnalysisBackend:
                     }
                 
                 # 为每个算法生成分析结果
+                # 使用内部的algorithm_name作为key（唯一标识，包含文件名），避免同种算法不同曲子被覆盖
                 algorithm_results = {}
                 for algorithm in active_algorithms:
                     if not algorithm.analyzer:
                         logger.warning(f"⚠️ 算法 '{algorithm.metadata.algorithm_name}' 没有分析器，跳过")
                         continue
                     
+                    # 使用内部的algorithm_name作为key（唯一标识）
                     algorithm_name = algorithm.metadata.algorithm_name
+                    display_name = algorithm.metadata.display_name
                     delay_analysis = DelayAnalysis(algorithm.analyzer)
                     result = delay_analysis.analyze_key_force_interaction()
                     
                     if result.get('status') == 'success':
+                        # 在result中添加display_name，用于UI显示
+                        result['display_name'] = display_name
                         algorithm_results[algorithm_name] = result
-                        logger.info(f"✅ 算法 '{algorithm_name}' 的按键-力度交互分析完成")
+                        logger.info(f"✅ 算法 '{display_name}' (内部: {algorithm_name}) 的按键-力度交互分析完成")
                 
                 if not algorithm_results:
                     logger.warning("⚠️ 没有成功分析的算法")
@@ -3100,4 +3439,203 @@ class PianoAnalysisBackend:
             return {}
         
         return self.multi_algorithm_manager.get_comparison_statistics()
+    
+    def get_same_algorithm_relative_delay_analysis(self) -> Dict[str, Any]:
+        """
+        分析同种算法不同曲子的相对延时分布
+        
+        识别逻辑：
+        - display_name 相同：表示同种算法
+        - algorithm_name 不同：表示不同曲子（因为文件名不同）
+        
+        Returns:
+            Dict[str, Any]: 分析结果，包含：
+                - status: 状态标识
+                - algorithm_groups: 按算法分组的相对延时数据
+                - overall_relative_delays: 所有曲子合并后的相对延时列表
+                - statistics: 统计信息
+        """
+        try:
+            if not self.multi_algorithm_mode or not self.multi_algorithm_manager:
+                return {
+                    'status': 'error',
+                    'message': '未启用多算法模式'
+                }
+            
+            all_algorithms = self.multi_algorithm_manager.get_all_algorithms()
+            if not all_algorithms:
+                return {
+                    'status': 'error',
+                    'message': '没有算法数据'
+                }
+            
+            # 按display_name分组，识别同种算法
+            from collections import defaultdict
+            algorithm_groups = defaultdict(list)
+            
+            for algorithm in all_algorithms:
+                if not algorithm.is_ready():
+                    continue
+                
+                display_name = algorithm.metadata.display_name
+                algorithm_groups[display_name].append(algorithm)
+            
+            # 找出有多个曲子的算法（同种算法的不同曲子）
+            same_algorithm_groups = {}
+            for display_name, algorithms in algorithm_groups.items():
+                if len(algorithms) > 1:
+                    # 检查是否真的是不同曲子（algorithm_name不同）
+                    algorithm_names = set(alg.metadata.algorithm_name for alg in algorithms)
+                    if len(algorithm_names) > 1:
+                        same_algorithm_groups[display_name] = algorithms
+            
+            if not same_algorithm_groups:
+                return {
+                    'status': 'error',
+                    'message': '未找到同种算法的不同曲子'
+                }
+            
+            # 分析每个算法的相对延时分布
+            result_groups = {}
+            all_relative_delays = []  # 合并所有曲子的相对延时
+            
+            for display_name, algorithms in same_algorithm_groups.items():
+                group_relative_delays = []  # 该算法组所有曲子合并后的相对延时
+                group_info = []
+                song_data = []  # 按曲子分组的数据
+                
+                for algorithm in algorithms:
+                    if not algorithm.analyzer or not algorithm.analyzer.note_matcher:
+                        continue
+                    
+                    # 获取该曲子的偏移数据
+                    offset_data = algorithm.analyzer.note_matcher.get_offset_alignment_data()
+                    if not offset_data:
+                        continue
+                    
+                    # 计算该曲子的平均延时（带符号）
+                    me_0_1ms = algorithm.analyzer.note_matcher.get_mean_error()
+                    mean_delay_ms = me_0_1ms / 10.0  # 转换为ms
+                    
+                    # 计算相对延时
+                    relative_delays = []
+                    for item in offset_data:
+                        keyon_offset_0_1ms = item.get('keyon_offset', 0.0)
+                        absolute_delay_ms = keyon_offset_0_1ms / 10.0
+                        relative_delay_ms = absolute_delay_ms - mean_delay_ms
+                        relative_delays.append(relative_delay_ms)
+                    
+                    if relative_delays:
+                        group_relative_delays.extend(relative_delays)
+                        all_relative_delays.extend(relative_delays)
+                        
+                        # 从algorithm_name中提取文件名部分
+                        filename_display = algorithm.metadata.filename
+                        if '_' in algorithm.metadata.algorithm_name:
+                            parts = algorithm.metadata.algorithm_name.rsplit('_', 1)
+                            if len(parts) == 2:
+                                filename_display = parts[1]
+                        
+                        group_info.append({
+                            'algorithm_name': algorithm.metadata.algorithm_name,
+                            'filename': algorithm.metadata.filename,
+                            'filename_display': filename_display,
+                            'mean_delay_ms': mean_delay_ms,
+                            'relative_delay_count': len(relative_delays)
+                        })
+                        
+                        # 保存该曲子的单独数据
+                        song_data.append({
+                            'algorithm_name': algorithm.metadata.algorithm_name,
+                            'filename': algorithm.metadata.filename,
+                            'filename_display': filename_display,
+                            'mean_delay_ms': mean_delay_ms,
+                            'relative_delays': relative_delays,  # 该曲子的相对延时列表
+                            'relative_delay_count': len(relative_delays)
+                        })
+                
+                if group_relative_delays:
+                    result_groups[display_name] = {
+                        'relative_delays': group_relative_delays,  # 合并后的相对延时
+                        'algorithms': group_info,  # 算法信息
+                        'song_data': song_data  # 按曲子分组的数据
+                    }
+            
+            if not all_relative_delays:
+                return {
+                    'status': 'error',
+                    'message': '没有有效的相对延时数据'
+                }
+            
+            # 计算统计信息
+            import numpy as np
+            relative_delays_array = np.array(all_relative_delays)
+            
+            statistics = {
+                'mean': float(np.mean(relative_delays_array)),
+                'std': float(np.std(relative_delays_array)),
+                'median': float(np.median(relative_delays_array)),
+                'min': float(np.min(relative_delays_array)),
+                'max': float(np.max(relative_delays_array)),
+                'q25': float(np.percentile(relative_delays_array, 25)),
+                'q75': float(np.percentile(relative_delays_array, 75)),
+                'iqr': float(np.percentile(relative_delays_array, 75) - np.percentile(relative_delays_array, 25)),
+                'count': len(all_relative_delays),
+                'cv': float(np.std(relative_delays_array) / abs(np.mean(relative_delays_array))) if np.mean(relative_delays_array) != 0 else float('inf')
+            }
+            
+            # 计算±1σ、±2σ、±3σ范围内的数据占比
+            std = statistics['std']
+            mean = statistics['mean']
+            within_1sigma = np.sum(np.abs(relative_delays_array - mean) <= std) / len(relative_delays_array) * 100
+            within_2sigma = np.sum(np.abs(relative_delays_array - mean) <= 2 * std) / len(relative_delays_array) * 100
+            within_3sigma = np.sum(np.abs(relative_delays_array - mean) <= 3 * std) / len(relative_delays_array) * 100
+            
+            statistics['within_1sigma_percent'] = float(within_1sigma)
+            statistics['within_2sigma_percent'] = float(within_2sigma)
+            statistics['within_3sigma_percent'] = float(within_3sigma)
+            
+            logger.info(f"✅ 同种算法相对延时分析完成，共 {len(same_algorithm_groups)} 个算法组，{len(all_relative_delays)} 个数据点")
+            
+            return {
+                'status': 'success',
+                'algorithm_groups': result_groups,
+                'overall_relative_delays': all_relative_delays,
+                'statistics': statistics
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ 分析同种算法相对延时分布失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {
+                'status': 'error',
+                'message': f'分析失败: {str(e)}'
+            }
+    
+    def generate_relative_delay_distribution_plot(self) -> Any:
+        """
+        生成同种算法不同曲子的相对延时分布图
+        
+        Returns:
+            Any: Plotly图表对象
+        """
+        try:
+            analysis_result = self.get_same_algorithm_relative_delay_analysis()
+            
+            if analysis_result.get('status') != 'success':
+                return self.plot_generator._create_empty_plot(
+                    analysis_result.get('message', '分析失败')
+                )
+            
+            # 使用多算法图表生成器
+            from backend.multi_algorithm_plot_generator import MultiAlgorithmPlotGenerator
+            multi_plot_generator = MultiAlgorithmPlotGenerator(self.data_filter)
+            return multi_plot_generator.generate_relative_delay_distribution_plot(analysis_result)
+            
+        except Exception as e:
+            logger.error(f"❌ 生成相对延时分布图失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return self.plot_generator._create_empty_plot(f"生成失败: {str(e)}")
     

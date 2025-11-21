@@ -738,19 +738,33 @@ class PlotGenerator:
                 hovertemplate=f'<b>按键 {key_id}</b><br>点击选择/取消选择此按键<extra></extra>'
             ))
     
-    def _add_data_traces_multi_algorithm(self, fig, all_key_ids, algorithm_names, algorithm_results, algorithm_colors):
-        """为多算法模式添加数据traces"""
+    def _add_data_traces_multi_algorithm(self, fig, all_key_ids, algorithm_internal_names, algorithm_display_names, algorithm_results, algorithm_colors):
+        """
+        为多算法模式添加数据traces
+        
+        Args:
+            fig: Plotly图表对象
+            all_key_ids: 所有按键ID列表
+            algorithm_internal_names: 算法内部名称列表（用于查找数据）
+            algorithm_display_names: 算法显示名称列表（用于UI显示）
+            algorithm_results: 算法结果字典（key为内部名称）
+            algorithm_colors: 算法颜色列表
+        """
         import plotly.graph_objects as go
         
         # 为每个算法的每个按键生成数据trace（只显示散点）
         for key_idx, key_id in enumerate(all_key_ids):
-            for alg_idx, algorithm_name in enumerate(algorithm_names):
-                alg_result = algorithm_results[algorithm_name]
+            for alg_idx, algorithm_internal_name in enumerate(algorithm_internal_names):
+                # 使用内部名称查找数据
+                alg_result = algorithm_results[algorithm_internal_name]
                 interaction_plot_data = alg_result.get('interaction_plot_data', {})
                 key_data = interaction_plot_data.get('key_data', {})
                 
                 if key_id not in key_data:
                     continue  # 如果该算法没有这个按键的数据，跳过
+                
+                # 使用显示名称用于UI显示
+                algorithm_display_name = algorithm_display_names[alg_idx]
                 
                 # 使用算法颜色，而不是按键颜色，便于区分不同算法
                 algorithm_color = algorithm_colors[alg_idx % len(algorithm_colors)]
@@ -773,12 +787,14 @@ class PlotGenerator:
                             opacity=0.9,
                             line=dict(width=1, color='white')
                         ),
-                        legendgroup=f'data_{algorithm_name}_key_{key_id}',
+                        # legendgroup使用显示名称，用于匹配算法控制图注
+                        legendgroup=f'data_{algorithm_display_name}_key_{key_id}',
                         showlegend=False,
-                        customdata=[[key_id, algorithm_name, abs_delay, rel_delay] 
+                        # customdata中存储显示名称，用于匹配
+                        customdata=[[key_id, algorithm_display_name, abs_delay, rel_delay] 
                                    for abs_delay, rel_delay in zip(absolute_delays, delays)],
                         visible=False,  # 默认不显示，需要选择后才显示
-                        hovertemplate=f'<b>{algorithm_name}</b><br>' +
+                        hovertemplate=f'<b>{algorithm_display_name}</b><br>' +
                                      f'<b>按键 {key_id}</b><br>' +
                                      '<b>力度</b>: %{x}<br>' +
                                      '<b>相对延时</b>: %{y:.2f}ms<br>' +
@@ -864,7 +880,33 @@ class PlotGenerator:
             
             if is_multi_algorithm and algorithm_results:
                 # 多算法模式
-                algorithm_names = sorted(algorithm_results.keys())
+                # algorithm_results的key是内部的algorithm_name（唯一标识）
+                # 但我们需要提取display_name用于显示
+                algorithm_internal_names = sorted(algorithm_results.keys())
+                
+                # 构建显示名称列表（如果display_name相同，则添加文件名后缀以区分）
+                algorithm_display_names = []
+                display_name_count = {}  # 统计每个display_name出现的次数
+                
+                for alg_name in algorithm_internal_names:
+                    alg_result = algorithm_results[alg_name]
+                    display_name = alg_result.get('display_name', alg_name)
+                    
+                    # 统计display_name出现次数
+                    if display_name not in display_name_count:
+                        display_name_count[display_name] = 0
+                    display_name_count[display_name] += 1
+                    
+                    # 如果display_name重复，添加文件名后缀以区分
+                    if display_name_count[display_name] > 1:
+                        # 从algorithm_name中提取文件名（去掉算法名前缀）
+                        # algorithm_name格式：算法名_文件名（无扩展名）
+                        parts = alg_name.rsplit('_', 1)
+                        if len(parts) == 2:
+                            filename_part = parts[1]
+                            display_name = f"{display_name} ({filename_part})"
+                    
+                    algorithm_display_names.append(display_name)
                 
                 # 收集所有按键ID
                 all_key_ids = set()
@@ -883,12 +925,17 @@ class PlotGenerator:
                     key_colors = cm.get_cmap('viridis')(np.linspace(0, 1, n_keys))
                 key_color_hex = [mcolors.rgb2hex(c[:3]) for c in key_colors]
                 
-                # 创建控制图注
-                self._create_algorithm_control_legends(fig, algorithm_names, algorithm_colors)
+                # 创建控制图注（使用显示名称）
+                self._create_algorithm_control_legends(fig, algorithm_display_names, algorithm_colors)
                 self._create_key_control_legends(fig, all_key_ids, key_color_hex)
                 
                 # 添加数据traces
-                self._add_data_traces_multi_algorithm(fig, all_key_ids, algorithm_names, algorithm_results, algorithm_colors)
+                # 传入内部名称列表和显示名称列表的映射
+                self._add_data_traces_multi_algorithm(
+                    fig, all_key_ids, 
+                    algorithm_internal_names, algorithm_display_names,
+                    algorithm_results, algorithm_colors
+                )
             else:
                 # 单算法模式
                 interaction_plot_data = analysis_result.get('interaction_plot_data', {})
@@ -925,7 +972,14 @@ class PlotGenerator:
                     xanchor='left',
                     x=1.02,
                     groupclick='toggleitem',  # 点击按键图例时，切换该按键的所有算法数据
-                    itemclick='toggle'  # 点击图例项时切换显示/隐藏
+                    itemclick='toggle',  # 点击图例项时切换显示/隐藏
+                    # 注意：Plotly的legend文字颜色是全局的，无法单独为每个图例项设置不同的透明度
+                    # 我们通过marker的opacity和size来区分选中/未选中状态
+                    # 文字保持不透明，通过marker的变化来指示选中状态
+                    font=dict(
+                        size=11,
+                        color='rgba(0, 0, 0, 1.0)'  # 图例文字颜色（黑色，不透明）
+                    )
                 ),
                 uirevision='key-force-interaction'
             )

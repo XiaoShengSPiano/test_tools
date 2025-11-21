@@ -788,10 +788,6 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         """更新详细图表 - 支持多用户会话"""
         from dash import no_update
         
-        print("=" * 80)
-        print(f"🚀 update_plot 回调被触发！")
-        print("=" * 80)
-        logger.info(f"🚀 update_plot 回调被触发！")
 
         # if session_id is None:
         # 获取用户会话数据
@@ -1819,33 +1815,56 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             return current_selected_algorithms or []
         
         try:
-            if len(restyle_data) >= 2 and 'visible' in restyle_data[0]:
-                trace_indices = restyle_data[1] if len(restyle_data) > 1 else []
-                
-                selected_algorithms = current_selected_algorithms or []
-                
-                # 找到被点击的trace，检查是否是算法控制图注项
-                for idx in trace_indices:
-                    if idx < len(figure['data']):
-                        trace = figure['data'][idx]
-                        # 检查是否是算法控制图注项：legendgroup为"algorithm_control"
-                        if 'legendgroup' in trace and trace['legendgroup'] == 'algorithm_control':
-                            if 'name' in trace and trace['name']:
-                                clicked_algorithm = trace['name']
-                                
-                                # 切换算法选择状态
-                                if clicked_algorithm in selected_algorithms:
-                                    # 取消选择
-                                    selected_algorithms = [a for a in selected_algorithms if a != clicked_algorithm]
-                                    logger.info(f"🔄 取消选择算法: {clicked_algorithm}")
-                                else:
-                                    # 选择算法
-                                    selected_algorithms = selected_algorithms + [clicked_algorithm]
-                                    logger.info(f"🎯 选择算法: {clicked_algorithm}")
-                                
-                                return selected_algorithms
+            # restyleData格式: [{'visible': [...]}, [trace_indices]]
+            # 当点击legend时，可能会触发多个trace的visible变化
+            # 我们需要找到算法控制图注的trace
+            
+            selected_algorithms = current_selected_algorithms or []
+            
+            # 检查restyleData格式
+            if not isinstance(restyle_data, list) or len(restyle_data) < 2:
+                return current_selected_algorithms or []
+            
+            restyle_dict = restyle_data[0] if isinstance(restyle_data[0], dict) else {}
+            trace_indices = restyle_data[1] if len(restyle_data) > 1 and isinstance(restyle_data[1], list) else []
+            
+            # 遍历所有被影响的trace，找到算法控制图注
+            for idx in trace_indices:
+                if idx < len(figure['data']):
+                    trace = figure['data'][idx]
+                    
+                    # 检查是否是算法控制图注项
+                    legendgroup = trace.get('legendgroup') if isinstance(trace, dict) else (trace.legendgroup if hasattr(trace, 'legendgroup') else None)
+                    
+                    if legendgroup == 'algorithm_control':
+                        # 获取算法名称
+                        algorithm_name = None
+                        if isinstance(trace, dict):
+                            algorithm_name = trace.get('name')
+                        else:
+                            algorithm_name = trace.name if hasattr(trace, 'name') else None
+                        
+                        if algorithm_name:
+                            # 切换算法选择状态
+                            if algorithm_name in selected_algorithms:
+                                # 取消选择
+                                selected_algorithms = [a for a in selected_algorithms if a != algorithm_name]
+                                logger.info(f"🔄 取消选择算法: {algorithm_name}, 当前选中: {selected_algorithms}")
+                            else:
+                                # 选择算法
+                                selected_algorithms = selected_algorithms + [algorithm_name]
+                                logger.info(f"🎯 选择算法: {algorithm_name}, 当前选中: {selected_algorithms}")
+                            
+                            # 找到算法控制图注后立即返回，避免处理其他trace
+                            return selected_algorithms
+            
+            # 如果没有找到算法控制图注，可能是点击了其他图注，返回原状态
+            logger.debug(f"🔍 未找到算法控制图注，restyle_data: {restyle_data}")
+            
         except Exception as e:
-            logger.warning(f"⚠️ 处理算法选择事件失败: {e}")
+            logger.error(f"❌ 处理算法选择事件失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
         
         return current_selected_algorithms or []
     
@@ -1867,38 +1886,59 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             return current_selected_keys or []
         
         try:
-            if len(restyle_data) >= 2 and 'visible' in restyle_data[0]:
-                trace_indices = restyle_data[1] if len(restyle_data) > 1 else []
-                
-                selected_keys = current_selected_keys or []
-                
-                # 找到被点击的trace，检查是否是按键控制图注项
-                for idx in trace_indices:
-                    if idx < len(figure['data']):
-                        trace = figure['data'][idx]
-                        # 检查是否是按键控制图注项：legendgroup为"key_control"
-                        if 'legendgroup' in trace and trace['legendgroup'] == 'key_control':
-                            if 'name' in trace and trace['name']:
-                                name = trace['name']
-                                if name.startswith('按键 '):
-                                    try:
-                                        clicked_key_id = int(name.split('按键 ')[1])
-                                        
-                                        # 切换按键选择状态
-                                        if clicked_key_id in selected_keys:
-                                            # 取消选择
-                                            selected_keys = [k for k in selected_keys if k != clicked_key_id]
-                                            logger.info(f"🔄 取消选择按键: {clicked_key_id}")
-                                        else:
-                                            # 选择按键
-                                            selected_keys = selected_keys + [clicked_key_id]
-                                            logger.info(f"🎯 选择按键: {clicked_key_id}")
-                                        
-                                        return selected_keys
-                                    except (ValueError, IndexError):
-                                        continue
+            # restyleData格式: [{'visible': [...]}, [trace_indices]]
+            selected_keys = current_selected_keys or []
+            
+            # 检查restyleData格式
+            if not isinstance(restyle_data, list) or len(restyle_data) < 2:
+                return current_selected_keys or []
+            
+            restyle_dict = restyle_data[0] if isinstance(restyle_data[0], dict) else {}
+            trace_indices = restyle_data[1] if len(restyle_data) > 1 and isinstance(restyle_data[1], list) else []
+            
+            # 遍历所有被影响的trace，找到按键控制图注
+            for idx in trace_indices:
+                if idx < len(figure['data']):
+                    trace = figure['data'][idx]
+                    
+                    # 检查是否是按键控制图注项
+                    legendgroup = trace.get('legendgroup') if isinstance(trace, dict) else (trace.legendgroup if hasattr(trace, 'legendgroup') else None)
+                    
+                    if legendgroup == 'key_control':
+                        # 获取按键名称
+                        name = None
+                        if isinstance(trace, dict):
+                            name = trace.get('name')
+                        else:
+                            name = trace.name if hasattr(trace, 'name') else None
+                        
+                        if name and name.startswith('按键 '):
+                            try:
+                                clicked_key_id = int(name.split('按键 ')[1])
+                                
+                                # 切换按键选择状态
+                                if clicked_key_id in selected_keys:
+                                    # 取消选择
+                                    selected_keys = [k for k in selected_keys if k != clicked_key_id]
+                                    logger.info(f"🔄 取消选择按键: {clicked_key_id}, 当前选中: {selected_keys}")
+                                else:
+                                    # 选择按键
+                                    selected_keys = selected_keys + [clicked_key_id]
+                                    logger.info(f"🎯 选择按键: {clicked_key_id}, 当前选中: {selected_keys}")
+                                
+                                # 找到按键控制图注后立即返回，避免处理其他trace
+                                return selected_keys
+                            except (ValueError, IndexError) as e:
+                                logger.debug(f"⚠️ 解析按键ID失败: {name}, 错误: {e}")
+                                continue
+            
+            # 如果没有找到按键控制图注，可能是点击了其他图注，返回原状态
+            logger.debug(f"🔍 未找到按键控制图注，restyle_data: {restyle_data}")
+            
         except Exception as e:
-            logger.warning(f"⚠️ 处理按键选择事件失败: {e}")
+            logger.error(f"❌ 处理按键选择事件失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
         
         return current_selected_keys or []
     
@@ -1939,6 +1979,9 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 
                 # 重新生成图表
                 fig = backend.generate_key_force_interaction_plot()
+                
+                # 重新生成图表后，需要根据选中的算法和按键恢复状态
+                # 继续执行下面的更新逻辑
             else:
                 # 如果是选择变化，使用当前图表并更新可见性
                 if current_figure and isinstance(current_figure, dict) and 'data' in current_figure:
@@ -1978,13 +2021,33 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                             if isinstance(customdata, list) and len(customdata) > 0:
                                 first_point_data = customdata[0]
                                 if isinstance(first_point_data, list) and len(first_point_data) >= 2:
-                                    if first_point_data[1] == algorithm_name:
+                                    trace_algorithm_name = first_point_data[1]
+                                    # 精确匹配
+                                    if trace_algorithm_name == algorithm_name:
                                         return True
-                        except (IndexError, TypeError):
+                                    # 如果算法名称包含括号（带文件名后缀），尝试匹配基础名称
+                                    # 例如：算法A (文件名) 应该匹配 算法A
+                                    if '(' in algorithm_name:
+                                        base_name = algorithm_name.split('(')[0].strip()
+                                        if trace_algorithm_name == base_name:
+                                            return True
+                                    if '(' in trace_algorithm_name:
+                                        base_name = trace_algorithm_name.split('(')[0].strip()
+                                        if base_name == algorithm_name:
+                                            return True
+                        except (IndexError, TypeError) as e:
+                            logger.debug(f"⚠️ 检查算法匹配时出错: {e}")
                             pass
                     legendgroup = trace.get('legendgroup')
                     if legendgroup:
-                        return legendgroup.startswith(f'data_{algorithm_name}_')
+                        # 精确匹配
+                        if legendgroup.startswith(f'data_{algorithm_name}_'):
+                            return True
+                        # 如果算法名称包含括号，尝试匹配基础名称
+                        if '(' in algorithm_name:
+                            base_name = algorithm_name.split('(')[0].strip()
+                            if legendgroup.startswith(f'data_{base_name}_'):
+                                return True
                 else:
                     # 处理Plotly trace对象
                     if hasattr(trace, 'customdata') and trace.customdata:
@@ -1992,12 +2055,31 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                             if isinstance(trace.customdata, list) and len(trace.customdata) > 0:
                                 first_point_data = trace.customdata[0]
                                 if isinstance(first_point_data, list) and len(first_point_data) >= 2:
-                                    if first_point_data[1] == algorithm_name:
+                                    trace_algorithm_name = first_point_data[1]
+                                    # 精确匹配
+                                    if trace_algorithm_name == algorithm_name:
                                         return True
-                        except (IndexError, TypeError):
+                                    # 如果算法名称包含括号（带文件名后缀），尝试匹配基础名称
+                                    if '(' in algorithm_name:
+                                        base_name = algorithm_name.split('(')[0].strip()
+                                        if trace_algorithm_name == base_name:
+                                            return True
+                                    if '(' in trace_algorithm_name:
+                                        base_name = trace_algorithm_name.split('(')[0].strip()
+                                        if base_name == algorithm_name:
+                                            return True
+                        except (IndexError, TypeError) as e:
+                            logger.debug(f"⚠️ 检查算法匹配时出错: {e}")
                             pass
                     if hasattr(trace, 'legendgroup') and trace.legendgroup:
-                        return trace.legendgroup.startswith(f'data_{algorithm_name}_')
+                        # 精确匹配
+                        if trace.legendgroup.startswith(f'data_{algorithm_name}_'):
+                            return True
+                        # 如果算法名称包含括号，尝试匹配基础名称
+                        if '(' in algorithm_name:
+                            base_name = algorithm_name.split('(')[0].strip()
+                            if trace.legendgroup.startswith(f'data_{base_name}_'):
+                                return True
                 return False
             
             # 辅助函数：检查trace是否属于指定的按键
@@ -2048,6 +2130,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             
             # 更新算法控制图注的透明度
             # 逻辑：选中的算法 -> 不透明（1.0），未选中的算法 -> 透明（0.2）
+            # 同时通过修改marker颜色深浅来增强视觉效果（因为legend文字颜色是全局的）
             for trace_idx, trace in enumerate(data_list):
                 # 处理dict类型的trace
                 if isinstance(trace, dict):
@@ -2059,6 +2142,13 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                             if 'marker' not in trace:
                                 trace['marker'] = {}
                             trace['marker']['opacity'] = target_opacity
+                            
+                            # 通过修改marker的size来增强选中效果（选中时更大）
+                            if algorithm_name in selected_algorithms:
+                                trace['marker']['size'] = 14  # 选中时稍大
+                            else:
+                                trace['marker']['size'] = 12  # 未选中时正常大小
+                            
                             data_list[trace_idx] = trace
                             logger.info(f"✏️ 更新算法控制图注 '{algorithm_name}' 透明度: {target_opacity} (选中: {algorithm_name in selected_algorithms})")
                 else:
@@ -2071,10 +2161,16 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                             # 直接修改marker.opacity属性（对象引用已修改，不需要重新赋值）
                             if hasattr(trace, 'marker') and trace.marker is not None:
                                 trace.marker.opacity = target_opacity
-                            logger.info(f"✏️ 更新算法控制图注 '{algorithm_name}' 透明度: {target_opacity} (选中: {algorithm_name in selected_algorithms})")
+                                # 通过修改marker的size来增强选中效果
+                                if algorithm_name in selected_algorithms:
+                                    trace.marker.size = 14  # 选中时稍大
+                                else:
+                                    trace.marker.size = 12  # 未选中时正常大小
+                            # logger.info(f"✏️ 更新算法控制图注 '{algorithm_name}' 透明度: {target_opacity} (选中: {algorithm_name in selected_algorithms})")
                 
             # 更新按键控制图注的透明度
             # 逻辑：选中的按键 -> 不透明（1.0），未选中的按键 -> 透明（0.2）
+            # 同时通过修改marker大小来增强视觉效果
             for trace_idx, trace in enumerate(data_list):
                 # 处理dict类型的trace
                 if isinstance(trace, dict):
@@ -2089,6 +2185,13 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                                     if 'marker' not in trace:
                                         trace['marker'] = {}
                                     trace['marker']['opacity'] = target_opacity
+                                    
+                                    # 通过修改marker的size来增强选中效果（选中时更大）
+                                    if key_id in selected_keys:
+                                        trace['marker']['size'] = 17  # 选中时稍大
+                                    else:
+                                        trace['marker']['size'] = 15  # 未选中时正常大小
+                                    
                                     data_list[trace_idx] = trace
                                     logger.info(f"✏️ 更新按键控制图注 '按键 {key_id}' 透明度: {target_opacity} (选中: {key_id in selected_keys})")
                                 except (ValueError, IndexError):
@@ -2106,7 +2209,12 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                                     # 直接修改marker.opacity属性（对象引用已修改，不需要重新赋值）
                                     if hasattr(trace, 'marker') and trace.marker is not None:
                                         trace.marker.opacity = target_opacity
-                                    logger.info(f"✏️ 更新按键控制图注 '按键 {key_id}' 透明度: {target_opacity} (选中: {key_id in selected_keys})")
+                                        # 通过修改marker的size来增强选中效果
+                                        if key_id in selected_keys:
+                                            trace.marker.size = 17  # 选中时稍大
+                                        else:
+                                            trace.marker.size = 15  # 未选中时正常大小
+                                
                                 except (ValueError, IndexError):
                                     continue
             
@@ -2127,6 +2235,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                     if len(selected_algorithms) == 0:
                         belongs_to_selected_algorithm = True  # 如果没有选择算法，显示所有算法
                     else:
+                        # 尝试匹配每个选中的算法
                         for alg in selected_algorithms:
                             if trace_belongs_to_algorithm(trace, alg):
                                 belongs_to_selected_algorithm = True
@@ -2163,38 +2272,37 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             logger.error(traceback.format_exc())
             return backend.plot_generator._create_empty_plot(f"生成交互效应图失败: {str(e)}")
 
-    # 按键与锤速散点图自动生成回调函数（颜色表示延时）- 当报告内容加载时自动生成
+    # 按键与锤速散点图已删除（功能与按键-力度交互效应图重复）
+
+    # 同种算法相对延时分布图回调 - 报告内容加载时自动生成
     @app.callback(
-        Output('key-hammer-velocity-scatter-plot', 'figure'),
+        Output('relative-delay-distribution-plot', 'figure'),
         [Input('report-content', 'children')],
         [State('session-id', 'data')],
         prevent_initial_call=True
     )
-    def handle_generate_key_hammer_velocity_scatter_plot(report_content, session_id):
-        """处理按键与锤速散点图自动生成（颜色表示延时）- 当报告内容更新时触发"""
+    def handle_generate_relative_delay_distribution_plot(report_content, session_id):
+        """处理同种算法相对延时分布图自动生成 - 当报告内容更新时触发"""
         backend = session_manager.get_backend(session_id)
         if not backend:
             return no_update
         
         try:
             # 检查是否在多算法模式
-            # 检查是否有激活的算法
-            active_algorithms = backend.get_active_algorithms()
-            if not active_algorithms:
-                logger.warning("⚠️ 没有激活的算法，无法生成散点图")
-                return backend.plot_generator._create_empty_plot("没有激活的算法")
+            if not backend.multi_algorithm_mode or not backend.multi_algorithm_manager:
+                logger.warning("⚠️ 未启用多算法模式，无法生成相对延时分布图")
+                return backend.plot_generator._create_empty_plot("未启用多算法模式")
             
-            # 生成按键与锤速散点图（颜色表示延时）
-            fig = backend.generate_key_hammer_velocity_scatter_plot()
+            # 生成相对延时分布图
+            fig = backend.generate_relative_delay_distribution_plot()
             
-            logger.info("✅ 按键与锤速散点图生成成功")
+            logger.info("✅ 同种算法相对延时分布图生成成功")
             return fig
             
         except Exception as e:
-            logger.error(f"❌ 生成散点图失败: {e}")
+            logger.error(f"❌ 生成相对延时分布图失败: {e}")
             logger.error(traceback.format_exc())
-            
-            return backend.plot_generator._create_empty_plot(f"生成散点图失败: {str(e)}")
+            return backend.plot_generator._create_empty_plot(f"生成失败: {str(e)}")
 
     # 延时时间序列图回调 - 报告内容加载时自动生成
     @app.callback(
@@ -2402,6 +2510,237 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 return current_style, []
         
         return current_style, []
+    
+    # 处理最大/最小延迟字段点击，显示对应按键的曲线对比图
+    @app.callback(
+        [Output('key-curves-modal', 'style', allow_duplicate=True),
+         Output('key-curves-comparison-container', 'children', allow_duplicate=True)],
+        [Input({'type': 'max-delay-value', 'algorithm': dash.dependencies.ALL}, 'n_clicks'),
+         Input({'type': 'min-delay-value', 'algorithm': dash.dependencies.ALL}, 'n_clicks'),
+         Input('close-key-curves-modal', 'n_clicks'),
+         Input('close-key-curves-modal-btn', 'n_clicks')],
+        [State({'type': 'max-delay-value', 'algorithm': dash.dependencies.ALL}, 'id'),
+         State({'type': 'min-delay-value', 'algorithm': dash.dependencies.ALL}, 'id'),
+         State('session-id', 'data'),
+         State('key-curves-modal', 'style')],
+        prevent_initial_call=True,
+        prevent_duplicate=True
+    )
+    def handle_delay_value_click(max_clicks_list, min_clicks_list, close_modal_clicks, close_btn_clicks, 
+                                  max_ids_list, min_ids_list, session_id, current_style):
+        """处理最大/最小延迟字段点击，显示对应按键的曲线对比图"""
+        from dash import callback_context, no_update
+        import dash
+        
+        logger.info("🚀 handle_delay_value_click 回调被触发")
+        
+        # 检测触发源
+        ctx = callback_context
+        if not ctx.triggered:
+            return current_style, []
+        
+        trigger_id = ctx.triggered[0]['prop_id']
+        trigger_value = ctx.triggered[0].get('value')
+        logger.info(f"🔍 触发ID: {trigger_id}, 触发值: {trigger_value}")
+        
+        # 首先检查是否是关闭按钮的点击
+        if trigger_id in ['close-key-curves-modal.n_clicks', 'close-key-curves-modal-btn.n_clicks']:
+            modal_style = {
+                'display': 'none',
+                'position': 'fixed',
+                'zIndex': '9999',
+                'left': '0',
+                'top': '0',
+                'width': '100%',
+                'height': '100%',
+                'backgroundColor': 'rgba(0,0,0,0.6)',
+                'backdropFilter': 'blur(5px)'
+            }
+            return modal_style, []
+        
+        # 对于最大/最小延迟字段的点击，需要确保是真正的用户点击
+        # 检查clicks列表中是否有任何值>0（真正的点击）
+        has_real_click = False
+        if max_clicks_list:
+            for clicks in max_clicks_list:
+                if clicks is not None and clicks > 0:
+                    has_real_click = True
+                    break
+        if not has_real_click and min_clicks_list:
+            for clicks in min_clicks_list:
+                if clicks is not None and clicks > 0:
+                    has_real_click = True
+                    break
+        
+        # 如果没有真正的点击，可能是布局更新导致的，跳过处理
+        if not has_real_click:
+            logger.info(f"⚠️ 没有检测到真正的用户点击（可能是布局更新），跳过处理: trigger_id={trigger_id}")
+            return current_style, []
+        
+        # 如果点击了关闭按钮，隐藏模态框
+        if trigger_id in ['close-key-curves-modal.n_clicks', 'close-key-curves-modal-btn.n_clicks']:
+            modal_style = {
+                'display': 'none',
+                'position': 'fixed',
+                'zIndex': '9999',
+                'left': '0',
+                'top': '0',
+                'width': '100%',
+                'height': '100%',
+                'backgroundColor': 'rgba(0,0,0,0.6)',
+                'backdropFilter': 'blur(5px)'
+            }
+            return modal_style, []
+        
+        # 解析触发ID，提取延迟类型和算法名称
+        # 使用callback_context来准确识别哪个Input被触发
+        delay_type = None
+        algorithm_name = None
+        
+        try:
+            # 从triggered信息中提取被触发的组件ID
+            triggered_prop = ctx.triggered[0]
+            prop_id_str = triggered_prop['prop_id']
+            
+            # prop_id格式可能是: {'type': 'max-delay-value', 'algorithm': 'xxx'}.n_clicks
+            # 或者: {'type': 'min-delay-value', 'algorithm': 'xxx'}.n_clicks
+            if 'max-delay-value' in prop_id_str:
+                delay_type = 'max'
+                # 从max_ids_list中找到对应的ID
+                if max_ids_list:
+                    for max_id in max_ids_list:
+                        if max_id and isinstance(max_id, dict):
+                            # 检查这个ID是否匹配triggered的ID
+                            # 由于Dash的Pattern Matching，我们需要通过算法名称来匹配
+                            # 从prop_id_str中提取算法名称（如果可能）
+                            # 或者，我们可以通过检查clicks值的变化来确定
+                            algorithm_name = max_id.get('algorithm')
+                            # 验证：检查对应的clicks是否真的被触发了（必须>0才是真正的点击）
+                            idx = max_ids_list.index(max_id)
+                            if idx < len(max_clicks_list) and max_clicks_list[idx] is not None and max_clicks_list[idx] > 0:
+                                logger.info(f"✅ 检测到最大延迟点击: 算法={algorithm_name}, clicks={max_clicks_list[idx]}")
+                                break
+            elif 'min-delay-value' in prop_id_str:
+                delay_type = 'min'
+                # 从min_ids_list中找到对应的ID
+                if min_ids_list:
+                    for min_id in min_ids_list:
+                        if min_id and isinstance(min_id, dict):
+                            algorithm_name = min_id.get('algorithm')
+                            # 验证：检查对应的clicks是否真的被触发了（必须>0才是真正的点击）
+                            idx = min_ids_list.index(min_id)
+                            if idx < len(min_clicks_list) and min_clicks_list[idx] is not None and min_clicks_list[idx] > 0:
+                                logger.info(f"✅ 检测到最小延迟点击: 算法={algorithm_name}, clicks={min_clicks_list[idx]}")
+                                break
+            
+            # 如果上面的方法没有找到，使用备用方法：检查哪个clicks列表有变化
+            if not delay_type or not algorithm_name:
+                # 检查max_clicks_list中是否有点击
+                if max_clicks_list:
+                    for i, clicks in enumerate(max_clicks_list):
+                        if clicks is not None and clicks > 0:
+                            if max_ids_list and i < len(max_ids_list):
+                                max_id = max_ids_list[i]
+                                if max_id and isinstance(max_id, dict):
+                                    algorithm_name = max_id.get('algorithm')
+                                    delay_type = 'max'
+                                    logger.info(f"✅ 备用方法：检测到最大延迟点击: 算法={algorithm_name}, clicks={clicks}")
+                                    break
+                
+                # 如果还没找到，检查min_clicks_list
+                if not delay_type and min_clicks_list:
+                    for i, clicks in enumerate(min_clicks_list):
+                        if clicks is not None and clicks > 0:
+                            if min_ids_list and i < len(min_ids_list):
+                                min_id = min_ids_list[i]
+                                if min_id and isinstance(min_id, dict):
+                                    algorithm_name = min_id.get('algorithm')
+                                    delay_type = 'min'
+                                    logger.info(f"✅ 备用方法：检测到最小延迟点击: 算法={algorithm_name}, clicks={clicks}")
+                                    break
+        except Exception as e:
+            logger.warning(f"⚠️ 解析触发ID失败: {e}, trigger_id={trigger_id}")
+            import traceback
+            logger.error(traceback.format_exc())
+        
+        if not delay_type or not algorithm_name:
+            logger.warning(f"⚠️ 无法解析延迟类型或算法名称: delay_id={trigger_id}, delay_type={delay_type}, algorithm_name={algorithm_name}")
+            logger.warning(f"⚠️ max_clicks_list: {max_clicks_list}, min_clicks_list: {min_clicks_list}")
+            logger.warning(f"⚠️ max_ids_list: {max_ids_list}, min_ids_list: {min_ids_list}")
+            return current_style, []
+        
+        logger.info(f"📊 延迟类型: {delay_type}, 算法名称: {algorithm_name}")
+        
+        backend = session_manager.get_backend(session_id)
+        if not backend:
+            logger.warning("⚠️ backend为空")
+            return current_style, []
+        
+        try:
+            # 获取对应延迟类型的音符
+            notes = backend.get_notes_by_delay_type(algorithm_name, delay_type)
+            if notes is None:
+                logger.warning(f"⚠️ 无法获取{delay_type}延迟对应的音符")
+                return current_style, []
+            
+            record_note, replay_note = notes
+            
+            # 在多算法模式下，查找所有算法中匹配到同一个录制音符的播放音符
+            other_algorithm_notes = []  # [(algorithm_name, play_note), ...]
+            if backend.multi_algorithm_mode and backend.multi_algorithm_manager:
+                active_algorithms = backend.multi_algorithm_manager.get_active_algorithms()
+                for alg in active_algorithms:
+                    if alg.metadata.algorithm_name == algorithm_name:
+                        continue  # 跳过当前算法（已经绘制）
+                    
+                    if not alg.analyzer or not hasattr(alg.analyzer, 'matched_pairs'):
+                        continue
+                    
+                    matched_pairs = alg.analyzer.matched_pairs
+                    # 查找匹配到同一个record_note的播放音符
+                    for r_idx, p_idx, r_note, p_note in matched_pairs:
+                        if r_note is record_note:  # 使用is比较对象引用
+                            other_algorithm_notes.append((alg.metadata.algorithm_name, p_note))
+                            logger.info(f"✅ 找到算法 '{alg.metadata.algorithm_name}' 的匹配播放音符")
+                            break
+            
+            # 生成对比曲线（包含其他算法的播放曲线）
+            import spmid
+            detail_figure_combined = spmid.plot_note_comparison_plotly(
+                record_note, 
+                replay_note, 
+                algorithm_name=algorithm_name,
+                other_algorithm_notes=other_algorithm_notes  # 传递其他算法的播放音符
+            )
+            
+            if not detail_figure_combined:
+                logger.error("❌ 曲线生成失败")
+                return current_style, []
+            
+            # 显示模态框
+            modal_style = {
+                'display': 'block',
+                'position': 'fixed',
+                'zIndex': '9999',
+                'left': '0',
+                'top': '0',
+                'width': '100%',
+                'height': '100%',
+                'backgroundColor': 'rgba(0,0,0,0.6)',
+                'backdropFilter': 'blur(5px)'
+            }
+            
+            rendered_row = dcc.Graph(figure=detail_figure_combined, style={'height': '600px'})
+            
+            delay_type_name = "最大" if delay_type == 'max' else "最小"
+            logger.info(f"✅ {delay_type_name}延迟字段点击处理成功，算法: {algorithm_name}")
+            return modal_style, [rendered_row]
+            
+        except Exception as e:
+            logger.error(f"❌ 处理{delay_type}延迟字段点击失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return current_style, []
     
     # 延时分布直方图回调 - 报告内容加载时自动生成
     @app.callback(
@@ -2849,9 +3188,15 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             report_content = no_update
             
             active_algorithms = backend.get_active_algorithms()
-            if active_algorithms:
+            # 进一步检查：只有算法真正有数据（analyzer存在且有matched_pairs）才生成图形
+            algorithms_with_data = []
+            for alg in active_algorithms:
+                if alg.analyzer and hasattr(alg.analyzer, 'matched_pairs') and alg.analyzer.matched_pairs:
+                    algorithms_with_data.append(alg)
+            
+            if algorithms_with_data:
                 try:
-                    logger.info(f"🔄 更新瀑布图，共 {len(active_algorithms)} 个激活算法")
+                    logger.info(f"🔄 更新瀑布图，共 {len(algorithms_with_data)} 个有数据的激活算法")
                     plot_fig = backend.generate_waterfall_plot()
                     report_content = create_report_layout(backend)
                 except Exception as e:
@@ -2870,7 +3215,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                             dcc.Graph(id='key-delay-scatter-plot', figure=empty_fig, style={'display': 'none'}),
                             dcc.Graph(id='key-delay-zscore-scatter-plot', figure=empty_fig, style={'display': 'none'}),
                             dcc.Graph(id='hammer-velocity-delay-scatter-plot', figure=empty_fig, style={'display': 'none'}),
-                            dcc.Graph(id='key-hammer-velocity-scatter-plot', figure=empty_fig, style={'display': 'none'}),
+                            # key-hammer-velocity-scatter-plot 已删除（功能与按键-力度交互效应图重复）
                             dcc.Graph(id='offset-alignment-plot', figure=empty_fig, style={'display': 'none'}),
                             html.Div([
                                 dash_table.DataTable(
@@ -2881,31 +3226,50 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                             ], style={'display': 'none'})
                         ])
             else:
-                # 没有激活的算法时，也要调用 create_report_layout 确保包含所有必需的组件
-                try:
-                    logger.info("ℹ️ 没有激活的算法，创建空报告布局（包含必需组件）")
-                    report_content = create_report_layout(backend)
-                except Exception as e:
-                    logger.error(f"❌ 创建空报告布局失败: {e}")
-                    # 如果 create_report_layout 失败，返回包含必需组件的错误布局
-                    empty_fig = {}
-                    report_content = html.Div([
-                        html.H4("暂无数据", className="text-center text-muted"),
-                        html.P("请至少激活一个算法以查看分析报告", className="text-center text-muted"),
-                        # 包含所有必需的图表组件（隐藏），确保回调函数不会报错
-                        dcc.Graph(id='key-delay-scatter-plot', figure=empty_fig, style={'display': 'none'}),
-                        dcc.Graph(id='key-delay-zscore-scatter-plot', figure=empty_fig, style={'display': 'none'}),
-                        dcc.Graph(id='hammer-velocity-delay-scatter-plot', figure=empty_fig, style={'display': 'none'}),
-                        dcc.Graph(id='key-hammer-velocity-scatter-plot', figure=empty_fig, style={'display': 'none'}),
-                        dcc.Graph(id='offset-alignment-plot', figure=empty_fig, style={'display': 'none'}),
-                        html.Div([
-                            dash_table.DataTable(
-                                id='offset-alignment-table',
-                                data=[],
-                                columns=[]
-                            )
-                        ], style={'display': 'none'})
-                    ])
+                # 没有激活的算法时，不调用 create_report_layout，直接返回空布局
+                # 避免在没有数据时执行不必要的操作
+                logger.info("ℹ️ 没有激活的算法，跳过图形生成，返回空布局")
+                empty_fig = {}
+                report_content = html.Div([
+                    html.H4("暂无数据", className="text-center text-muted"),
+                    html.P("请至少激活一个算法以查看分析报告", className="text-center text-muted"),
+                    # 包含所有必需的图表组件（隐藏），确保回调函数不会报错
+                    dcc.Graph(id='key-delay-scatter-plot', figure=empty_fig, style={'display': 'none'}),
+                    dcc.Graph(id='key-delay-zscore-scatter-plot', figure=empty_fig, style={'display': 'none'}),
+                    dcc.Graph(id='hammer-velocity-delay-scatter-plot', figure=empty_fig, style={'display': 'none'}),
+                    # key-hammer-velocity-scatter-plot 已删除（功能与按键-力度交互效应图重复）
+                    dcc.Graph(id='key-force-interaction-plot', figure=empty_fig, style={'display': 'none'}),
+                    dcc.Store(id='key-force-interaction-selected-algorithms', data=[]),
+                    dcc.Store(id='key-force-interaction-selected-keys', data=[]),
+                    dcc.Graph(id='relative-delay-distribution-plot', figure=empty_fig, style={'display': 'none'}),
+                    dcc.Graph(id='offset-alignment-plot', figure=empty_fig, style={'display': 'none'}),
+                    dcc.Graph(id='delay-time-series-plot', figure=empty_fig, style={'display': 'none'}),
+                    dcc.Graph(id='delay-histogram-plot', figure=empty_fig, style={'display': 'none'}),
+                    html.Div([
+                        dash_table.DataTable(
+                            id='offset-alignment-table',
+                            data=[],
+                            columns=[]
+                        )
+                    ], style={'display': 'none'}),
+                    html.Div([
+                        dash_table.DataTable(
+                            id='delay-histogram-detail-table',
+                            data=[],
+                            columns=[
+                                {"name": "算法名称", "id": "algorithm_name"},
+                                {"name": "按键ID", "id": "key_id"},
+                                {"name": "延时(ms)", "id": "delay_ms"},
+                                {"name": "录制索引", "id": "record_index"},
+                                {"name": "播放索引", "id": "replay_index"},
+                                {"name": "录制开始(0.1ms)", "id": "record_keyon"},
+                                {"name": "播放开始(0.1ms)", "id": "replay_keyon"},
+                                {"name": "持续时间差(0.1ms)", "id": "duration_offset"},
+                            ]
+                        )
+                    ], style={'display': 'none'}),
+                    html.Div(id='delay-histogram-selection-info', style={'display': 'none'})
+                ])
             
             logger.info(f"✅ 多算法模式初始化完成")
             return upload_style, upload_area, management_style, management_area, plot_fig, report_content
@@ -2953,7 +3317,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         
         # 使用MultiFileUploadHandler处理文件上传
         upload_handler = MultiFileUploadHandler()
-        file_list, status_text, new_store_data = upload_handler.process_uploaded_files(contents_list, filename_list, store_data)
+        file_list, status_text, new_store_data = upload_handler.process_uploaded_files(contents_list, filename_list, store_data, backend)
         
         return upload_style, management_style, file_list, status_text, new_store_data
     
@@ -3097,7 +3461,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                     dcc.Graph(id='key-delay-scatter-plot', figure=empty_fig, style={'display': 'none'}),
                     dcc.Graph(id='key-delay-zscore-scatter-plot', figure=empty_fig, style={'display': 'none'}),
                     dcc.Graph(id='hammer-velocity-delay-scatter-plot', figure=empty_fig, style={'display': 'none'}),
-                    dcc.Graph(id='key-hammer-velocity-scatter-plot', figure=empty_fig, style={'display': 'none'}),
+                    # key-hammer-velocity-scatter-plot 已删除（功能与按键-力度交互效应图重复）
                     dcc.Graph(id='offset-alignment-plot', figure=empty_fig, style={'display': 'none'}),
                     html.Div([
                         dash_table.DataTable(
@@ -3327,6 +3691,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
          Output('algorithm-management-status', 'children', allow_duplicate=True),
          Output('algorithm-list-trigger', 'data', allow_duplicate=True),
          Output('multi-algorithm-file-list', 'children', allow_duplicate=True),
+         Output('multi-algorithm-upload-status', 'children', allow_duplicate=True),
          Output('multi-algorithm-files-store', 'data', allow_duplicate=True)],
         [Input({'type': 'algorithm-toggle', 'index': dash.dependencies.ALL}, 'value'),
          Input({'type': 'algorithm-delete-btn', 'index': dash.dependencies.ALL}, 'n_clicks')],
@@ -3341,7 +3706,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         """处理算法管理操作（显示/隐藏、删除）"""
         backend = session_manager.get_backend(session_id)
         if not backend:
-            return no_update, no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update, no_update, no_update
         
         # 确保多算法模式已启用
         # 确保multi_algorithm_manager已初始化
@@ -3350,7 +3715,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         
         ctx = callback_context
         if not ctx.triggered:
-            return no_update, no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update, no_update, no_update
         
         trigger_id = ctx.triggered[0]['prop_id']
         
@@ -3367,7 +3732,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 algorithm_name = trigger_data.get('index', '')
             except (json.JSONDecodeError, KeyError):
                 logger.error(f"无法解析 trigger_id: {trigger_id}")
-                return no_update, no_update, no_update, no_update, no_update
+                return no_update, no_update, no_update, no_update, no_update, no_update
             
             if 'algorithm-toggle' in trigger_id:
                 # 根据开关的新值设置显示/隐藏状态（而不是切换）
@@ -3409,27 +3774,30 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                                 algorithm_deleted = True
                                 break
                     else:
-                        return no_update, no_update, no_update, no_update, no_update
+                        return no_update, no_update, no_update, no_update, no_update, no_update
                 else:
-                    return no_update, no_update, no_update, no_update, no_update
+                    return no_update, no_update, no_update, no_update, no_update, no_update
             else:
-                return no_update, no_update, no_update, no_update, no_update
+                return no_update, no_update, no_update, no_update, no_update, no_update
             
             # 重新获取算法列表
             algorithms = backend.get_all_algorithms()
             
             # 更新文件列表：如果删除了算法，从文件列表中移除对应的文件
+            # 无论是否删除了算法，都要更新文件列表，确保只显示未添加的文件
             file_list_children = no_update
+            upload_status_text = no_update
             updated_store_data = no_update
             
-            if algorithm_deleted and store_data and deleted_algorithm_filename:
-                # 获取所有已添加算法的文件名
-                added_filenames = set()
-                for alg_info in algorithms:
-                    added_filenames.add(alg_info.get('filename', ''))
-                
+            # 获取所有已添加算法的文件名
+            added_filenames = set()
+            for alg_info in algorithms:
+                added_filenames.add(alg_info.get('filename', ''))
+            
+            # 如果删除了算法，或者有store_data，都需要更新文件列表
+            if algorithm_deleted or (store_data and 'filenames' in store_data):
                 # 从store_data中获取文件列表
-                if 'contents' in store_data and 'filenames' in store_data:
+                if store_data and 'contents' in store_data and 'filenames' in store_data:
                     contents_list = store_data.get('contents', [])
                     filenames_list = store_data.get('filenames', [])
                     file_ids = store_data.get('file_ids', [])
@@ -3454,23 +3822,39 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                         'file_ids': filtered_file_ids
                     }
                     
-                    # 重新生成文件列表UI
-                    if filtered_contents and filtered_filenames:
-                        from ui.multi_file_upload_handler import MultiFileUploadHandler
-                        upload_handler = MultiFileUploadHandler()
-                        file_list_children, _, _ = upload_handler.process_uploaded_files(
-                            filtered_contents, 
-                            filtered_filenames, 
-                            updated_store_data
+                    # 直接生成文件列表UI，使用现有的文件ID，避免重复合并
+                    from ui.multi_file_upload_handler import MultiFileUploadHandler
+                    upload_handler = MultiFileUploadHandler()
+                    # 直接使用过滤后的文件列表生成UI，不调用process_uploaded_files避免重复合并
+                    file_items = []
+                    for i, (content, filename, file_id) in enumerate(zip(
+                        filtered_contents,
+                        filtered_filenames,
+                        filtered_file_ids
+                    )):
+                        # 确保不会显示已添加的文件（双重检查）
+                        if filename not in added_filenames:
+                            file_card = upload_handler.create_file_card(file_id, filename)
+                            file_items.append(file_card)
+                    
+                    file_list_children = html.Div(file_items) if file_items else []
+                    # 生成上传状态文本
+                    total_files = len(filtered_filenames)
+                    if total_files > 0:
+                        upload_status_text = html.Span(
+                            f"共 {total_files} 个文件，请为每个文件输入算法名称",
+                            style={'color': '#17a2b8', 'fontWeight': 'bold'}
                         )
                     else:
-                        # 如果没有文件了，返回空列表
-                        file_list_children = []
-                        updated_store_data = {'contents': [], 'filenames': [], 'file_ids': []}
+                        upload_status_text = html.Span("", style={'color': '#6c757d'})
+                elif algorithm_deleted:
+                    # 如果删除了算法但没有store_data，清空文件列表
+                    file_list_children = []
+                    upload_status_text = html.Span("", style={'color': '#6c757d'})
+                    updated_store_data = {'contents': [], 'filenames': [], 'file_ids': []}
             
             if not algorithms:
                 # 返回空列表和状态文本，以及触发更新
-                import time
                 empty_list = []  # 空列表，而不是 Div
                 status_text = html.Span("暂无算法，请上传文件", style={'color': '#6c757d'})
                 # 如果没有算法了，也清空文件列表
@@ -3478,7 +3862,9 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                     file_list_children = []
                 if updated_store_data == no_update:
                     updated_store_data = {'contents': [], 'filenames': [], 'file_ids': []}
-                return empty_list, status_text, time.time(), file_list_children, updated_store_data
+                if upload_status_text == no_update:
+                    upload_status_text = html.Span("", style={'color': '#6c757d'})
+                return empty_list, status_text, time.time(), file_list_children, upload_status_text, updated_store_data
             
             algorithm_items = []
             for alg_info in algorithms:
@@ -3538,14 +3924,40 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             algorithm_list = algorithm_items  # 直接返回列表，Dash会自动处理
             status_text = html.Span(f"共 {len(algorithms)} 个算法", style={'color': '#6c757d'})
             
-            # 更新触发 Store，以便触发算法列表更新
-            import time
-            return algorithm_list, status_text, time.time(), file_list_children, updated_store_data
+            # 如果没有更新上传状态文本，根据文件列表生成
+            if upload_status_text == no_update:
+                if updated_store_data != no_update and isinstance(updated_store_data, dict):
+                    total_files = len(updated_store_data.get('filenames', []))
+                    if total_files > 0:
+                        upload_status_text = html.Span(
+                            f"共 {total_files} 个文件，请为每个文件输入算法名称",
+                            style={'color': '#17a2b8', 'fontWeight': 'bold'}
+                        )
+                    else:
+                        upload_status_text = html.Span("", style={'color': '#6c757d'})
+                elif store_data and isinstance(store_data, dict):
+                    total_files = len(store_data.get('filenames', []))
+                    # 过滤掉已添加的文件
+                    added_filenames = set()
+                    for alg_info in algorithms:
+                        added_filenames.add(alg_info.get('filename', ''))
+                    filtered_count = sum(1 for f in store_data.get('filenames', []) if f not in added_filenames)
+                    if filtered_count > 0:
+                        upload_status_text = html.Span(
+                            f"共 {filtered_count} 个文件，请为每个文件输入算法名称",
+                            style={'color': '#17a2b8', 'fontWeight': 'bold'}
+                        )
+                    else:
+                        upload_status_text = html.Span("", style={'color': '#6c757d'})
+                else:
+                    upload_status_text = html.Span("", style={'color': '#6c757d'})
+            
+            return algorithm_list, status_text, time.time(), file_list_children, upload_status_text, updated_store_data
             
         except Exception as e:
             logger.error(f"❌ 处理算法管理操作失败: {e}")
             logger.error(traceback.format_exc())
-            return no_update, no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update, no_update, no_update
     
     # 按键延时分析表格点击回调 - 显示按键曲线对比（悬浮窗）
     @app.callback(
@@ -4273,4 +4685,134 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         
         # 其他情况，保持当前状态
         return current_style, []
+    
+    # ==================== 曲线对齐测试回调 ====================
+    @app.callback(
+        Output('curve-alignment-test-result', 'children'),
+        Input('btn-test-curve-alignment', 'n_clicks'),
+        State('session-id', 'data'),
+        prevent_initial_call=True
+    )
+    def handle_test_curve_alignment(n_clicks, session_id):
+        """处理曲线对齐测试按钮点击"""
+        if n_clicks is None or n_clicks == 0:
+            return html.Div("点击按钮开始测试", 
+                           className="text-muted text-center",
+                           style={'padding': '20px', 'fontSize': '14px'})
+        
+        try:
+            backend = session_manager.get_backend(session_id)
+            if not backend:
+                return html.Div([
+                    dbc.Alert("⚠️ 无法获取backend，请先上传数据", color="warning")
+                ])
+            
+            # 执行测试
+            test_result = backend.test_curve_alignment()
+            
+            if test_result is None or test_result.get('status') != 'success':
+                error_msg = test_result.get('message', '测试失败') if test_result else '测试失败'
+                return html.Div([
+                    dbc.Alert([
+                        html.I(className="fas fa-exclamation-triangle me-2"),
+                        html.Strong(f"测试失败: {error_msg}")
+                    ], color="danger")
+                ])
+            
+            result = test_result['result']
+            comparison_fig = test_result.get('comparison_figure')  # 对齐前后对比图（向后兼容）
+            all_stages_fig = test_result.get('all_stages_figure')  # 所有处理阶段的对比图
+            
+            # 构建结果显示
+            children = []
+            
+            # 所有处理阶段的对比图（主要显示）
+            if all_stages_fig is not None:
+                # 根据子图数量动态调整高度（每个子图约450px，加上间距）
+                # 通常有6个子图（阶段1-4，阶段5a，阶段5b），所以总高度约2700px
+                children.append(html.Div([
+                    html.H6("各处理阶段曲线对比（播放曲线对齐到录制曲线）", 
+                           className="mb-3",
+                           style={'color': '#2c3e50', 'fontWeight': 'bold'}),
+                    dcc.Graph(figure=all_stages_fig, style={'height': '2800px', 'minHeight': '2000px'})
+                ], className="mb-4"))
+            
+            # 相似度信息
+            children.append(
+                html.Div([
+                    html.H6("相似度结果", className="mb-3",
+                           style={'color': '#2c3e50', 'fontWeight': 'bold'}),
+                    dbc.Row([
+                        dbc.Col([
+                            dbc.Card([
+                                dbc.CardBody([
+                                    html.Small("上升沿相似度", className="text-muted d-block mb-1"),
+                                    html.H4(f"{result.get('rising_edge_similarity', 0):.3f}", 
+                                           style={'color': '#1f77b4', 'fontWeight': 'bold'})
+                                ])
+                            ], color="primary", outline=True)
+                        ], width=4),
+                        dbc.Col([
+                            dbc.Card([
+                                dbc.CardBody([
+                                    html.Small("下降沿相似度", className="text-muted d-block mb-1"),
+                                    html.H4(f"{result.get('falling_edge_similarity', 0):.3f}", 
+                                           style={'color': '#ff7f0e', 'fontWeight': 'bold'})
+                                ])
+                            ], color="warning", outline=True)
+                        ], width=4),
+                        dbc.Col([
+                            dbc.Card([
+                                dbc.CardBody([
+                                    html.Small("整体相似度", className="text-muted d-block mb-1"),
+                                    html.H4(f"{result.get('overall_similarity', 0):.3f}", 
+                                           style={'color': '#2ca02c', 'fontWeight': 'bold'})
+                                ])
+                            ], color="success", outline=True)
+                        ], width=4)
+                    ], className="mb-3"),
+                    dbc.Row([
+                        dbc.Col([
+                            html.Small(f"DTW距离: {result.get('dtw_distance', 0):.3f}", 
+                                      className="text-muted"),
+                            html.Br(),
+                            html.Small(f"测试数据: record_index={test_result.get('record_index', 'N/A')}, "
+                                      f"replay_index={test_result.get('replay_index', 'N/A')}", 
+                                      className="text-muted")
+                        ], width=12)
+                    ])
+                ], className="mb-4")
+            )
+            
+            # 对齐前后对比图
+            if comparison_fig:
+                children.append(
+                    html.Div([
+                        html.H6("对齐前后对比", className="mb-3",
+                               style={'color': '#2c3e50', 'fontWeight': 'bold'}),
+                        dcc.Graph(
+                            figure=comparison_fig,
+                            style={'height': '800px'}
+                        )
+                    ], className="mb-4")
+                )
+            else:
+                children.append(
+                    html.Div([
+                        dbc.Alert("⚠️ 无法生成对齐对比图", color="warning")
+                    ])
+                )
+            
+            return html.Div(children)
+            
+        except Exception as e:
+            logger.error(f"❌ 曲线对齐测试失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return html.Div([
+                dbc.Alert([
+                    html.I(className="fas fa-exclamation-triangle me-2"),
+                    html.Strong(f"测试失败: {str(e)}")
+                ], color="danger")
+            ])
 

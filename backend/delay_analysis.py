@@ -55,12 +55,12 @@ class DelayAnalysis:
                 logger.warning("⚠️ 没有偏移数据，无法进行分析")
                 return self._create_empty_result("没有偏移数据")
             
-            # 按按键ID分组延时数据（使用绝对值）
+            # 按按键ID分组延时数据（使用带符号的keyon_offset，保留正负值）
             key_groups = defaultdict(list)
             for item in offset_data:
                 key_id = item.get('key_id', 'N/A')
-                keyon_offset_abs = abs(item.get('keyon_offset', 0))  # 使用绝对值
-                key_groups[key_id].append(keyon_offset_abs)
+                keyon_offset = item.get('keyon_offset', 0)  # 使用带符号的keyon_offset（正数=延迟，负数=提前）
+                key_groups[key_id].append(keyon_offset)
             
             # 1. 描述性统计
             descriptive_stats = self._calculate_descriptive_stats(key_groups)

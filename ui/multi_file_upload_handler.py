@@ -119,7 +119,8 @@ class MultiFileUploadHandler:
         self, 
         contents_list: List[str], 
         filename_list: List[str], 
-        existing_store_data: Optional[Dict[str, Any]] = None
+        existing_store_data: Optional[Dict[str, Any]] = None,
+        backend: Optional[Any] = None
     ) -> Tuple[html.Div, html.Span, Dict[str, Any]]:
         """
         处理上传的文件，生成文件列表UI和更新后的store数据
@@ -179,20 +180,45 @@ class MultiFileUploadHandler:
                 existing_filenames = existing_store_data.get('filenames', [])
                 existing_file_ids = existing_store_data.get('file_ids', [])
                 
-                # 合并新文件和旧文件
-                new_store_data['contents'] = existing_contents + new_store_data['contents']
-                new_store_data['filenames'] = existing_filenames + new_store_data['filenames']
-                new_store_data['file_ids'] = existing_file_ids + new_store_data['file_ids']
+                # 获取所有已添加算法的文件名，过滤掉已添加的文件
+                added_filenames = set()
+                if backend and hasattr(backend, 'get_all_algorithms'):
+                    try:
+                        algorithms = backend.get_all_algorithms()
+                        for alg_info in algorithms:
+                            added_filenames.add(alg_info.get('filename', ''))
+                    except Exception as e:
+                        logger.warning(f"⚠️ 获取已添加算法列表失败: {e}")
                 
-                # 为所有文件（包括之前上传的）创建文件卡片
+                # 过滤掉已添加的文件，只保留未添加的文件
+                filtered_existing_contents = []
+                filtered_existing_filenames = []
+                filtered_existing_file_ids = []
+                
+                for i, filename in enumerate(existing_filenames):
+                    if filename not in added_filenames:
+                        if i < len(existing_contents):
+                            filtered_existing_contents.append(existing_contents[i])
+                        filtered_existing_filenames.append(filename)
+                        if i < len(existing_file_ids):
+                            filtered_existing_file_ids.append(existing_file_ids[i])
+                
+                # 合并新文件和过滤后的旧文件
+                new_store_data['contents'] = filtered_existing_contents + new_store_data['contents']
+                new_store_data['filenames'] = filtered_existing_filenames + new_store_data['filenames']
+                new_store_data['file_ids'] = filtered_existing_file_ids + new_store_data['file_ids']
+                
+                # 为所有文件（包括之前上传的，但已过滤掉已添加的）创建文件卡片
                 all_file_items = []
                 for i, (content, filename, file_id) in enumerate(zip(
                     new_store_data['contents'],
                     new_store_data['filenames'],
                     new_store_data['file_ids']
                 )):
-                    file_card = self.create_file_card(file_id, filename)
-                    all_file_items.append(file_card)
+                    # 再次检查，确保不会显示已添加的文件
+                    if filename not in added_filenames:
+                        file_card = self.create_file_card(file_id, filename)
+                        all_file_items.append(file_card)
                 
                 file_list = html.Div(all_file_items)
                 total_files = len(new_store_data['filenames'])
