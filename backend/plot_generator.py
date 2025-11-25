@@ -10,6 +10,8 @@ import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 import base64
 import io
+import math
+import traceback
 import numpy as np
 from typing import Optional, Tuple, Any, Dict
 from utils.logger import Logger
@@ -164,6 +166,7 @@ class PlotGenerator:
                 logger.info(f"📊 按键过滤后: 录制{len(valid_record_data)}个音符, 播放{len(valid_replay_data)}个音符")
             
             # 使用spmid模块生成瀑布图
+            # 注意：time_range 参数在 generate_waterfall_plot 中暂不支持，需要通过 update_layout 设置
             fig = spmid.plot_bar_plotly(valid_record_data, valid_replay_data)
             
             logger.info("✅ 瀑布图生成成功")
@@ -171,7 +174,6 @@ class PlotGenerator:
             
         except Exception as e:
             logger.error(f"瀑布图生成失败: {e}")
-            import traceback
             logger.error(traceback.format_exc())
             return self._create_empty_plot(f"生成瀑布图失败: {str(e)}")
     
@@ -381,7 +383,6 @@ class PlotGenerator:
             Any: Plotly图表对象
         """
         try:
-            import plotly.graph_objects as go
             
             descriptive_stats = analysis_result.get('descriptive_stats', [])
             if not descriptive_stats:
@@ -434,7 +435,6 @@ class PlotGenerator:
             
         except Exception as e:
             logger.error(f"生成箱线图失败: {e}")
-            import traceback
             logger.error(traceback.format_exc())
             return self._create_empty_plot(f"生成箱线图失败: {str(e)}")
     
@@ -449,7 +449,7 @@ class PlotGenerator:
             Any: Plotly图表对象
         """
         try:
-            import plotly.graph_objects as go
+
             
             descriptive_stats = analysis_result.get('descriptive_stats', [])
             if not descriptive_stats:
@@ -547,8 +547,6 @@ class PlotGenerator:
             Any: Plotly图表对象
         """
         try:
-            import plotly.graph_objects as go
-            import numpy as np
             
             scatter_data = analysis_result.get('scatter_data', {})
             velocities = scatter_data.get('velocities', [])
@@ -690,7 +688,6 @@ class PlotGenerator:
     
     def _create_algorithm_control_legends(self, fig, algorithm_names, algorithm_colors):
         """创建算法控制图注（独立的图例组）"""
-        import plotly.graph_objects as go
         
         for alg_idx, algorithm_name in enumerate(algorithm_names):
             algorithm_color = algorithm_colors[alg_idx % len(algorithm_colors)]
@@ -701,11 +698,11 @@ class PlotGenerator:
                 mode='markers',
                 name=algorithm_name,  # 算法名称
                 marker=dict(
-                    size=12,
+                    size=12,  # 未选中状态的默认大小
                     color=algorithm_color,
                     symbol='circle',  # 算法用圆形
-                    line=dict(width=2, color='black'),
-                    opacity=0.2  # 默认较透明（未选中状态）
+                    line=dict(width=1, color='rgba(0,0,0,0.3)'),
+                    opacity=0.4  # 默认较透明（未选中状态）
                 ),
                 legendgroup='algorithm_control',  # 算法控制图例组（独立）
                 visible=True,  # 图例始终可见
@@ -713,29 +710,57 @@ class PlotGenerator:
                 hovertemplate=f'<b>{algorithm_name}</b><br>点击选择/取消选择此算法<extra></extra>'
             ))
     
-    def _create_key_control_legends(self, fig, all_key_ids, key_color_hex):
-        """创建按键控制图注（独立的图例组）"""
-        import plotly.graph_objects as go
+    def _create_key_control_legends(self, fig, all_key_ids, key_color_hex, key_piece_stats=None):
+        """创建按键控制图注（独立的图例组）
+        
+        Args:
+            fig: Plotly图表对象
+            all_key_ids: 所有按键ID列表
+            key_color_hex: 按键颜色列表
+            key_piece_stats: 每个按键在每个曲子中的出现次数统计（可选）
+               格式: {key_id: {piece_name: count}}
+        """
         
         for key_idx, key_id in enumerate(all_key_ids):
             key_color = key_color_hex[key_idx % len(key_color_hex)]
+            
+            # 构建按键名称和hover信息，如果有统计信息则添加
+            if key_piece_stats and key_id in key_piece_stats:
+                piece_stats = key_piece_stats[key_id]
+                # 构建统计文本：例如 "曲子A: 5次, 曲子B: 3次"
+                stats_text = ', '.join([f'{piece}: {count}次' for piece, count in sorted(piece_stats.items())])
+                # 计算总次数
+                total_count = sum(piece_stats.values())
+                # 在图例名称中显示统计信息（格式：按键 {key_id} (曲子A:5, 曲子B:3)）
+                # 如果统计信息太长，可以只显示总次数
+                if len(stats_text) > 40:  # 如果统计文本太长，只显示总次数
+                    key_name = f'按键 {key_id} (总计:{total_count}次)'
+                else:
+                    key_name = f'按键 {key_id} ({stats_text})'
+                # 在hover中显示详细统计
+                hover_text = f'<b>按键 {key_id}</b><br>统计: {stats_text}<br>总计: {total_count}次<br>点击选择/取消选择此按键<extra></extra>'
+            else:
+                key_name = f'按键 {key_id}'
+                hover_text = f'<b>按键 {key_id}</b><br>点击选择/取消选择此按键<extra></extra>'
             
             fig.add_trace(go.Scatter(
                 x=[None],  # 使用None，不显示在图表上
                 y=[None],
                 mode='markers',
-                name=f'按键 {key_id}',
+                name=key_name,
                 marker=dict(
-                    size=15,
+                    size=14,  # 未选中状态的默认大小
                     color=key_color,
                     symbol='square',  # 按键用方形
-                    line=dict(width=2, color='black'),
-                    opacity=0.2  # 默认较透明（未选中状态）
+                    line=dict(width=1, color='rgba(0,0,0,0.3)'),
+                    opacity=0.4  # 默认较透明（未选中状态）
                 ),
                 legendgroup='key_control',  # 按键控制图例组（独立）
                 visible=True,  # 图例始终可见
                 showlegend=True,
-                hovertemplate=f'<b>按键 {key_id}</b><br>点击选择/取消选择此按键<extra></extra>'
+                hovertemplate=hover_text,
+                # 在customdata中存储统计信息，用于后续显示
+                customdata=[key_piece_stats.get(key_id, {}) if key_piece_stats else {}]
             ))
     
     def _add_data_traces_multi_algorithm(self, fig, all_key_ids, algorithm_internal_names, algorithm_display_names, algorithm_results, algorithm_colors):
@@ -750,7 +775,6 @@ class PlotGenerator:
             algorithm_results: 算法结果字典（key为内部名称）
             algorithm_colors: 算法颜色列表
         """
-        import plotly.graph_objects as go
         
         # 为每个算法的每个按键生成数据trace（只显示散点）
         for key_idx, key_id in enumerate(all_key_ids):
@@ -774,10 +798,26 @@ class PlotGenerator:
                 delays = data.get('delays', [])  # 相对延时
                 absolute_delays = data.get('absolute_delays', delays)  # 原始延时
                 mean_delay = data.get('mean_delay', 0)  # 整体平均延时
+                record_indices = data.get('record_indices', [])
+                replay_indices = data.get('replay_indices', [])
                 
                 if forces and delays:
+                    # 将力度转换为对数形式（log10）
+                    log_forces = [math.log10(f) if f > 0 else 0 for f in forces]
+                    
+                    # 构建customdata，包含索引信息用于点击事件
+                    # 格式: [key_id, algorithm_display_name, orig_force, abs_delay, rel_delay, record_idx, replay_idx]
+                    customdata_list = []
+                    for i, (orig_force, abs_delay, rel_delay) in enumerate(zip(forces, absolute_delays, delays)):
+                        record_idx = record_indices[i] if i < len(record_indices) else None
+                        replay_idx = replay_indices[i] if i < len(replay_indices) else None
+                        customdata_list.append([
+                            key_id, algorithm_display_name, orig_force, abs_delay, rel_delay,
+                            record_idx, replay_idx
+                        ])
+                    
                     fig.add_trace(go.Scatter(
-                        x=forces,
+                        x=log_forces,
                         y=delays,
                         mode='markers',
                         name=None,
@@ -790,21 +830,19 @@ class PlotGenerator:
                         # legendgroup使用显示名称，用于匹配算法控制图注
                         legendgroup=f'data_{algorithm_display_name}_key_{key_id}',
                         showlegend=False,
-                        # customdata中存储显示名称，用于匹配
-                        customdata=[[key_id, algorithm_display_name, abs_delay, rel_delay] 
-                                   for abs_delay, rel_delay in zip(absolute_delays, delays)],
+                        # customdata中存储显示名称、原始力度和索引，用于匹配、显示和点击事件
+                        customdata=customdata_list,
                         visible=False,  # 默认不显示，需要选择后才显示
                         hovertemplate=f'<b>{algorithm_display_name}</b><br>' +
                                      f'<b>按键 {key_id}</b><br>' +
-                                     '<b>力度</b>: %{x}<br>' +
+                                     '<b>力度</b>: %{customdata[2]:.0f} (log: %{x:.2f})<br>' +
                                      '<b>相对延时</b>: %{y:.2f}ms<br>' +
-                                     '<b>原始延时</b>: %{customdata[2]:.2f}ms<br>' +
+                                     '<b>原始延时</b>: %{customdata[3]:.2f}ms<br>' +
                                      f'<i>平均延时: {mean_delay:.2f}ms</i><extra></extra>'
                     ))
     
     def _add_data_traces_single_algorithm(self, fig, key_data, color_hex):
         """为单算法模式添加数据traces"""
-        import plotly.graph_objects as go
         
         key_ids = sorted(key_data.keys())
         
@@ -816,10 +854,27 @@ class PlotGenerator:
             delays = data.get('delays', [])  # 相对延时
             absolute_delays = data.get('absolute_delays', delays)  # 原始延时
             mean_delay = data.get('mean_delay', 0)  # 整体平均延时
+            record_indices = data.get('record_indices', [])
+            replay_indices = data.get('replay_indices', [])
             
             if forces and delays:
+                # 将力度转换为对数形式（log10）
+                
+                log_forces = [math.log10(f) if f > 0 else 0 for f in forces]
+                
+                # 构建customdata，包含索引信息用于点击事件
+                # 格式: [key_id, orig_force, abs_delay, rel_delay, record_idx, replay_idx]
+                customdata_list = []
+                for i, (orig_force, abs_delay, rel_delay) in enumerate(zip(forces, absolute_delays, delays)):
+                    record_idx = record_indices[i] if i < len(record_indices) else None
+                    replay_idx = replay_indices[i] if i < len(replay_indices) else None
+                    customdata_list.append([
+                        key_id, orig_force, abs_delay, rel_delay,
+                        record_idx, replay_idx
+                    ])
+                
                 fig.add_trace(go.Scatter(
-                    x=forces,
+                    x=log_forces,
                     y=delays,
                     mode='markers',
                     name=f'按键 {key_id}',
@@ -831,13 +886,12 @@ class PlotGenerator:
                     ),
                     legendgroup=f'key_{key_id}',
                     showlegend=True,
-                    customdata=[[key_id, abs_delay, rel_delay] 
-                               for abs_delay, rel_delay in zip(absolute_delays, delays)],
+                    customdata=customdata_list,
                     visible='legendonly',  # 默认隐藏，点击图例可显示
                     hovertemplate=f'<b>按键 {key_id}</b><br>' +
-                                 '<b>力度</b>: %{x}<br>' +
+                                 '<b>力度</b>: %{customdata[1]:.0f} (log: %{x:.2f})<br>' +
                                  '<b>相对延时</b>: %{y:.2f}ms<br>' +
-                                 '<b>原始延时</b>: %{customdata[1]:.2f}ms<br>' +
+                                 '<b>原始延时</b>: %{customdata[2]:.2f}ms<br>' +
                                  f'<i>平均延时: {mean_delay:.2f}ms</i><extra></extra>'
                 ))
     
@@ -852,8 +906,6 @@ class PlotGenerator:
             Any: Plotly图表对象
         """
         try:
-            import plotly.graph_objects as go
-            import numpy as np
             import matplotlib.cm as cm
             import matplotlib.colors as mcolors
             
@@ -908,12 +960,21 @@ class PlotGenerator:
                     
                     algorithm_display_names.append(display_name)
                 
-                # 收集所有按键ID
+                # 收集所有按键ID，并统计每个按键在每个曲子中的出现次数
                 all_key_ids = set()
-                for alg_result in algorithm_results.values():
+                key_piece_stats = {}  # 统计每个按键在每个曲子中的出现次数: {key_id: {piece_name: count}}
+                for alg_idx, algorithm_internal_name in enumerate(algorithm_internal_names):
+                    alg_result = algorithm_results[algorithm_internal_name]
+                    algorithm_display_name = algorithm_display_names[alg_idx]
                     interaction_plot_data = alg_result.get('interaction_plot_data', {})
                     key_data = interaction_plot_data.get('key_data', {})
-                    all_key_ids.update(key_data.keys())
+                    for key_id, data in key_data.items():
+                        all_key_ids.add(key_id)
+                        if key_id not in key_piece_stats:
+                            key_piece_stats[key_id] = {}
+                        # 获取该按键在这个曲子中的出现次数
+                        sample_count = data.get('sample_count', len(data.get('forces', [])))
+                        key_piece_stats[key_id][algorithm_display_name] = sample_count
                 
                 all_key_ids = sorted(all_key_ids)
                 n_keys = len(all_key_ids)
@@ -927,7 +988,7 @@ class PlotGenerator:
                 
                 # 创建控制图注（使用显示名称）
                 self._create_algorithm_control_legends(fig, algorithm_display_names, algorithm_colors)
-                self._create_key_control_legends(fig, all_key_ids, key_color_hex)
+                self._create_key_control_legends(fig, all_key_ids, key_color_hex, key_piece_stats)
                 
                 # 添加数据traces
                 # 传入内部名称列表和显示名称列表的映射
@@ -957,10 +1018,48 @@ class PlotGenerator:
                 # 添加数据traces
                 self._add_data_traces_single_algorithm(fig, key_data, color_hex)
             
+            # 生成对数刻度的标签（显示原始力度值，但坐标轴是对数形式）
+            # 收集所有力度值用于生成刻度
+            all_forces = []
+            if is_multi_algorithm and algorithm_results:
+                for alg_result in algorithm_results.values():
+                    interaction_plot_data = alg_result.get('interaction_plot_data', {})
+                    key_data = interaction_plot_data.get('key_data', {})
+                    for data in key_data.values():
+                        forces = data.get('forces', [])
+                        all_forces.extend([f for f in forces if f > 0])
+            else:
+                interaction_plot_data = analysis_result.get('interaction_plot_data', {})
+                key_data = interaction_plot_data.get('key_data', {})
+                for data in key_data.values():
+                    forces = data.get('forces', [])
+                    all_forces.extend([f for f in forces if f > 0])
+            
+            # 生成合理的刻度点（10的幂次）
+            tick_vals = []
+            tick_texts = []
+            tick_positions = []
+            if all_forces:
+                min_force = min(all_forces)
+                max_force = max(all_forces)
+                min_log = math.floor(math.log10(min_force))
+                max_log = math.ceil(math.log10(max_force))
+                tick_vals = [10**i for i in range(min_log, max_log + 1) if 10**i >= min_force and 10**i <= max_force]
+                tick_texts = [f"{int(v)}" for v in tick_vals]
+                tick_positions = [math.log10(v) for v in tick_vals]
+            
             # 删除title，因为UI区域已有标题
             fig.update_layout(
-                xaxis_title='力度（锤速）',
+                xaxis_title='锤速（log₁₀）',
                 yaxis_title='相对延时 (ms)',  # 使用相对延时
+                xaxis=dict(
+                    showgrid=True,
+                    gridcolor='lightgray',
+                    gridwidth=1,
+                    tickmode='array' if tick_positions else 'auto',
+                    tickvals=tick_positions if tick_positions else None,
+                    ticktext=tick_texts if tick_texts else None
+                ),
                 showlegend=True,
                 template='plotly_white',
                 height=600,
@@ -989,6 +1088,6 @@ class PlotGenerator:
             
         except Exception as e:
             logger.error(f"生成交互效应图失败: {e}")
-            import traceback
+
             logger.error(traceback.format_exc())
             return self._create_empty_plot(f"生成交互效应图失败: {str(e)}")

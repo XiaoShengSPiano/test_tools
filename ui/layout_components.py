@@ -105,6 +105,8 @@ def create_main_layout():
         dcc.Store(id='multi-algorithm-files-store', data={'contents': [], 'filenames': []}),
         # 触发算法列表更新的 Store（当算法添加/删除时更新）
         dcc.Store(id='algorithm-list-trigger', data=0),
+        # 存储当前点击的数据点信息，用于跳转到瀑布图
+        dcc.Store(id='current-clicked-point-info', data=None),
 
 
         # 页面标题
@@ -284,6 +286,13 @@ def create_main_layout():
             dcc.Tabs(id="main-tabs", value="waterfall-tab", children=[
                 dcc.Tab(label="🌊 瀑布图分析", value="waterfall-tab", children=[
                     html.Div(id="waterfall-content", style={'padding': '20px', 'width': '100%'}, children=[
+                        # 返回按钮 - 返回到报告界面
+                        html.Div([
+                            dbc.Button([
+                                html.I(className="fas fa-arrow-left me-2"),
+                                "返回报告界面"
+                            ], id='btn-return-to-report', color='secondary', size='md', className='mb-3')
+                        ], style={'marginBottom': '15px'}),
                         dcc.Graph(
                             id='main-plot', 
                             figure=empty_figure, 
@@ -455,6 +464,58 @@ def create_main_layout():
             )
         ], style={'display': 'none'}),
         html.Div(id='delay-histogram-selection-info', style={'display': 'none'}),
+        # 相对延时分布图相关组件
+        html.Div([
+            html.Div(id='relative-delay-distribution-subplot-title', style={'display': 'none'}),
+            html.Div(id='relative-delay-distribution-selection-info', style={'display': 'none'}),
+            dash_table.DataTable(
+                id='relative-delay-distribution-detail-table',
+                data=[],
+                columns=[
+                    {"name": "算法名称", "id": "algorithm_name"},
+                    {"name": "按键ID", "id": "key_id"},
+                    {"name": "相对延时(ms)", "id": "relative_delay_ms", "type": "numeric", "format": {"specifier": ".2f"}},
+                    {"name": "绝对延时(ms)", "id": "absolute_delay_ms", "type": "numeric", "format": {"specifier": ".2f"}},
+                    {"name": "录制索引", "id": "record_index"},
+                    {"name": "播放索引", "id": "replay_index"},
+                    {"name": "录制开始(0.1ms)", "id": "record_keyon"},
+                    {"name": "播放开始(0.1ms)", "id": "replay_keyon"},
+                    {"name": "持续时间差(0.1ms)", "id": "duration_offset"},
+                ],
+                page_action='none',
+                style_cell={
+                    'textAlign': 'center',
+                    'fontSize': '12px',
+                    'fontFamily': 'Arial, sans-serif',
+                    'padding': '8px',
+                    'overflow': 'hidden',
+                    'textOverflow': 'ellipsis',
+                },
+                style_header={
+                    'backgroundColor': '#f8f9fa',
+                    'fontWeight': 'bold',
+                    'border': '1px solid #dee2e6',
+                    'position': 'sticky',
+                    'top': 0,
+                    'zIndex': 1
+                },
+                style_data={
+                    'whiteSpace': 'normal',
+                    'height': 'auto',
+                },
+                style_table={
+                    'overflowX': 'auto',
+                    'overflowY': 'auto',
+                    'maxHeight': '600px',
+                }
+            )
+        ], style={'display': 'none'}, id='relative-delay-distribution-table-container'),
+        # 存储跳转来源图表ID，用于返回时滚动定位
+        dcc.Store(id='jump-source-plot-id', data=None),
+        # 滚动触发Store，用于客户端回调
+        dcc.Store(id='scroll-to-plot-trigger', data=None),
+        # 相对延时分布图滚动触发Store
+        dcc.Store(id='relative-delay-distribution-scroll-trigger', data=None),
         # 将模态框移到主布局顶层，确保在所有Tab中都能显示
         html.Div([
             html.Div([
@@ -562,6 +623,21 @@ def create_main_layout():
                             'overflowY': 'auto'
                         }),
                         html.Div([
+                            html.Button(
+                                "跳转到瀑布图",
+                                id="jump-to-waterfall-btn",
+                                className="btn btn-success",
+                                style={
+                                    'backgroundColor': '#28a745',
+                                    'borderColor': '#28a745',
+                                    'padding': '8px 20px',
+                                    'borderRadius': '5px',
+                                    'border': 'none',
+                                    'color': 'white',
+                                    'cursor': 'pointer',
+                                    'marginRight': '10px'
+                                }
+                            ),
                             html.Button(
                                 "关闭",
                                 id="close-key-curves-modal-btn",
@@ -815,7 +891,7 @@ def _create_single_algorithm_error_stats_row(algorithm, algorithm_name):
                             },
                             title="点击查看对应按键的曲线对比图"
                         ),
-                        html.P("最大延时", className="text-muted mb-0"),
+                        html.P("最大偏差", className="text-muted mb-0"),
                         html.Small("已匹配按键中的最大延时（点击数值查看曲线）", className="text-muted", style={'fontSize': '10px'})
                     ], className="text-center")
                 ], width=6),
@@ -834,8 +910,8 @@ def _create_single_algorithm_error_stats_row(algorithm, algorithm_name):
                             },
                             title="点击查看对应按键的曲线对比图"
                         ),
-                        html.P("最小延时", className="text-muted mb-0"),
-                        html.Small("已匹配按键中的最小延时（点击数值查看曲线）", className="text-muted", style={'fontSize': '10px'})
+                        html.P("最小偏差", className="text-muted mb-0"),
+                        html.Small("已匹配按键中的最小偏差（点击数值查看曲线）", className="text-muted", style={'fontSize': '10px'})
                     ], className="text-center")
                 ], width=6)
             ])
@@ -1391,11 +1467,7 @@ def create_report_layout(backend):
                                    style={'color': '#9c27b0', 'fontWeight': 'bold', 'borderBottom': '2px solid #9c27b0', 'paddingBottom': '5px'}),
                         ], width=12)
                     ]),
-                    dcc.Graph(
-                        id='relative-delay-distribution-plot',
-                        figure={},
-                        style={'height': 'auto', 'minHeight': '800px'}
-                    ),
+                    html.Div(id='relative-delay-distribution-container', children=[])
                 ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
             ], width=12)
         ]),

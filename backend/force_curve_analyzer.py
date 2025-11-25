@@ -103,6 +103,7 @@ class DerivativeDTWAligner:
                 return None
             
             # 2. 平滑处理（关键步骤：避免导数放大噪声）
+            #    注意：只对用于计算导数的值进行平滑，最终输出使用原始值
             if self.smooth_sigma > 0:
                 values1_smooth = gaussian_filter1d(values1, sigma=self.smooth_sigma)
                 values2_smooth = gaussian_filter1d(values2, sigma=self.smooth_sigma)
@@ -111,7 +112,7 @@ class DerivativeDTWAligner:
                 values2_smooth = values2.copy()
                 logger.warning("⚠️ 未启用平滑，导数可能被噪声放大")
             
-            # 3. 计算导数（斜率）
+            # 3. 计算导数（斜率）- 使用平滑后的值计算导数，但保持原始值用于最终输出
             derivatives1 = self._compute_derivative(times1, values1_smooth)
             derivatives2 = self._compute_derivative(times2, values2_smooth)
             
@@ -137,9 +138,10 @@ class DerivativeDTWAligner:
             
             # 6. 根据对齐路径重新采样原始曲线
             # 使用保守的对齐策略，尽量保持原始曲线形状
+            # 重要：使用原始值（values1, values2）而不是平滑后的值，以保持波峰和波谷
             aligned_result = self._resample_by_alignment_path_conservative(
-                times1, values1_smooth,
-                times2, values2_smooth,
+                times1, values1,  # 使用原始值，保持波峰和波谷
+                times2, values2,  # 使用原始值，保持波峰和波谷
                 alignment_path
             )
             
@@ -623,6 +625,7 @@ class DerivativeDTWAligner:
             #    对齐路径告诉我们：录制曲线的索引i与播放曲线的索引j对应
             #    我们需要将播放曲线映射到录制曲线的时间轴上
             
+            # 策略：使用插值来避免阶梯效应，但使用PchipInterpolator来保持波峰和波谷
             # 创建映射：录制曲线时间 -> 播放曲线值
             record_times_mapped = []
             replay_values_mapped = []
@@ -638,9 +641,6 @@ class DerivativeDTWAligner:
             if len(record_times_mapped) < 2:
                 return None
             
-            # 4. 使用插值将播放曲线映射到录制曲线的时间轴上
-            from scipy.interpolate import interp1d
-            
             # 转换为numpy数组并排序（插值需要排序的数据）
             record_times_mapped = np.array(record_times_mapped)
             replay_values_mapped = np.array(replay_values_mapped)
@@ -650,26 +650,37 @@ class DerivativeDTWAligner:
             record_times_mapped = record_times_mapped[sort_idx]
             replay_values_mapped = replay_values_mapped[sort_idx]
             
-            # 去除重复时间点
+            # 去除重复时间点（保留最后一个值，因为可能有多个对齐路径映射到同一时间点）
             unique_times, unique_indices = np.unique(record_times_mapped, return_index=True)
-            unique_values = replay_values_mapped[unique_indices]
+            # 对于重复的时间点，使用最后一个值（更接近对齐路径的末尾）
+            unique_values = []
+            for i, t in enumerate(unique_times):
+                # 找到所有对应这个时间点的值
+                mask = record_times_mapped == t
+                values_at_t = replay_values_mapped[mask]
+                # 使用最后一个值（对齐路径末尾的值通常更准确）
+                unique_values.append(values_at_t[-1])
+            unique_values = np.array(unique_values)
             
             if len(unique_times) < 2:
                 return None
             
-            # 创建插值函数
+            # 4. 使用PchipInterpolator进行插值，既保持平滑又保持波峰和波谷
+            from scipy.interpolate import PchipInterpolator, interp1d
+            
             try:
-                interp_replay = interp1d(unique_times, unique_values,
-                                        kind='linear', bounds_error=False, fill_value='extrapolate')
+                # 使用PchipInterpolator（分段三次Hermite插值）来保持单调性和波峰波谷
+                interp_replay = PchipInterpolator(unique_times, unique_values, extrapolate=True)
                 
                 # 在录制曲线的时间轴上插值播放曲线
                 aligned_replay_values = interp_replay(norm_times1)
                 
             except Exception as e:
-                logger.warning(f"⚠️ 保守插值失败，使用直接映射: {e}")
-                # 如果插值失败，回退到直接使用对齐路径中的值
-                # 但需要映射到录制曲线的时间轴
-                aligned_replay_values = np.interp(norm_times1, record_times_mapped, replay_values_mapped)
+                logger.warning(f"⚠️ PchipInterpolator失败，回退到线性插值: {e}")
+                # 如果PchipInterpolator失败，使用线性插值（虽然会稍微改变形状，但至少是平滑的）
+                interp_replay = interp1d(unique_times, unique_values,
+                                        kind='linear', bounds_error=False, fill_value='extrapolate')
+                aligned_replay_values = interp_replay(norm_times1)
             
             return {
                 'aligned_times': norm_times1,  # 使用录制曲线的时间轴
@@ -974,16 +985,16 @@ class ForceCurveAnalyzer:
             # 保存阶段2：平滑后的曲线（使用原始时间，不归一化）
             # 重要：必须保持原始时间轴，不能将起始点对齐，否则会丢失延迟信息
             before_alignment = alignment_result.get('before_alignment', {})
-            # 获取平滑后的值（从对齐结果中）
+            # 获取平滑后的值（从对齐结果中，仅用于可视化对比）
             values1_smooth = before_alignment.get('values1', values1)
             values2_smooth = before_alignment.get('values2', values2)
             # 使用原始时间，不归一化
             stage2_smoothed = {
                 'record_times': times1.copy(),  # 原始时间，不归一化
-                'record_values': values1_smooth,
+                'record_values': values1_smooth,  # 平滑后的值（仅用于可视化）
                 'replay_times': times2.copy(),  # 原始时间，不归一化
-                'replay_values': values2_smooth,
-                'description': '阶段2：平滑后的曲线（保持原始时间轴）'
+                'replay_values': values2_smooth,  # 平滑后的值（仅用于可视化）
+                'description': '阶段2：平滑后的曲线（仅用于计算导数，最终输出使用原始值）'
             }
             
             # 保存阶段3：导数曲线（使用原始时间，不归一化）
@@ -1727,9 +1738,10 @@ class ForceCurveAnalyzer:
                 logger.warning("⚠️ after_touch数据为空")
                 return None
             
-            # 平滑处理（减少抖动影响）
-            if self.smooth_sigma > 0 and len(values) > 1:
-                values = gaussian_filter1d(values, sigma=self.smooth_sigma)
+            # 注意：不在这里进行平滑处理
+            # 平滑处理只在计算导数时使用（在align_full_curves中），
+            # 最终输出的曲线应该保持原始特征（包括波峰和波谷）
+            # 这样可以确保处理后的曲线与原曲线在波峰和波谷上保持一致
             
             return (times, values)
             

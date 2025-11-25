@@ -740,7 +740,7 @@ class DelayAnalysis:
                 logger.warning("⚠️ 没有匹配数据，无法进行分析")
                 return self._create_empty_interaction_result("没有匹配数据")
             
-            # 提取数据：按键ID、锤速、延时
+            # 提取数据：按键ID、锤速、延时、索引
             key_force_delay_data = self._extract_key_force_delay_data(matched_pairs, offset_data)
             
             if not key_force_delay_data:
@@ -751,6 +751,8 @@ class DelayAnalysis:
             key_ids_list = [item[0] for item in key_force_delay_data]
             forces_list = [item[1] for item in key_force_delay_data]
             delays_list = [item[2] for item in key_force_delay_data]
+            record_indices_list = [item[3] for item in key_force_delay_data]
+            replay_indices_list = [item[4] for item in key_force_delay_data]
             
             # 1. 双因素ANOVA（按键 × 力度）
             two_way_anova = self._perform_two_way_anova(key_ids_list, forces_list, delays_list)
@@ -761,8 +763,11 @@ class DelayAnalysis:
             # 3. 分层回归分析
             stratified_regression = self._perform_stratified_regression(key_ids_list, forces_list, delays_list)
             
-            # 4. 生成交互效应图数据
-            interaction_plot_data = self._generate_interaction_plot_data(key_ids_list, forces_list, delays_list)
+            # 4. 生成交互效应图数据（包含索引信息）
+            interaction_plot_data = self._generate_interaction_plot_data(
+                key_ids_list, forces_list, delays_list, 
+                record_indices_list, replay_indices_list
+            )
             
             logger.info("✅ 按键-力度交互分析完成")
             
@@ -781,7 +786,7 @@ class DelayAnalysis:
             return self._create_empty_interaction_result(f"分析失败: {str(e)}")
     
     def _extract_key_force_delay_data(self, matched_pairs: List[Tuple], 
-                                      offset_data: List[Dict[str, Any]]) -> List[Tuple[int, float, float]]:
+                                      offset_data: List[Dict[str, Any]]) -> List[Tuple[int, float, float, int, int]]:
         """
         从匹配对和偏移数据中提取按键ID、力度（锤速）、延时数据
         
@@ -790,10 +795,12 @@ class DelayAnalysis:
             offset_data: 偏移对齐数据列表
             
         Returns:
-            List[Tuple[int, float, float]]: [(key_id, force, delay), ...]
+            List[Tuple[int, float, float, int, int]]: [(key_id, force, delay, record_idx, replay_idx), ...]
                 - key_id: 按键ID
                 - force: 力度（锤速值，单位：原始单位）
                 - delay: 延时（单位：ms，带符号）
+                - record_idx: 录制音符索引
+                - replay_idx: 回放音符索引
         """
         # 创建匹配对索引到偏移数据的映射
         offset_map = {}
@@ -838,7 +845,7 @@ class DelayAnalysis:
             if keyon_offset is not None:
                 # 转换为ms单位（带符号）
                 delay_ms = keyon_offset / 10.0
-                result.append((key_id, float(force), delay_ms))
+                result.append((key_id, float(force), delay_ms, record_idx, replay_idx))
         
         return result
     
@@ -1222,7 +1229,8 @@ class DelayAnalysis:
             }
     
     def _generate_interaction_plot_data(self, key_ids: List[int], forces: List[float], 
-                                       delays: List[float]) -> Dict[str, Any]:
+                                       delays: List[float], record_indices: List[int] = None,
+                                       replay_indices: List[int] = None) -> Dict[str, Any]:
         """
         生成交互效应图数据（使用相对延时）
         
@@ -1233,6 +1241,8 @@ class DelayAnalysis:
             key_ids: 按键ID列表
             forces: 力度值列表
             delays: 延时值列表
+            record_indices: 录制音符索引列表（可选）
+            replay_indices: 回放音符索引列表（可选）
             
         Returns:
             Dict[str, Any]: 交互效应图数据，包含每个按键的回归线数据
@@ -1248,11 +1258,16 @@ class DelayAnalysis:
             relative_delays = [delay - mean_delay for delay in delays]
             
             # 按按键分组
-            key_groups = defaultdict(lambda: {'forces': [], 'relative_delays': [], 'absolute_delays': []})
-            for key_id, force, rel_delay, abs_delay in zip(key_ids, forces, relative_delays, delays):
+            key_groups = defaultdict(lambda: {'forces': [], 'relative_delays': [], 'absolute_delays': [], 
+                                               'record_indices': [], 'replay_indices': []})
+            for i, (key_id, force, rel_delay, abs_delay) in enumerate(zip(key_ids, forces, relative_delays, delays)):
                 key_groups[key_id]['forces'].append(force)
                 key_groups[key_id]['relative_delays'].append(rel_delay)
                 key_groups[key_id]['absolute_delays'].append(abs_delay)
+                if record_indices and i < len(record_indices):
+                    key_groups[key_id]['record_indices'].append(record_indices[i])
+                if replay_indices and i < len(replay_indices):
+                    key_groups[key_id]['replay_indices'].append(replay_indices[i])
             
             interaction_data = {}
             
@@ -1260,6 +1275,8 @@ class DelayAnalysis:
                 forces_key = key_groups[key_id]['forces']
                 relative_delays_key = key_groups[key_id]['relative_delays']  # 使用相对延时
                 absolute_delays_key = key_groups[key_id]['absolute_delays']  # 保留原始延时用于参考
+                record_indices_key = key_groups[key_id].get('record_indices', [])
+                replay_indices_key = key_groups[key_id].get('replay_indices', [])
                 
                 if len(forces_key) < 2:
                     continue
@@ -1281,6 +1298,8 @@ class DelayAnalysis:
                     'forces': forces_key,
                     'delays': relative_delays_key,  # 使用相对延时
                     'absolute_delays': absolute_delays_key,  # 保留原始延时用于参考
+                    'record_indices': record_indices_key,  # 录制音符索引
+                    'replay_indices': replay_indices_key,  # 回放音符索引
                     'mean_delay': float(mean_delay),  # 整体平均延时
                     'regression_line': {
                         'force': [float(f) for f in force_line],

@@ -1630,10 +1630,17 @@ class PianoAnalysisBackend:
                 # 将延时从0.1ms转换为ms（带符号，用于Z-Score计算）
                 delay_ms = keyon_offset / 10.0
                 
+                # 跳过锤速为0或负数的数据点（对数无法处理）
+                if hammer_velocity <= 0:
+                    continue
+                
+                # 获取按键ID
+                key_id = record_note.id if hasattr(record_note, 'id') else None
+                
                 hammer_velocities.append(hammer_velocity)
                 delays_ms.append(delay_ms)
-                # 存储record_idx和replay_idx，用于点击事件识别
-                scatter_customdata.append([record_idx, replay_idx])
+                # 存储record_idx、replay_idx和key_id，用于点击事件识别和显示
+                scatter_customdata.append([record_idx, replay_idx, key_id])
             
             if not hammer_velocities:
                 logger.warning("⚠️ 没有有效的散点图数据")
@@ -1641,6 +1648,7 @@ class PianoAnalysisBackend:
             
             # 计算Z-Score（与按键与延时Z-Score散点图相同的计算方式）
             import numpy as np
+            import math
             me_0_1ms = self.get_mean_error()  # 总体均值（0.1ms单位，带符号）
             std_0_1ms = self.get_standard_deviation()  # 总体标准差（0.1ms单位，带符号）
             
@@ -1654,20 +1662,24 @@ class PianoAnalysisBackend:
             else:
                 z_scores = [0.0] * len(delays_ms)
             
+            # 将锤速转换为对数形式（类似分贝）：log10(velocity)
+            # 使用log10而不是20*log10，因为这是相对值，不是绝对分贝
+            log_velocities = [math.log10(v) for v in hammer_velocities]
+            
             # 创建Plotly散点图
             import plotly.graph_objects as go
             
             fig = go.Figure()
             
-            # 添加散点图数据（y轴使用Z-Score值）
-            # customdata格式: [delay_ms, record_idx, replay_idx]
-            # 第一个元素用于hover显示，后两个用于点击事件识别
-            combined_customdata = [[delay_ms, record_idx, replay_idx] 
-                                  for delay_ms, (record_idx, replay_idx) 
-                                  in zip(delays_ms, scatter_customdata)]
+            # 添加散点图数据（x轴使用对数形式的锤速，y轴使用Z-Score值）
+            # customdata格式: [delay_ms, original_velocity, record_idx, replay_idx, key_id]
+            # 第一个元素用于hover显示延时，第二个元素用于hover显示原始锤速，后三个用于点击事件识别和显示
+            combined_customdata = [[delay_ms, orig_vel, record_idx, replay_idx, key_id] 
+                                  for delay_ms, orig_vel, (record_idx, replay_idx, key_id) 
+                                  in zip(delays_ms, hammer_velocities, scatter_customdata)]
             
             fig.add_trace(go.Scatter(
-                x=hammer_velocities,
+                x=log_velocities,
                 y=z_scores,
                 mode='markers',
                 name='匹配对',
@@ -1677,15 +1689,15 @@ class PianoAnalysisBackend:
                     opacity=0.6,
                     line=dict(width=1, color='#b71c1c')
                 ),
-                hovertemplate='锤速: %{x}<br>延时: %{customdata[0]:.2f}ms<br>Z-Score: %{y:.2f}<extra></extra>',
+                hovertemplate='按键: %{customdata[4]}<br>锤速: %{customdata[1]:.0f} (log: %{x:.2f})<br>延时: %{customdata[0]:.2f}ms<br>Z-Score: %{y:.2f}<extra></extra>',
                 customdata=combined_customdata
             ))
             
             # 添加Z-Score参考线（与按键与延时Z-Score散点图相同）
-            if len(hammer_velocities) > 0:
-                # 获取x轴范围
-                x_min = min(hammer_velocities) if hammer_velocities else 0
-                x_max = max(hammer_velocities) if hammer_velocities else 100
+            if len(log_velocities) > 0:
+                # 获取x轴范围（对数形式）
+                x_min = min(log_velocities)
+                x_max = max(log_velocities)
                 
                 # 添加Z=0的水平虚线（均值线）
                 fig.add_trace(go.Scatter(
@@ -1730,14 +1742,31 @@ class PianoAnalysisBackend:
                 ))
             
             # 更新布局
+            # 生成对数刻度的标签（显示原始锤速值，但坐标轴是对数形式）
+            if len(hammer_velocities) > 0:
+                min_vel = min(hammer_velocities)
+                max_vel = max(hammer_velocities)
+                # 生成合理的刻度点（10的幂次）
+                min_log = math.floor(math.log10(min_vel))
+                max_log = math.ceil(math.log10(max_vel))
+                tick_vals = [10**i for i in range(min_log, max_log + 1) if 10**i >= min_vel and 10**i <= max_vel]
+                tick_texts = [f"{int(v)}" for v in tick_vals]
+                tick_positions = [math.log10(v) for v in tick_vals]
+            else:
+                tick_positions = []
+                tick_texts = []
+            
             fig.update_layout(
                 # 删除title，因为UI区域已有标题
-                xaxis_title='锤速',
+                xaxis_title='锤速（log₁₀）',
                 yaxis_title='Z-Score（标准化延时）',
                 xaxis=dict(
                     showgrid=True,
                     gridcolor='lightgray',
-                    gridwidth=1
+                    gridwidth=1,
+                    tickmode='array' if tick_positions else 'auto',
+                    tickvals=tick_positions if tick_positions else None,
+                    ticktext=tick_texts if tick_texts else None
                 ),
                 yaxis=dict(
                     showgrid=True,
@@ -2221,11 +2250,11 @@ class PianoAnalysisBackend:
             record_note, replay_note = notes
             
             # 创建曲线分析器
-            # 对于平滑曲线，使用更严格的DTW窗口约束，避免过度扭曲
+            # 减少平滑强度，保持波峰和波谷特征
             analyzer = ForceCurveAnalyzer(
-                smooth_sigma=1.0,
+                smooth_sigma=0.3,  # 大幅减小平滑强度，从1.0改为0.3，更好地保持波峰和波谷
                 dtw_distance_metric='manhattan',
-                dtw_window_size_ratio=0.2  # 减小窗口大小，从0.5改为0.2，避免过度扭曲平滑曲线
+                dtw_window_size_ratio=0.3  # 适中的窗口大小，平衡对齐效果和形状保持
             )
             
             # 对比曲线（播放曲线对齐到录制曲线）
@@ -2358,6 +2387,95 @@ class PianoAnalysisBackend:
         
         logger.info(f"✅ 生成多算法散点图点击的详细曲线图，算法={algorithm_name}, record_index={record_index}, replay_index={replay_index}")
         return detail_figure1, detail_figure2, detail_figure_combined
+    
+    def get_note_time_range_for_waterfall(self, algorithm_name: Optional[str], record_index: int, replay_index: int, margin_ms: float = 500.0) -> Optional[Tuple[float, float]]:
+        """
+        根据record_index和replay_index获取音符的时间范围，用于调整瀑布图显示
+        
+        Args:
+            algorithm_name: 算法名称（多算法模式需要，单算法模式为None）
+            record_index: 录制音符索引
+            replay_index: 播放音符索引
+            margin_ms: 时间范围的前后边距（毫秒），默认500ms
+        
+        Returns:
+            Optional[Tuple[float, float]]: (start_time_ms, end_time_ms) 或 None
+        """
+        try:
+            if algorithm_name:
+                # 多算法模式
+                if not self.multi_algorithm_mode or not self.multi_algorithm_manager:
+                    logger.warning("⚠️ 不在多算法模式，无法获取音符时间范围")
+                    return None
+                
+                algorithm = self.multi_algorithm_manager.get_algorithm(algorithm_name)
+                if not algorithm or not algorithm.analyzer or not algorithm.analyzer.note_matcher:
+                    logger.warning(f"⚠️ 算法 '{algorithm_name}' 不存在或没有分析器")
+                    return None
+                
+                matched_pairs = algorithm.analyzer.matched_pairs
+            else:
+                # 单算法模式
+                if not self.analyzer or not self.analyzer.note_matcher:
+                    logger.warning("⚠️ 分析器或匹配器不存在，无法获取音符时间范围")
+                    return None
+                
+                matched_pairs = self.analyzer.matched_pairs
+            
+            # 从matched_pairs中查找对应的Note对象
+            record_note = None
+            replay_note = None
+            
+            for r_idx, p_idx, r_note, p_note in matched_pairs:
+                if r_idx == record_index and p_idx == replay_index:
+                    record_note = r_note
+                    replay_note = p_note
+                    break
+            
+            if record_note is None or replay_note is None:
+                logger.warning(f"⚠️ 未找到匹配对: record_index={record_index}, replay_index={replay_index}")
+                return None
+            
+            # 计算音符的时间（单位：0.1ms）
+            # 使用keyon时间作为中心点
+            record_keyon = record_note.after_touch.index[0] + record_note.offset if hasattr(record_note, 'after_touch') and not record_note.after_touch.empty else record_note.offset
+            replay_keyon = replay_note.after_touch.index[0] + replay_note.offset if hasattr(replay_note, 'after_touch') and not replay_note.after_touch.empty else replay_note.offset
+            
+            # 转换为毫秒
+            record_keyon_ms = record_keyon / 10.0
+            replay_keyon_ms = replay_keyon / 10.0
+            
+            # 计算按键持续时间（keyoff - keyon）
+            record_keyoff = record_note.after_touch.index[-1] + record_note.offset if hasattr(record_note, 'after_touch') and not record_note.after_touch.empty else record_note.offset
+            replay_keyoff = replay_note.after_touch.index[-1] + replay_note.offset if hasattr(replay_note, 'after_touch') and not replay_note.after_touch.empty else replay_note.offset
+            
+            record_keyoff_ms = record_keyoff / 10.0
+            replay_keyoff_ms = replay_keyoff / 10.0
+            
+            # 计算按键持续时间（取两个按键中较长的）
+            record_duration = record_keyoff_ms - record_keyon_ms
+            replay_duration = replay_keyoff_ms - replay_keyon_ms
+            note_duration = max(record_duration, replay_duration)
+            
+            # 计算中心时间（取两个音符keyon时间的中间值）
+            center_time_ms = (record_keyon_ms + replay_keyon_ms) / 2.0
+            
+            # 动态调整时间范围：确保能看到按键本身以及周围的数据点
+            # 基础边距 + 按键持续时间的倍数，确保能看到按键前后多个按键
+            # 最小边距为margin_ms，如果按键持续时间较长，则增加边距（按键持续时间的3倍）
+            # 这样即使按键很长，也能看到前后足够的上下文
+            dynamic_margin = max(margin_ms, note_duration * 3.0)
+            
+            # 计算时间范围
+            start_time_ms = max(0, center_time_ms - dynamic_margin)
+            end_time_ms = center_time_ms + dynamic_margin
+            
+            logger.info(f"✅ 计算音符时间范围: center={center_time_ms:.1f}ms, range=[{start_time_ms:.1f}, {end_time_ms:.1f}]ms")
+            return (start_time_ms, end_time_ms)
+            
+        except Exception as e:
+            logger.error(f"❌ 获取音符时间范围失败: {e}")
+            return None
     
     def generate_multi_algorithm_detail_plot_by_index(
         self, 
@@ -3612,6 +3730,90 @@ class PianoAnalysisBackend:
                 'status': 'error',
                 'message': f'分析失败: {str(e)}'
             }
+    
+    def get_relative_delay_range_data_points_by_subplot(
+        self, 
+        display_name: str, 
+        filename_display: str, 
+        relative_delay_min_ms: float, 
+        relative_delay_max_ms: float
+    ) -> List[Dict[str, Any]]:
+        """
+        根据子图信息获取指定相对延时范围内的数据点详情
+        
+        Args:
+            display_name: 算法显示名称（用于识别算法组）
+            filename_display: 文件名显示（'汇总' 或具体文件名）
+            relative_delay_min_ms: 最小相对延时值（ms）
+            relative_delay_max_ms: 最大相对延时值（ms）
+            
+        Returns:
+            List[Dict[str, Any]]: 该相对延时范围内的数据点列表
+        """
+        try:
+            if not self.multi_algorithm_mode or not self.multi_algorithm_manager:
+                return []
+            
+            all_algorithms = self.multi_algorithm_manager.get_all_algorithms()
+            filtered_data = []
+            
+            for algorithm in all_algorithms:
+                if not algorithm.is_ready():
+                    continue
+                
+                # 检查算法是否属于指定的display_name组
+                if algorithm.metadata.display_name != display_name:
+                    continue
+                
+                # 如果是汇总图，包含该组所有算法；否则只包含指定文件名的算法
+                if filename_display != '汇总':
+                    # 从algorithm_name中提取文件名部分
+                    algorithm_filename = algorithm.metadata.filename
+                    if '_' in algorithm.metadata.algorithm_name:
+                        parts = algorithm.metadata.algorithm_name.rsplit('_', 1)
+                        if len(parts) == 2:
+                            algorithm_filename = parts[1]
+                    
+                    if algorithm_filename != filename_display:
+                        continue
+                
+                if not algorithm.analyzer or not algorithm.analyzer.note_matcher:
+                    continue
+                
+                # 获取偏移数据
+                offset_data = algorithm.analyzer.get_offset_alignment_data()
+                if not offset_data:
+                    continue
+                
+                algorithm_name = algorithm.metadata.algorithm_name
+                
+                # 计算该算法的平均延时（用于计算相对延时）
+                absolute_delays_ms = [item.get('keyon_offset', 0.0) / 10.0 for item in offset_data]
+                if not absolute_delays_ms:
+                    continue
+                
+                mean_delay_ms = sum(absolute_delays_ms) / len(absolute_delays_ms)
+                
+                # 筛选出指定相对延时范围内的数据点
+                for item in offset_data:
+                    absolute_delay_ms = item.get('keyon_offset', 0.0) / 10.0
+                    relative_delay_ms = absolute_delay_ms - mean_delay_ms
+                    
+                    if relative_delay_min_ms <= relative_delay_ms <= relative_delay_max_ms:
+                        item_copy = item.copy()
+                        item_copy['absolute_delay_ms'] = absolute_delay_ms
+                        item_copy['relative_delay_ms'] = relative_delay_ms
+                        item_copy['delay_ms'] = relative_delay_ms  # 保持兼容性
+                        item_copy['algorithm_name'] = algorithm_name
+                        filtered_data.append(item_copy)
+            
+            return filtered_data
+            
+        except Exception as e:
+            logger.error(f"获取相对延时范围数据点失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return []
     
     def generate_relative_delay_distribution_plot(self) -> Any:
         """

@@ -1472,10 +1472,17 @@ class MultiAlgorithmPlotGenerator:
                         # 将延时从0.1ms转换为ms（带符号，用于Z-Score计算）
                         delay_ms = keyon_offset / 10.0
                         
+                        # 跳过锤速为0或负数的数据点（对数无法处理）
+                        if hammer_velocity <= 0:
+                            continue
+                        
+                        # 获取按键ID
+                        key_id = record_note.id if hasattr(record_note, 'id') else None
+                        
                         hammer_velocities.append(hammer_velocity)
                         delays_ms.append(delay_ms)
-                        # 存储record_idx、replay_idx和algorithm_name，用于点击事件识别
-                        scatter_customdata.append([record_idx, replay_idx, algorithm_name])
+                        # 存储record_idx、replay_idx、algorithm_name和key_id，用于点击事件识别和显示
+                        scatter_customdata.append([record_idx, replay_idx, algorithm_name, key_id])
                     
                     if not hammer_velocities:
                         logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有有效的散点图数据，跳过")
@@ -1483,6 +1490,7 @@ class MultiAlgorithmPlotGenerator:
                     
                     # 计算Z-Score（与按键与延时Z-Score散点图相同的计算方式）
                     import numpy as np
+                    import math
                     me_0_1ms = algorithm.analyzer.get_mean_error() if hasattr(algorithm.analyzer, 'get_mean_error') else 0.0
                     std_0_1ms = algorithm.analyzer.get_standard_deviation() if hasattr(algorithm.analyzer, 'get_standard_deviation') else 0.0
                     
@@ -1496,17 +1504,20 @@ class MultiAlgorithmPlotGenerator:
                     else:
                         z_scores = [0.0] * len(delays_ms)
                     
+                    # 将锤速转换为对数形式（类似分贝）：log10(velocity)
+                    log_velocities = [math.log10(v) for v in hammer_velocities]
+                    
                     color = colors[alg_idx % len(colors)]
                     
-                    # 添加散点图数据（y轴使用Z-Score值）
-                    # customdata格式: [delay_ms, record_idx, replay_idx, algorithm_name]
-                    # 第一个元素用于hover显示，后三个用于点击事件识别
-                    combined_customdata = [[delay_ms, record_idx, replay_idx, alg_name] 
-                                          for delay_ms, (record_idx, replay_idx, alg_name) 
-                                          in zip(delays_ms, scatter_customdata)]
+                    # 添加散点图数据（x轴使用对数形式的锤速，y轴使用Z-Score值）
+                    # customdata格式: [delay_ms, original_velocity, record_idx, replay_idx, algorithm_name, key_id]
+                    # 第一个元素用于hover显示延时，第二个元素用于hover显示原始锤速，后四个用于点击事件识别和显示
+                    combined_customdata = [[delay_ms, orig_vel, record_idx, replay_idx, alg_name, key_id] 
+                                          for delay_ms, orig_vel, (record_idx, replay_idx, alg_name, key_id) 
+                                          in zip(delays_ms, hammer_velocities, scatter_customdata)]
                     
                     fig.add_trace(go.Scatter(
-                        x=hammer_velocities,
+                        x=log_velocities,
                         y=z_scores,
                         mode='markers',
                         name=f'{algorithm_name} - Z-Score',
@@ -1518,25 +1529,28 @@ class MultiAlgorithmPlotGenerator:
                         ),
                         legendgroup=algorithm_name,
                         showlegend=True,
-                        hovertemplate=f'算法: {algorithm_name}<br>锤速: %{{x}}<br>延时: %{{customdata[0]:.2f}}ms<br>Z-Score: %{{y:.2f}}<extra></extra>',
+                        hovertemplate=f'算法: {algorithm_name}<br>按键: %{{customdata[5]}}<br>锤速: %{{customdata[1]:.0f}} (log: %{{x:.2f}})<br>延时: %{{customdata[0]:.2f}}ms<br>Z-Score: %{{y:.2f}}<extra></extra>',
                         customdata=combined_customdata
                     ))
                     
                     # 添加Z-Score参考线（与按键与延时Z-Score散点图相同）
-                    if len(hammer_velocities) > 0:
-                        # 获取x轴范围（使用所有算法的范围）
-                        all_velocities = []
+                    if len(log_velocities) > 0:
+                        # 获取x轴范围（使用所有算法的对数范围）
+                        all_log_velocities = []
                         for alg in ready_algorithms:
                             try:
                                 matched_pairs = alg.analyzer.note_matcher.get_matched_pairs()
                                 for record_idx, replay_idx, record_note, replay_note in matched_pairs:
                                     if len(replay_note.hammers) > 0 and len(replay_note.hammers.values) > 0:
-                                        all_velocities.append(replay_note.hammers.values[0])
+                                        vel = replay_note.hammers.values[0]
+                                        if vel > 0:
+                                            all_log_velocities.append(math.log10(vel))
                             except:
                                 continue
                         
-                        x_min = min(all_velocities) if all_velocities else 0
-                        x_max = max(all_velocities) if all_velocities else 100
+                        # 对数形式
+                        x_min = min(all_log_velocities) if all_log_velocities else 0
+                        x_max = max(all_log_velocities) if all_log_velocities else 2
                         
                         # 添加Z=0的水平虚线（均值线）
                         fig.add_trace(go.Scatter(
@@ -1591,14 +1605,43 @@ class MultiAlgorithmPlotGenerator:
                     continue
             
             # 设置布局
+            # 生成对数刻度的标签（显示原始锤速值，但坐标轴是对数形式）
+            all_velocities_for_ticks = []
+            for alg in ready_algorithms:
+                try:
+                    matched_pairs = alg.analyzer.note_matcher.get_matched_pairs()
+                    for record_idx, replay_idx, record_note, replay_note in matched_pairs:
+                        if len(replay_note.hammers) > 0 and len(replay_note.hammers.values) > 0:
+                            vel = replay_note.hammers.values[0]
+                            if vel > 0:
+                                all_velocities_for_ticks.append(vel)
+                except:
+                    continue
+            
+            if all_velocities_for_ticks:
+                min_vel = min(all_velocities_for_ticks)
+                max_vel = max(all_velocities_for_ticks)
+                # 生成合理的刻度点（10的幂次）
+                min_log = math.floor(math.log10(min_vel))
+                max_log = math.ceil(math.log10(max_vel))
+                tick_vals = [10**i for i in range(min_log, max_log + 1) if 10**i >= min_vel and 10**i <= max_vel]
+                tick_texts = [f"{int(v)}" for v in tick_vals]
+                tick_positions = [math.log10(v) for v in tick_vals]
+            else:
+                tick_positions = []
+                tick_texts = []
+            
             fig.update_layout(
                 # 删除title，因为UI区域已有标题
-                xaxis_title='锤速',
+                xaxis_title='锤速（log₁₀）',
                 yaxis_title='Z-Score（标准化延时）',
                 xaxis=dict(
                     showgrid=True,
                     gridcolor='lightgray',
-                    gridwidth=1
+                    gridwidth=1,
+                    tickmode='array' if tick_positions else 'auto',
+                    tickvals=tick_positions if tick_positions else None,
+                    ticktext=tick_texts if tick_texts else None
                 ),
                 yaxis=dict(
                     showgrid=True,
@@ -2227,6 +2270,20 @@ class MultiAlgorithmPlotGenerator:
                 hist, bin_edges = np.histogram(delays_array, bins=50, density=False)
                 bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
                 
+                # 为每个bin创建customdata，包含子图信息
+                customdata_list = []
+                for i, bin_center in enumerate(bin_centers):
+                    bin_left = bin_edges[i]
+                    bin_right = bin_edges[i + 1]
+                    customdata_list.append([
+                        subplot_idx,  # 子图索引
+                        display_name,  # 算法显示名称
+                        filename_display,  # 文件名显示
+                        bin_center,  # bin中心值
+                        bin_left,  # bin左边界
+                        bin_right  # bin右边界
+                    ])
+                
                 # 计算密度曲线（KDE）
                 try:
                     kde = stats.gaussian_kde(delays_array)
@@ -2251,7 +2308,8 @@ class MultiAlgorithmPlotGenerator:
                         ),
                         opacity=0.7,
                         showlegend=False,  # 不在图注中显示，因为每个子图独立
-                        hovertemplate=f'相对延时: %{{x:.2f}} ms<br>频数: %{{y}}<extra></extra>'
+                        hovertemplate=f'相对延时: %{{x:.2f}} ms<br>频数: %{{y}}<extra></extra>',
+                        customdata=customdata_list  # 添加customdata用于点击回调
                     ),
                     row=subplot_idx,
                     col=1
