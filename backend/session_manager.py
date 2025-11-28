@@ -56,7 +56,7 @@ class SessionManager:
             # 如果没有提供session_id，创建新会话
             if not session_id:
                 session_id = str(uuid.uuid4())
-                logger.info(f"🆕 创建新会话: {session_id}")
+                logger.info(f"创建新会话: {session_id}")
             
             # 如果会话不存在，创建新的backend实例
             if session_id not in self.backends:

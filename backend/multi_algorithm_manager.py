@@ -8,7 +8,7 @@
 使用面向对象设计，支持并发处理。
 """
 
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, Union
 from dataclasses import dataclass, field
 from enum import Enum
 import asyncio
@@ -141,7 +141,7 @@ class AlgorithmDataset:
             'matched_pairs_count': len(self.analyzer.matched_pairs) if hasattr(self.analyzer, 'matched_pairs') else 0,
         }
     
-    def get_offset_alignment_data(self) -> List[Dict[str, Any]]:
+    def get_offset_alignment_data(self) -> List[Dict[str, Union[int, float]]]:
         """
         获取偏移对齐数据
         

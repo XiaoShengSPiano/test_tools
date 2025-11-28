@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 曲线分析器 - 使用DTW算法对齐after_touch曲线

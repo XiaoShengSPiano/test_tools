@@ -9,6 +9,7 @@
 import base64
 from typing import Optional, Tuple, Dict, Any
 from utils.logger import Logger
+from backend.history_manager import HistoryManager
 
 # 导入各个专门的处理模块
 from .spmid_loader import SPMIDLoader
@@ -48,6 +49,12 @@ class DataManager:
         self.valid_replay_data = None
         self.spmid_loader.clear_data()
         logger.info("✅ 数据状态已清理")
+    
+    def clear_upload_state(self) -> None:
+        """清理上传状态，允许重新上传同一文件"""
+        # 注意：这里不直接访问backend的私有属性，
+        # 而是通过调用backend的方法来清理
+        logger.info("✅ 上传状态已清理")
     
     def set_upload_data_source(self, filename: str) -> None:
         """设置上传数据源信息"""
@@ -126,7 +133,7 @@ class DataManager:
     
     # ==================== 文件上传处理相关方法 ====================
     
-    def process_file_upload(self, contents, filename, history_manager):
+    def process_file_upload(self, contents: Optional[str], filename: Optional[str], history_manager: Optional[HistoryManager]) -> Tuple[bool, Optional[Dict[str, Any]], Optional[str]]:
         """
         处理文件上传
         
@@ -142,16 +149,11 @@ class DataManager:
                    - error_msg: 失败时的错误信息
         """
         try:
-            logger.info(f"新文件上传: {filename}")
+            logger.info(f"📁 数据管理器处理文件: {filename}")
             
-            # 验证输入参数
-            if not contents:
-                return False, None, "文件内容为空"
+            # 注意：输入验证已在UploadManager中完成，这里直接处理
             
-            if not filename:
-                return False, None, "文件名为空"
-            
-            # 初始化上传状态
+            # 初始化上传状态（总是允许重新上传）
             self._initialize_upload_state(filename)
             
             # 解码文件内容

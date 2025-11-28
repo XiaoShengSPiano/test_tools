@@ -1197,6 +1197,11 @@ class MultiAlgorithmPlotGenerator:
                         logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有匹配数据，跳过")
                         continue
                     
+                    # 获取matched_pairs以便查找时间信息
+                    matched_pairs = algorithm.analyzer.matched_pairs
+                    record_note_dict = {r_idx: r_note for r_idx, _, r_note, _ in matched_pairs}
+                    replay_note_dict = {p_idx: p_note for _, p_idx, _, p_note in matched_pairs}
+
                     # 提取按键ID和延时数据
                     key_ids = []
                     delays_ms = []
@@ -1215,9 +1220,33 @@ class MultiAlgorithmPlotGenerator:
                             key_id_int = int(key_id)
                             delay_ms = keyon_offset / 10.0  # 转换为ms
                             
+                            # 获取录制和播放按键的时间信息
+                            record_hammer_time_ms = 0.0
+                            replay_hammer_time_ms = 0.0
+
+                            # 获取录制音符的锤子时间
+                            if record_index in record_note_dict:
+                                record_note = record_note_dict[record_index]
+                                if hasattr(record_note, 'hammers') and record_note.hammers is not None and not record_note.hammers.empty:
+                                    record_hammer_time_ms = (record_note.hammers.index[0] + record_note.offset) / 10.0
+
+                            # 获取播放音符的锤子时间
+                            if replay_index in replay_note_dict:
+                                replay_note = replay_note_dict[replay_index]
+                                if hasattr(replay_note, 'hammers') and replay_note.hammers is not None and not replay_note.hammers.empty:
+                                    replay_hammer_time_ms = (replay_note.hammers.index[0] + replay_note.offset) / 10.0
+
                             key_ids.append(key_id_int)
                             delays_ms.append(delay_ms)
-                            customdata_list.append([record_index, replay_index, key_id_int, delay_ms, algorithm_name])
+                            customdata_list.append([
+                                record_index,
+                                replay_index,
+                                key_id_int,
+                                delay_ms,
+                                algorithm_name,
+                                record_hammer_time_ms,
+                                replay_hammer_time_ms
+                            ])
                         except (ValueError, TypeError):
                             continue
                     
@@ -1261,7 +1290,7 @@ class MultiAlgorithmPlotGenerator:
                         customdata=customdata_list,
                         legendgroup=algorithm_name,
                         showlegend=True,
-                        hovertemplate=f"算法: {algorithm_name}<br>键位: %{{x}}<br>延时: %{{customdata[3]:.2f}}ms<br>Z-Score: %{{y:.2f}}<extra></extra>"
+                        hovertemplate=f"算法: {algorithm_name}<br>键位: %{{x}}<br>延时: %{{customdata[3]:.2f}}ms<br>Z-Score: %{{y:.2f}}<br>录制锤子时间: %{{customdata[5]:.2f}}ms<br>播放锤子时间: %{{customdata[6]:.2f}}ms<extra></extra>"
                     ))
                     
                     # 收集x轴范围（用于后续添加全局参考线）
@@ -1605,31 +1634,6 @@ class MultiAlgorithmPlotGenerator:
                     continue
             
             # 设置布局
-            # 生成对数刻度的标签（显示原始锤速值，但坐标轴是对数形式）
-            all_velocities_for_ticks = []
-            for alg in ready_algorithms:
-                try:
-                    matched_pairs = alg.analyzer.note_matcher.get_matched_pairs()
-                    for record_idx, replay_idx, record_note, replay_note in matched_pairs:
-                        if len(replay_note.hammers) > 0 and len(replay_note.hammers.values) > 0:
-                            vel = replay_note.hammers.values[0]
-                            if vel > 0:
-                                all_velocities_for_ticks.append(vel)
-                except:
-                    continue
-            
-            if all_velocities_for_ticks:
-                min_vel = min(all_velocities_for_ticks)
-                max_vel = max(all_velocities_for_ticks)
-                # 生成合理的刻度点（10的幂次）
-                min_log = math.floor(math.log10(min_vel))
-                max_log = math.ceil(math.log10(max_vel))
-                tick_vals = [10**i for i in range(min_log, max_log + 1) if 10**i >= min_vel and 10**i <= max_vel]
-                tick_texts = [f"{int(v)}" for v in tick_vals]
-                tick_positions = [math.log10(v) for v in tick_vals]
-            else:
-                tick_positions = []
-                tick_texts = []
             
             fig.update_layout(
                 # 删除title，因为UI区域已有标题
@@ -1639,9 +1643,11 @@ class MultiAlgorithmPlotGenerator:
                     showgrid=True,
                     gridcolor='lightgray',
                     gridwidth=1,
-                    tickmode='array' if tick_positions else 'auto',
-                    tickvals=tick_positions if tick_positions else None,
-                    ticktext=tick_texts if tick_texts else None
+                    # 使用线性刻度，让Plotly自动处理，但设置合适的范围
+                    autorange=True,
+                    # 设置刻度格式
+                    tickformat='.1f',  # 显示1位小数
+                    dtick=0.2  # 每0.2个单位一个刻度
                 ),
                 yaxis=dict(
                     showgrid=True,

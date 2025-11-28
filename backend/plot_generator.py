@@ -226,9 +226,15 @@ class PlotGenerator:
                         replay_note = p_note
                         break
         
-        detail_figure1 = spmid.plot_note_comparison_plotly(record_note, None)
-        detail_figure2 = spmid.plot_note_comparison_plotly(None, replay_note)
-        detail_figure_combined = spmid.plot_note_comparison_plotly(record_note, replay_note)
+        # 计算平均延时
+        mean_delays = {}
+        if hasattr(self, 'get_mean_error'):
+            mean_error_0_1ms = self.get_mean_error()
+            mean_delays['default'] = mean_error_0_1ms / 10.0  # 转换为毫秒
+
+        detail_figure1 = spmid.plot_note_comparison_plotly(record_note, None, mean_delays=mean_delays)
+        detail_figure2 = spmid.plot_note_comparison_plotly(None, replay_note, mean_delays=mean_delays)
+        detail_figure_combined = spmid.plot_note_comparison_plotly(record_note, replay_note, mean_delays=mean_delays)
 
         return detail_figure1, detail_figure2, detail_figure_combined
     
@@ -270,9 +276,15 @@ class PlotGenerator:
                         record_note = r_note
                         break
         
-        detail_figure1 = spmid.plot_note_comparison_plotly(record_note, None)
-        detail_figure2 = spmid.plot_note_comparison_plotly(None, play_note)
-        detail_figure_combined = spmid.plot_note_comparison_plotly(record_note, play_note)
+        # 计算平均延时
+        mean_delays = {}
+        if hasattr(self, 'get_mean_error'):
+            mean_error_0_1ms = self.get_mean_error()
+            mean_delays['default'] = mean_error_0_1ms / 10.0  # 转换为毫秒
+
+        detail_figure1 = spmid.plot_note_comparison_plotly(record_note, None, mean_delays=mean_delays)
+        detail_figure2 = spmid.plot_note_comparison_plotly(None, play_note, mean_delays=mean_delays)
+        detail_figure_combined = spmid.plot_note_comparison_plotly(record_note, play_note, mean_delays=mean_delays)
 
         return detail_figure1, detail_figure2, detail_figure_combined
     
@@ -532,13 +544,12 @@ class PlotGenerator:
             
         except Exception as e:
             logger.error(f"生成条形图失败: {e}")
-            import traceback
             logger.error(traceback.format_exc())
             return self._create_empty_plot(f"生成条形图失败: {str(e)}")
     
     def generate_delay_by_velocity_analysis_plot(self, analysis_result: Dict[str, Any]) -> Any:
         """
-        生成延时与锤速关系的分析图表（散点图+回归线+分组统计）
+        生成延时与锤速关系的分析图表（散点图+分组统计）
         
         Args:
             analysis_result: analyze_delay_by_velocity()的返回结果
@@ -551,16 +562,26 @@ class PlotGenerator:
             scatter_data = analysis_result.get('scatter_data', {})
             velocities = scatter_data.get('velocities', [])
             delays = scatter_data.get('delays', [])
-            
+
             if not velocities or not delays:
                 return self._create_empty_plot("没有散点图数据")
+
+            # 过滤掉非正值
+            valid_data = [(v, d) for v, d in zip(velocities, delays) if v > 0]
+            if not valid_data:
+                return self._create_empty_plot("没有有效的锤速数据")
             
+            velocities_clean = [v for v, d in valid_data]
+            delays_clean = [d for v, d in valid_data]
+            log10_velocities = [np.log10(v) for v in velocities_clean]
+
+
             fig = go.Figure()
-            
-            # 添加散点图
+
+            # 添加散点图 - 使用log10(锤速)作为横坐标
             fig.add_trace(go.Scatter(
-                x=velocities,
-                y=delays,
+                x=log10_velocities,
+                y=delays_clean,
                 mode='markers',
                 name='数据点',
                 marker=dict(
@@ -569,29 +590,9 @@ class PlotGenerator:
                     opacity=0.6,
                     line=dict(width=1, color='#b71c1c')
                 ),
-                hovertemplate='锤速: %{x}<br>延时: %{y:.2f}ms<extra></extra>'
+                hovertemplate='锤速: %{customdata:.2f}<br>log₁₀(锤速): %{x:.2f}<br>延时: %{y:.2f}ms<extra></extra>',
+                customdata=velocities_clean  # 在hover中显示原始锤速值
             ))
-            
-            # 添加线性回归线
-            regression_result = analysis_result.get('regression_result', {})
-            linear_reg = regression_result.get('linear', {})
-            if linear_reg:
-                slope = linear_reg.get('slope', 0)
-                intercept = linear_reg.get('intercept', 0)
-                r_squared = linear_reg.get('r_squared', 0)
-                p_value = linear_reg.get('p_value', 1)
-                
-                # 计算回归线
-                x_line = np.linspace(min(velocities), max(velocities), 100)
-                y_line = slope * x_line + intercept
-                
-                fig.add_trace(go.Scatter(
-                    x=x_line,
-                    y=y_line,
-                    mode='lines',
-                    name=f'线性拟合 (R²={r_squared:.3f}, p={p_value:.4f})',
-                    line=dict(color='#1976d2', width=2, dash='dash')
-                ))
             
             # 添加分组统计（按锤速区间）
             grouped_analysis = analysis_result.get('grouped_analysis', {})
@@ -607,7 +608,7 @@ class PlotGenerator:
                     
                     if mean_velocity > 0:
                         fig.add_trace(go.Scatter(
-                            x=[mean_velocity],
+                            x=[np.log10(mean_velocity)],  # 使用log10(平均锤速)值
                             y=[mean_delay],
                             mode='markers',
                             name=label,
@@ -617,7 +618,7 @@ class PlotGenerator:
                                 color='#7b1fa2',
                                 line=dict(width=2, color='#4a148c')
                             ),
-                            hovertemplate=f'{label}<br>平均锤速: %{{x:.2f}}<br>平均延时: %{{y:.2f}}ms<br>样本数: {count}<extra></extra>'
+                            hovertemplate=f'{label}<br>平均锤速: {mean_velocity:.2f}<br>log₁₀(锤速): %{{x:.2f}}<br>平均延时: %{{y:.2f}}ms<br>样本数: {count}<extra></extra>'
                         ))
             
             # 添加相关性信息文本
@@ -653,8 +654,19 @@ class PlotGenerator:
                     'xanchor': 'center',
                     'font': {'size': 18, 'color': '#d32f2f'}
                 },
-                xaxis_title='锤速',
+                xaxis_title='log₁₀(锤速)',
                 yaxis_title='延时 (ms)',
+                xaxis=dict(
+                    showgrid=True,
+                    gridcolor='lightgray',
+                    gridwidth=1,
+                    showticklabels=True,
+                    # 手动设置刻度以确保显示合适的范围
+                    tickmode='linear',
+                    tick0=min(log10_velocities) if log10_velocities else 0,
+                    dtick=0.1,  # 每0.1个单位一个刻度
+                    range=[min(log10_velocities) - 0.1, max(log10_velocities) + 0.1] if log10_velocities else None
+                ),
                 showlegend=True,
                 template='plotly_white',
                 height=500,
@@ -672,19 +684,9 @@ class PlotGenerator:
             
         except Exception as e:
             logger.error(f"生成延时与锤速分析图失败: {e}")
-            import traceback
             logger.error(traceback.format_exc())
             return self._create_empty_plot(f"生成分析图失败: {str(e)}")
     
-    # generate_force_delay_by_key_scatter_plot 已删除（功能与按键-力度交互效应图重复）
-    
-    def _generate_force_delay_by_key_scatter_plot_deleted(self, analysis_result: Dict[str, Any]) -> Any:
-        """
-        【已删除】此函数已被删除，因为与按键-力度交互效应图功能重复
-        
-        如需恢复，请参考 git 历史记录
-        """
-        return self._create_empty_plot("此图表已删除（功能重复）")
     
     def _create_algorithm_control_legends(self, fig, algorithm_names, algorithm_colors):
         """创建算法控制图注（独立的图例组）"""
@@ -802,23 +804,30 @@ class PlotGenerator:
                 replay_indices = data.get('replay_indices', [])
                 
                 if forces and delays:
-                    # 将力度转换为对数形式（log10）
-                    log_forces = [math.log10(f) if f > 0 else 0 for f in forces]
+                    # 过滤掉非正值
+                    valid_data = [(f, d, ad) for f, d, ad in zip(forces, delays, absolute_delays) if f > 0]
+                    if not valid_data:
+                        continue
+                    
+                    forces_clean = [f for f, d, ad in valid_data]
+                    delays_clean = [d for f, d, ad in valid_data]
+                    absolute_delays_clean = [ad for f, d, ad in valid_data]
                     
                     # 构建customdata，包含索引信息用于点击事件
-                    # 格式: [key_id, algorithm_display_name, orig_force, abs_delay, rel_delay, record_idx, replay_idx]
+                    # 格式: [key_id, algorithm_display_name, orig_force, abs_delay, rel_delay, log10_force, record_idx, replay_idx]
                     customdata_list = []
-                    for i, (orig_force, abs_delay, rel_delay) in enumerate(zip(forces, absolute_delays, delays)):
+                    for i, (orig_force, abs_delay, rel_delay) in enumerate(zip(forces_clean, absolute_delays_clean, delays_clean)):
                         record_idx = record_indices[i] if i < len(record_indices) else None
                         replay_idx = replay_indices[i] if i < len(replay_indices) else None
+                        log10_force = math.log10(orig_force) if orig_force > 0 else 0
                         customdata_list.append([
                             key_id, algorithm_display_name, orig_force, abs_delay, rel_delay,
-                            record_idx, replay_idx
+                            log10_force, record_idx, replay_idx
                         ])
                     
                     fig.add_trace(go.Scatter(
-                        x=log_forces,
-                        y=delays,
+                        x=forces_clean,  # 使用原始力度值，Plotly的log轴会自动处理
+                        y=delays_clean,
                         mode='markers',
                         name=None,
                         marker=dict(
@@ -835,7 +844,7 @@ class PlotGenerator:
                         visible=False,  # 默认不显示，需要选择后才显示
                         hovertemplate=f'<b>{algorithm_display_name}</b><br>' +
                                      f'<b>按键 {key_id}</b><br>' +
-                                     '<b>力度</b>: %{customdata[2]:.0f} (log: %{x:.2f})<br>' +
+                                     '<b>力度</b>: %{x:.0f} (log₁₀: %{customdata[5]:.2f})<br>' +
                                      '<b>相对延时</b>: %{y:.2f}ms<br>' +
                                      '<b>原始延时</b>: %{customdata[3]:.2f}ms<br>' +
                                      f'<i>平均延时: {mean_delay:.2f}ms</i><extra></extra>'
@@ -858,24 +867,30 @@ class PlotGenerator:
             replay_indices = data.get('replay_indices', [])
             
             if forces and delays:
-                # 将力度转换为对数形式（log10）
+                # 过滤掉非正值
+                valid_data = [(f, d, ad) for f, d, ad in zip(forces, delays, absolute_delays) if f > 0]
+                if not valid_data:
+                    continue
                 
-                log_forces = [math.log10(f) if f > 0 else 0 for f in forces]
+                forces_clean = [f for f, d, ad in valid_data]
+                delays_clean = [d for f, d, ad in valid_data]
+                absolute_delays_clean = [ad for f, d, ad in valid_data]
                 
                 # 构建customdata，包含索引信息用于点击事件
-                # 格式: [key_id, orig_force, abs_delay, rel_delay, record_idx, replay_idx]
+                # 格式: [key_id, orig_force, abs_delay, rel_delay, log10_force, record_idx, replay_idx]
                 customdata_list = []
-                for i, (orig_force, abs_delay, rel_delay) in enumerate(zip(forces, absolute_delays, delays)):
+                for i, (orig_force, abs_delay, rel_delay) in enumerate(zip(forces_clean, absolute_delays_clean, delays_clean)):
                     record_idx = record_indices[i] if i < len(record_indices) else None
                     replay_idx = replay_indices[i] if i < len(replay_indices) else None
+                    log10_force = math.log10(orig_force) if orig_force > 0 else 0
                     customdata_list.append([
                         key_id, orig_force, abs_delay, rel_delay,
-                        record_idx, replay_idx
+                        log10_force, record_idx, replay_idx
                     ])
                 
                 fig.add_trace(go.Scatter(
-                    x=log_forces,
-                    y=delays,
+                    x=forces_clean,  # 使用原始力度值，Plotly的log轴会自动处理
+                    y=delays_clean,
                     mode='markers',
                     name=f'按键 {key_id}',
                     marker=dict(
@@ -889,7 +904,7 @@ class PlotGenerator:
                     customdata=customdata_list,
                     visible='legendonly',  # 默认隐藏，点击图例可显示
                     hovertemplate=f'<b>按键 {key_id}</b><br>' +
-                                 '<b>力度</b>: %{customdata[1]:.0f} (log: %{x:.2f})<br>' +
+                                 '<b>力度</b>: %{x:.0f} (log₁₀: %{customdata[4]:.2f})<br>' +
                                  '<b>相对延时</b>: %{y:.2f}ms<br>' +
                                  '<b>原始延时</b>: %{customdata[2]:.2f}ms<br>' +
                                  f'<i>平均延时: {mean_delay:.2f}ms</i><extra></extra>'
@@ -1018,8 +1033,8 @@ class PlotGenerator:
                 # 添加数据traces
                 self._add_data_traces_single_algorithm(fig, key_data, color_hex)
             
-            # 生成对数刻度的标签（显示原始力度值，但坐标轴是对数形式）
-            # 收集所有力度值用于生成刻度
+            # 生成对数刻度的刻度（显示原始力度值，但是刻度标签是对数刻度）
+            # 收集所有力度数据用于生成刻度
             all_forces = []
             if is_multi_algorithm and algorithm_results:
                 for alg_result in algorithm_results.values():
@@ -1034,8 +1049,8 @@ class PlotGenerator:
                 for data in key_data.values():
                     forces = data.get('forces', [])
                     all_forces.extend([f for f in forces if f > 0])
-            
-            # 生成合理的刻度点（10的幂次）
+
+            # 生成合理的刻度点（10的倍数）
             tick_vals = []
             tick_texts = []
             tick_positions = []
@@ -1050,9 +1065,10 @@ class PlotGenerator:
             
             # 删除title，因为UI区域已有标题
             fig.update_layout(
-                xaxis_title='锤速（log₁₀）',
+                xaxis_title='锤速 (log₁₀)',
                 yaxis_title='相对延时 (ms)',  # 使用相对延时
                 xaxis=dict(
+                    type='log',  # 使用对数轴
                     showgrid=True,
                     gridcolor='lightgray',
                     gridwidth=1,
@@ -1082,12 +1098,9 @@ class PlotGenerator:
                 ),
                 uirevision='key-force-interaction'
             )
-            
-            
             return fig
             
         except Exception as e:
             logger.error(f"生成交互效应图失败: {e}")
-
             logger.error(traceback.format_exc())
             return self._create_empty_plot(f"生成交互效应图失败: {str(e)}")

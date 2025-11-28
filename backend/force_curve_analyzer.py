@@ -136,19 +136,16 @@ class DerivativeDTWAligner:
             alignment_path = dtw_result['alignment_path']
             dtw_distance = dtw_result['dtw_distance']
             
-            # 6. 根据对齐路径重新采样原始曲线
-            # 使用保守的对齐策略，尽量保持原始曲线形状
-            # 重要：使用原始值（values1, values2）而不是平滑后的值，以保持波峰和波谷
-            aligned_result = self._resample_by_alignment_path_conservative(
-                times1, values1,  # 使用原始值，保持波峰和波谷
-                times2, values2,  # 使用原始值，保持波峰和波谷
-                alignment_path
+            # 6. 根据DTW对齐路径重新采样原始曲线
+            # 使用DTW找到的对应关系来重新采样曲线
+            aligned_result = self._resample_by_alignment_path(
+                times1, values1, times2, values2, alignment_path
             )
-            
+
             if aligned_result is None:
-                logger.warning("⚠️ 保守重新采样失败，无法继续分析")
+                logger.warning("⚠️ 基于DTW路径的对齐失败，无法继续分析")
                 return None
-            
+
             # 7. 在对齐后的曲线上找到峰值点
             aligned_values1 = aligned_result['aligned_values1']
             aligned_values2 = aligned_result['aligned_values2']
@@ -174,14 +171,14 @@ class DerivativeDTWAligner:
                 'aligned_values1': aligned_values1,
                 'aligned_values2': aligned_values2,
                 
-                # 对齐前的数据（归一化时间，便于对比）
+                # 对齐前的数据（原始时间轴，便于对比）
                 'before_alignment': {
-                    'times1': norm_times1,
-                    'values1': values1_smooth,
-                    'times2': norm_times2,
-                    'values2': values2_smooth,
-                    'original_times1': times1,  # 原始时间（ms）
-                    'original_times2': times2   # 原始时间（ms）
+                    'times1': times1,           # 原始时间轴（ms）
+                    'values1': values1,         # 原始值（未平滑）
+                    'times2': times2,           # 原始时间轴（ms）
+                    'values2': values2,         # 原始值（未平滑）
+                    'values1_smooth': values1_smooth,  # 平滑后的值（用于计算导数）
+                    'values2_smooth': values2_smooth   # 平滑后的值（用于计算导数）
                 },
                 
                 # 对齐信息
@@ -309,6 +306,303 @@ class DerivativeDTWAligner:
             import traceback
             logger.error(traceback.format_exc())
             return None
+
+    def _feature_based_alignment(self, times1: np.ndarray, values1: np.ndarray,
+                               times2: np.ndarray, values2: np.ndarray) -> Dict[str, Any]:
+        """
+        基于峰值锚点的简单对齐策略
+
+        策略：
+        1. 找到两条曲线的主要峰值作为锚点
+        2. 以峰值时间为基准进行线性对齐
+        3. 保持相对时间关系
+
+        Args:
+            times1, values1: 第一条曲线（基准曲线）
+            times2, values2: 第二条曲线（待对齐）
+
+        Returns:
+            对齐结果字典
+        """
+        try:
+            # 1. 找到主要峰值
+            peak_idx1 = self._find_main_peak(values1)
+            peak_idx2 = self._find_main_peak(values2)
+
+            # 2. 计算峰值时间
+            peak_time1 = times1[peak_idx1]
+            peak_time2 = times2[peak_idx2]
+
+            # 3. 计算时间偏移和缩放
+            # 让两条曲线的峰值对齐
+            time_offset = peak_time1 - peak_time2
+
+            # 计算相对缩放（基于峰值后的剩余时间）
+            remaining_time1 = times1[-1] - peak_time1
+            remaining_time2 = times2[-1] - peak_time2
+
+            if remaining_time2 > 0:
+                time_scale = remaining_time1 / remaining_time2
+            else:
+                time_scale = 1.0
+
+            # 4. 应用时间变换
+            aligned_times2 = (times2 - peak_time2) * time_scale + peak_time1
+
+            # 确保对齐后的时间在合理范围内
+            aligned_times2 = np.clip(aligned_times2, times1[0], times1[-1])
+
+            # 5. 在第一条曲线的时间轴上插值
+            from scipy.interpolate import interp1d
+            interp_func = interp1d(aligned_times2, values2,
+                                 kind='linear', bounds_error=False,
+                                 fill_value=(values2[0], values2[-1]))
+
+            aligned_values2 = interp_func(times1)
+
+            return {
+                'aligned_times': (times1 - times1[0]) / (times1[-1] - times1[0]) if times1[-1] != times1[0] else np.zeros_like(times1),
+                'aligned_values1': values1,
+                'aligned_values2': aligned_values2
+            }
+
+        except Exception as e:
+            logger.error(f"❌ 基于峰值的对齐失败，回退到简单对齐: {e}")
+            return self._simple_time_alignment(times1, values1, times2, values2)
+
+    def _extract_curve_features_advanced(self, values: np.ndarray) -> List[Dict[str, Any]]:
+        """
+        高级特征点检测：检测波峰、波谷和拐点
+
+        Args:
+            values: 曲线值数组
+
+        Returns:
+            特征点列表
+        """
+        from scipy.signal import find_peaks, savgol_filter
+        import numpy as np
+
+        features = []
+
+        try:
+            # 1. 平滑处理以减少噪声
+            if len(values) > 10:
+                # 使用Savitzky-Golay滤波器保持形状的同时减少噪声
+                smoothed = savgol_filter(values, window_length=min(9, len(values)//2*2+1), polyorder=2)
+            else:
+                smoothed = values
+
+            # 2. 检测波峰
+            peaks, peak_props = find_peaks(smoothed,
+                                         height=np.max(smoothed) * 0.1,
+                                         distance=max(5, len(values) // 15),
+                                         prominence=np.max(smoothed) * 0.05)
+
+            for idx in peaks:
+                if idx < len(values):
+                    features.append({
+                        'index': idx,
+                        'value': values[idx],  # 使用原始值而不是平滑值
+                        'type': 'peak',
+                        'prominence': peak_props['peak_heights'][peaks.tolist().index(idx)]
+                    })
+
+            # 3. 检测波谷
+            valleys, valley_props = find_peaks(-smoothed,
+                                             height=-np.min(smoothed) * 0.1,
+                                             distance=max(5, len(values) // 15),
+                                             prominence=np.min(smoothed) * 0.05)
+
+            for idx in valleys:
+                if idx < len(values):
+                    features.append({
+                        'index': idx,
+                        'value': values[idx],
+                        'type': 'valley',
+                        'prominence': valley_props['peak_heights'][valleys.tolist().index(idx)]
+                    })
+
+            # 4. 按索引排序
+            features.sort(key=lambda x: x['index'])
+
+            # 5. 过滤掉过于接近的特征点
+            filtered_features = []
+            min_distance = max(3, len(values) // 20)
+
+            for feature in features:
+                if not filtered_features:
+                    filtered_features.append(feature)
+                else:
+                    last_idx = filtered_features[-1]['index']
+                    if feature['index'] - last_idx >= min_distance:
+                        filtered_features.append(feature)
+                    else:
+                        # 保留更显著的特征点
+                        if feature['prominence'] > filtered_features[-1]['prominence']:
+                            filtered_features[-1] = feature
+
+            return filtered_features
+
+        except Exception as e:
+            logger.warning(f"⚠️ 特征点检测失败: {e}")
+            return []
+
+    def _piecewise_linear_alignment(self, norm_times1: np.ndarray, values1: np.ndarray,
+                                  norm_times2: np.ndarray, values2: np.ndarray,
+                                  feature_times1: List[float], feature_times2: List[float],
+                                  features1: List[Dict], features2: List[Dict]) -> np.ndarray:
+        """
+        分段线性对齐：基于特征点进行分段映射
+
+        Args:
+            norm_times1, values1: 第一条曲线（基准）
+            norm_times2, values2: 第二条曲线
+            feature_times1, feature_times2: 特征点时间
+            features1, features2: 特征点信息
+
+        Returns:
+            对齐后的第二条曲线值
+        """
+        try:
+            # 简化策略：直接使用线性插值
+            # 这样最安全，不会引入奇怪的扭曲
+            from scipy.interpolate import interp1d
+
+            # 将第二条曲线的时间轴映射到第一条曲线的时间轴
+            interp_func = interp1d(np.linspace(0, 1, len(values2)), values2,
+                                 kind='linear', bounds_error=False, fill_value='extrapolate')
+
+            # 在第一条曲线的时间点上插值第二条曲线
+            aligned_values2 = interp_func(norm_times1)
+
+            # 如果有特征点，可以稍微调整特征点位置
+            if len(feature_times1) > 0 and len(feature_times2) > 0:
+                aligned_values2 = self._adjust_feature_points(
+                    aligned_values2, norm_times1, values1,
+                    feature_times1, feature_times2, features1, features2
+                )
+
+            return aligned_values2
+
+        except Exception as e:
+            logger.error(f"❌ 分段对齐失败: {e}")
+            # 回退到简单线性插值
+            from scipy.interpolate import interp1d
+            interp_func = interp1d(np.linspace(0, 1, len(values2)), values2,
+                                 kind='linear', bounds_error=False, fill_value='extrapolate')
+            return interp_func(norm_times1)
+
+    def _adjust_feature_points(self, aligned_values2: np.ndarray, norm_times1: np.ndarray,
+                             values1: np.ndarray, feature_times1: List[float],
+                             feature_times2: List[float], features1: List[Dict],
+                             features2: List[Dict]) -> np.ndarray:
+        """
+        轻微调整特征点位置，确保主要特征点对齐
+
+        Args:
+            aligned_values2: 当前对齐后的第二条曲线
+            norm_times1: 第一条曲线时间轴
+            values1: 第一条曲线值
+            feature_times1, feature_times2: 特征点时间
+            features1, features2: 特征点信息
+
+        Returns:
+            调整后的对齐曲线
+        """
+        try:
+            adjusted_values = aligned_values2.copy()
+
+            # 只调整最显著的特征点（数量限制，避免过度调整）
+            max_adjustments = min(3, len(feature_times1), len(feature_times2))
+
+            for i in range(max_adjustments):
+                if i >= len(feature_times1) or i >= len(feature_times2):
+                    break
+
+                # 找到第一条曲线特征点在时间轴上的位置
+                feature_time1 = feature_times1[i]
+                feature_idx1 = int(feature_time1 * (len(norm_times1) - 1))
+
+                if feature_idx1 >= len(values1):
+                    continue
+
+                # 找到第二条曲线特征点对应的值
+                feature_time2 = feature_times2[i]
+                source_idx = int(feature_time2 * (len(values1) - 1))  # 注意：这里应该是len(values1)对应的原始曲线长度
+
+                if source_idx >= len(aligned_values2):
+                    continue
+
+                # 轻微调整：让特征点位置的值更接近原始特征点值
+                # 但不要完全覆盖，只做轻微调整
+                target_value = values1[feature_idx1]
+                current_value = aligned_values2[feature_idx1]
+
+                # 只在差异较大时进行调整
+                if abs(current_value - target_value) > abs(target_value) * 0.1:
+                    # 渐进调整，避免突变
+                    adjustment_ratio = 0.3  # 只调整30%
+                    adjusted_values[feature_idx1] = current_value * (1 - adjustment_ratio) + target_value * adjustment_ratio
+
+            return adjusted_values
+
+        except Exception as e:
+            logger.warning(f"⚠️ 特征点调整失败，使用原始对齐: {e}")
+            return aligned_values2
+
+    def _map_time_by_features(self, target_time: float,
+                            feature_times1: List[float], feature_times2: List[float],
+                            num_features: int, len_values2: int) -> float:
+        """
+        基于特征点映射时间
+
+        Args:
+            target_time: 目标时间点（0-1）
+            feature_times1, feature_times2: 特征点时间列表
+            num_features: 特征点数量
+            len_values2: 第二条曲线长度
+
+        Returns:
+            对应的源时间点（0-1）
+        """
+        if num_features == 0:
+            return target_time  # 没有特征点，直接返回原时间
+
+        # 找到目标时间所在的段
+        segment_idx = 0
+        for i in range(num_features - 1):
+            if target_time >= feature_times1[i] and target_time <= feature_times1[i + 1]:
+                segment_idx = i
+                break
+        else:
+            # 超出范围
+            if target_time < feature_times1[0]:
+                segment_idx = 0
+            else:
+                segment_idx = num_features - 2
+
+        # 确保段索引有效
+        if segment_idx >= num_features - 1:
+            segment_idx = max(0, num_features - 2)
+
+        # 计算在当前段内的相对位置
+        if segment_idx < len(feature_times1) - 1:
+            t1_start = feature_times1[segment_idx]
+            t1_end = feature_times1[segment_idx + 1]
+            t2_start = feature_times2[min(segment_idx, len(feature_times2) - 1)]
+            t2_end = feature_times2[min(segment_idx + 1, len(feature_times2) - 1)]
+
+            if t1_end != t1_start:
+                ratio = (target_time - t1_start) / (t1_end - t1_start)
+                source_time = t2_start + ratio * (t2_end - t2_start)
+            else:
+                source_time = t2_start
+        else:
+            source_time = feature_times2[-1] if feature_times2 else target_time
+
+        # 确保结果在有效范围内
+        return max(0.0, min(1.0, source_time))
     
     def _compute_derivative(self,
                           times: np.ndarray,

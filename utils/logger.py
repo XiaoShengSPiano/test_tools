@@ -143,11 +143,11 @@ class Logger:
                 # 使用文件锁来确保跨进程的唯一性
                 init_flag_file = os.path.join(cls._log_dir, '.logger_init_flag')
                 if not os.path.exists(init_flag_file):
-                    cls._logger.info("📝 日志系统初始化完成")
-                    cls._logger.info(f"📁 正常日志文件: {cls._normal_log_file}")
-                    cls._logger.info(f"❌ 错误日志文件: {cls._error_log_file}")
-                    cls._logger.info(f"🖥️ 控制台输出: {'启用' if cls._enable_console else '禁用'}")
-                    cls._logger.info(f"💾 文件输出: {'启用' if cls._enable_file else '禁用'}")
+                    cls._logger.info("[INFO] 日志系统初始化完成")
+                    cls._logger.info(f"[INFO] 正常日志文件: {cls._normal_log_file}")
+                    cls._logger.info(f"[ERROR] 错误日志文件: {cls._error_log_file}")
+                    cls._logger.info(f"[CONSOLE] 控制台输出: {'启用' if cls._enable_console else '禁用'}")
+                    cls._logger.info(f"[FILE] 文件输出: {'启用' if cls._enable_file else '禁用'}")
                     # 创建标志文件
                     try:
                         with open(init_flag_file, 'w') as f:

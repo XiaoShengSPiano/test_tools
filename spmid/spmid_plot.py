@@ -4,6 +4,8 @@ from plotly.subplots import make_subplots
 import matplotlib.pyplot as plt
 from .spmid_reader import SPMidReader
 from utils.logger import Logger
+import plotly.graph_objects as go
+import numpy as np
 
 logger = Logger.get_logger()
 
@@ -359,24 +361,33 @@ def plot_bar_plotly(record, play, time_range=None):
     
     return fig
 
-import plotly.graph_objects as go
-import numpy as np
 
-def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None, other_algorithm_notes=None):
+
+def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None, other_algorithm_notes=None, mean_delays=None):
     """
     使用 Plotly 绘制音符的触后数据和锤子数据对比图（在同一图中）
-    
+
     参数:
     record_note: 录制音轨数据，如果为None则不绘制录制数据
     play_note: 回放音轨数据，如果为None则不绘制回放数据
     algorithm_name: 算法名称（可选），用于在标题中显示
     other_algorithm_notes: 其他算法的播放音符列表，格式为 [(algorithm_name, play_note), ...]
+    mean_delays: 各算法的平均延时字典，格式为 {algorithm_name: mean_delay_ms}，用于调整播放曲线的时间轴（播放时间 - 平均延时）
     """
     if other_algorithm_notes is None:
         other_algorithm_notes = []
-    
-    # 创建图表
-    fig = go.Figure()
+    if mean_delays is None:
+        mean_delays = {}
+
+    # 创建子图：上方显示偏移前曲线，下方显示偏移后曲线
+    from plotly.subplots import make_subplots
+    fig = make_subplots(
+        rows=2, cols=1,
+        subplot_titles=('偏移前曲线对比', '偏移后曲线对比'),
+        shared_xaxes=True,  # 共享X轴
+        vertical_spacing=0.1,  # 子图间距
+        row_heights=[0.5, 0.5]  # 上下子图高度相等
+    )
     
     # 检查并绘制录制触后数据（线条）
     # 注意：
@@ -391,36 +402,50 @@ def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None, oth
                 # 计算绝对时间：相对时间 + offset，然后转换为 ms
                 x_after_touch = (record_note.after_touch.index + record_note.offset) / 10.0
                 y_after_touch = record_note.after_touch.values  # 触后压力值
-                fig.add_trace(
-                    go.Scatter(
-                        x=x_after_touch,
-                        y=y_after_touch,
-                        mode='lines',
-                        name='录制触后',
-                        line=dict(color='blue', width=3),
-                        showlegend=True,
-                        legendgroup='record',  # 录制数据分组（触后和锤子一组）
-                        hovertemplate='时间: %{x:.2f} ms<br>触后压力: %{y}<extra></extra>'
+
+                # 在两个子图中都显示录制数据作为基准，但只在上子图显示图例
+                for row in [1, 2]:
+                    legend_name = "legend" if row == 1 else "legend2"
+                    fig.add_trace(
+                        go.Scatter(
+                            x=x_after_touch,
+                            y=y_after_touch,
+                            mode='lines',
+                            name='录制触后',
+                            line=dict(color='blue', width=3),
+                            showlegend=True if row == 1 else False,  # 只在上子图显示图例
+                            legend=legend_name if row == 1 else None,  # 指定使用哪个图例
+                            legendgroup='record',  # 录制数据分组（触后和锤子一组）
+                            hovertemplate='录制触后时间: %{x:.2f} ms<br>触后压力: %{y}<extra></extra>'
+                        ),
+                        row=row, col=1
                     )
-                )
             
             # 检查并绘制录制锤子数据（点）
             if hasattr(record_note, 'hammers') and record_note.hammers is not None and not record_note.hammers.empty:
                 # 计算绝对时间：相对时间 + offset，然后转换为 ms
                 x_hammers = (record_note.hammers.index + record_note.offset) / 10.0
                 y_hammers = record_note.hammers.values  # 锤子速度值
-                fig.add_trace(
-                    go.Scatter(
-                        x=x_hammers,
-                        y=y_hammers,
-                        mode='markers',
-                        name='录制锤子',
-                        marker=dict(color='blue', size=8, symbol='circle'),
-                        showlegend=True,
-                        legendgroup='record',  # 录制数据分组（触后和锤子一组）
-                        hovertemplate='时间: %{x:.2f} ms<br>锤子速度: %{y}<extra></extra>'
+                # 获取第一个锤子的时间
+                first_hammer_time_ms = x_hammers[0] if len(x_hammers) > 0 else 0.0
+
+                # 在两个子图中都显示录制锤子数据作为基准
+                for row in [1, 2]:
+                    legend_name = "legend" if row == 1 else "legend2"
+                    fig.add_trace(
+                        go.Scatter(
+                            x=x_hammers,
+                            y=y_hammers,
+                            mode='markers',
+                            name='录制锤子',
+                            marker=dict(color='blue', size=8, symbol='circle'),
+                            showlegend=True if row == 1 else False,  # 只在上子图显示图例
+                            legend=legend_name if row == 1 else None,  # 指定使用哪个图例
+                            legendgroup='record',  # 录制数据分组（触后和锤子一组）
+                            hovertemplate=f'录制锤子时间: %{{x:.2f}} ms<br>锤子速度: %{{y}}<br>第一个锤子时间: {first_hammer_time_ms:.2f} ms<extra></extra>'
+                        ),
+                        row=row, col=1
                     )
-                )
         except Exception as e:
             logger.warning(f"⚠️ 绘制录制数据时出错: {e}")
     
@@ -428,45 +453,77 @@ def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None, oth
     if play_note is not None:
         try:
             if hasattr(play_note, 'after_touch') and play_note.after_touch is not None and not play_note.after_touch.empty:
-                # 计算绝对时间：相对时间 + offset，然后转换为 ms
-                x_after_touch = (play_note.after_touch.index + play_note.offset) / 10.0
+                # 计算绝对时间：相对时间 + offset，然后转换为 ms，再减去平均延时
+                mean_delay_ms = mean_delays.get(algorithm_name, 0.0) if algorithm_name else 0.0
+                x_after_touch_adjusted = (play_note.after_touch.index + play_note.offset) / 10.0 - mean_delay_ms
+                x_after_touch_actual = (play_note.after_touch.index + play_note.offset) / 10.0  # 实际播放时间（偏移前）
                 y_after_touch = play_note.after_touch.values  # 触后压力值
-                play_name = '回放触后'  # 移除算法名，悬浮时会显示
+                play_name_adjusted = '回放触后(调整后)'  # 调整后的曲线名称
+                play_name_original = '回放触后(原始)'  # 原始曲线名称
                 # 当前算法的触后和锤子为一组
                 alg_group = f'algorithm_{algorithm_name}' if algorithm_name else 'algorithm_default'
+
+                # 绘制偏移前的原始曲线在上子图（实线）
                 fig.add_trace(
                     go.Scatter(
-                        x=x_after_touch,
+                        x=x_after_touch_actual,
                         y=y_after_touch,
                         mode='lines',
-                        name=play_name,
+                        name=play_name_original,
                         line=dict(color='red', width=3),
                         showlegend=True,
+                        legend="legend",  # 使用上子图的图例
                         legendgroup=alg_group,  # 当前算法的触后和锤子一组
-                        hovertemplate=f'算法: {algorithm_name if algorithm_name else "未知"}<br>时间: %{{x:.2f}} ms<br>触后压力: %{{y}}<extra></extra>'
-                    )
+                        customdata=x_after_touch_actual,  # 传递实际播放时间作为自定义数据
+                        hovertemplate=f'算法: {algorithm_name if algorithm_name else "未知"}<br>实际播放时间: %{{customdata:.2f}} ms<br>类型: 原始曲线<br>触后压力: %{{y}}<extra></extra>'
+                    ),
+                    row=1, col=1
+                )
+
+                # 绘制偏移后的调整曲线在下子图（实线）
+                fig.add_trace(
+                    go.Scatter(
+                        x=x_after_touch_adjusted,
+                        y=y_after_touch,
+                        mode='lines',
+                        name=play_name_adjusted,
+                        line=dict(color='red', width=3),
+                        showlegend=True,
+                        legend="legend2",  # 使用下子图的图例
+                        legendgroup=alg_group,  # 当前算法的触后和锤子一组
+                        customdata=x_after_touch_actual,  # 传递实际播放时间作为自定义数据
+                        hovertemplate=f'算法: {algorithm_name if algorithm_name else "未知"}<br>实际播放时间: %{{customdata:.2f}} ms<br>平均延时: {mean_delay_ms:.2f} ms<br>调整后时间: %{{x:.2f}} ms<br>类型: 调整后曲线<br>触后压力: %{{y}}<extra></extra>'
+                    ),
+                    row=2, col=1
                 )
             
             # 检查并绘制回放锤子数据（点）
             if hasattr(play_note, 'hammers') and play_note.hammers is not None and not play_note.hammers.empty:
-                # 计算绝对时间：相对时间 + offset，然后转换为 ms
-                x_hammers = (play_note.hammers.index + play_note.offset) / 10.0
+                # 计算绝对时间：相对时间 + offset，转换为 ms（锤子不进行时间偏移）
+                x_hammers = (play_note.hammers.index + play_note.offset) / 10.0  # 锤子使用原始时间，不偏移
                 y_hammers = play_note.hammers.values  # 锤子速度值
-                play_name = '回放锤子'  # 移除算法名，悬浮时会显示
+                play_name_hammer = '回放锤子'  # 统一的锤子名称
                 # 当前算法的触后和锤子为一组
                 alg_group = f'algorithm_{algorithm_name}' if algorithm_name else 'algorithm_default'
-                fig.add_trace(
-                    go.Scatter(
-                        x=x_hammers,
-                        y=y_hammers,
-                        mode='markers',
-                        name=play_name,
-                        marker=dict(color='red', size=8, symbol='circle'),
-                        showlegend=True,
-                        legendgroup=alg_group,  # 当前算法的触后和锤子一组
-                        hovertemplate=f'算法: {algorithm_name if algorithm_name else "未知"}<br>时间: %{{x:.2f}} ms<br>锤子速度: %{{y}}<extra></extra>'
+
+                # 在两个子图中都显示锤子数据（使用相同的原始时间，不进行偏移）
+                for row in [1, 2]:
+                    legend_name = "legend" if row == 1 else "legend2"
+                    fig.add_trace(
+                        go.Scatter(
+                            x=x_hammers,
+                            y=y_hammers,
+                            mode='markers',
+                            name=play_name_hammer,
+                            marker=dict(color='red', size=8, symbol='circle'),
+                            showlegend=True if row == 1 else False,  # 只在上子图显示图例
+                            legend=legend_name if row == 1 else None,  # 指定使用哪个图例
+                            legendgroup=alg_group,  # 当前算法的触后和锤子一组
+                            customdata=x_hammers,  # 传递实际播放时间作为自定义数据
+                            hovertemplate=f'算法: {algorithm_name if algorithm_name else "未知"}<br>锤子时间: %{{customdata:.2f}} ms<br>锤子速度: %{{y}}<extra></extra>'
+                        ),
+                        row=row, col=1
                     )
-                )
         except Exception as e:
             logger.warning(f"⚠️ 绘制回放数据时出错: {e}")
     
@@ -484,24 +541,30 @@ def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None, oth
             
             # 绘制其他算法的触后数据
             if hasattr(other_play_note, 'after_touch') and other_play_note.after_touch is not None and not other_play_note.after_touch.empty:
-                x_after_touch = (other_play_note.after_touch.index + other_play_note.offset) / 10.0
+                # 计算绝对时间：相对时间 + offset，然后转换为 ms，再减去平均延时
+                other_mean_delay_ms = mean_delays.get(other_alg_name, 0.0)
+                x_after_touch_adjusted = (other_play_note.after_touch.index + other_play_note.offset) / 10.0 - other_mean_delay_ms
+                x_after_touch_actual = (other_play_note.after_touch.index + other_play_note.offset) / 10.0  # 实际播放时间
                 y_after_touch = other_play_note.after_touch.values
                 fig.add_trace(
                     go.Scatter(
-                        x=x_after_touch,
+                        x=x_after_touch_adjusted,
                         y=y_after_touch,
                         mode='lines',
                         name='回放触后',  # 移除算法名，悬浮时会显示
                         line=dict(color=color, width=2, dash='dash'),
                         showlegend=True,
+                        legend="legend2",  # 使用下子图的图例
                         legendgroup=other_alg_group,  # 该算法的触后和锤子一组
-                        hovertemplate=f'算法: {other_alg_name}<br>时间: %{{x:.2f}} ms<br>触后压力: %{{y}}<extra></extra>'
-                    )
+                        customdata=x_after_touch_actual,  # 传递实际播放时间作为自定义数据
+                        hovertemplate=f'算法: {other_alg_name}<br>实际播放时间: %{{customdata:.2f}} ms<br>平均延时: {other_mean_delay_ms:.2f} ms<br>调整后时间: %{{x:.2f}} ms<br>触后压力: %{{y}}<extra></extra>'
+                    ),
+                    row=2, col=1  # 只在下子图（偏移后）显示其他算法
                 )
             
-            # 绘制其他算法的锤子数据
+            # 绘制其他算法的锤子数据（使用原始时间，不偏移）
             if hasattr(other_play_note, 'hammers') and other_play_note.hammers is not None and not other_play_note.hammers.empty:
-                x_hammers = (other_play_note.hammers.index + other_play_note.offset) / 10.0
+                x_hammers = (other_play_note.hammers.index + other_play_note.offset) / 10.0  # 锤子使用原始时间，不偏移
                 y_hammers = other_play_note.hammers.values
                 fig.add_trace(
                     go.Scatter(
@@ -511,9 +574,12 @@ def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None, oth
                         name='回放锤子',  # 移除算法名，悬浮时会显示
                         marker=dict(color=color, size=6, symbol='square'),
                         showlegend=True,
+                        legend="legend2",  # 使用下子图的图例
                         legendgroup=other_alg_group,  # 该算法的触后和锤子一组
-                        hovertemplate=f'算法: {other_alg_name}<br>时间: %{{x:.2f}} ms<br>锤子速度: %{{y}}<extra></extra>'
-                    )
+                        customdata=x_hammers,  # 传递实际播放时间作为自定义数据
+                        hovertemplate=f'算法: {other_alg_name}<br>锤子时间: %{{customdata:.2f}} ms<br>锤子速度: %{{y}}<extra></extra>'
+                    ),
+                    row=2, col=1  # 只在下子图（偏移后）显示其他算法
                 )
         except Exception as e:
             logger.warning(f"⚠️ 绘制算法 '{other_alg_name}' 的回放数据时出错: {e}")
@@ -544,14 +610,15 @@ def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None, oth
     fig.update_layout(
         title=dict(
             text=title,
-            x=0.8,  # 标题在右侧
-            xanchor='right',  # 右对齐
-            y=0.98,  # 标题更靠近顶部
-            yanchor='top',  # 顶部对齐
-            font=dict(size=14)  # 稍微减小字体以适应右上角
+            x=0.5,  # 标题居中
+            xanchor='center',
+            y=0.95,  # 标题位置
+            yanchor='top',
+            font=dict(size=16, weight='bold')
         ),
+        # 上子图（偏移前）的轴设置
         xaxis=dict(
-            title=dict(text='时间 (ms)', font=dict(size=14)),
+            title=dict(text='时间 (ms)', font=dict(size=12)),
             showgrid=True,
             showline=True,
             linewidth=1,
@@ -559,38 +626,75 @@ def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None, oth
             mirror=True
         ),
         yaxis=dict(
-            title=dict(text='数值（触后压力/锤子速度）', font=dict(size=14)),
+            title=dict(text='数值（触后压力/锤子速度）', font=dict(size=12)),
             showgrid=True,
             showline=True,
             linewidth=1,
             linecolor='black',
             mirror=True
         ),
-        height=650,  # 略微减小高度（从700改为650），让曲线图缩小一点
-        width=1200,  # 增加宽度（往右扩展），为更多图注留出空间
+        # 下子图（偏移后）的轴设置
+        xaxis2=dict(
+            title=dict(text='时间 (ms)', font=dict(size=12)),
+            showgrid=True,
+            showline=True,
+            linewidth=1,
+            linecolor='black',
+            mirror=True
+        ),
+        yaxis2=dict(
+            title=dict(text='数值（触后压力/锤子速度）', font=dict(size=12)),
+            showgrid=True,
+            showline=True,
+            linewidth=1,
+            linecolor='black',
+            mirror=True
+        ),
+        height=900,  # 增加高度以适应两个子图
+        width=1200,  # 适当减少宽度，使图表更紧凑
         template='simple_white',
-        showlegend=True,
+        # 为上子图创建独立的图例（曲线图内部）
         legend=dict(
             orientation="h",
-            yanchor="bottom",  # 底部对齐，让图注在图表上方
-            y=1.02,  # 图注位置稍微上移（从1.0改为1.02），与曲线图留出一点间距
-            xanchor="left",  # 左对齐，让图注框从左边开始
-            x=0.0,  # 图注从左边开始
-            traceorder='grouped',  # 按组排序（录制、算法1、算法2...分组）
-            tracegroupgap=150,  # 组之间的间距（像素），移除算法名后可以减小
-            itemwidth=50,  # 每个图注项的宽度，移除算法名后可以减小
-            font=dict(size=10),  # 图注字体大小
-            bgcolor='rgba(255,255,255,0.95)',  # 图注背景色（更不透明）
-            bordercolor='gray',
-            borderwidth=2,  # 边框宽度，稍微增大使边框更明显
-            entrywidthmode='pixels',  # 使用像素模式，让图注项根据内容自动调整宽度
-            entrywidth=100,  # 每个图注项的最小宽度（像素），移除算法名后可以减小
-            groupclick='toggleitem',  # 点击时只切换单个item，而不是整个组
-            itemsizing='trace',  # 使用trace模式，让图注项根据文字内容自动调整大小
-            itemclick='toggle'  # 点击时切换当前项的显示/隐藏状态
+            yanchor="top",
+            y=1.08,  # 上子图内部顶部
+            xanchor="left",
+            x=0.00,  # 左边位置
+            traceorder='grouped',
+            tracegroupgap=60,
+            itemwidth=40,
+            font=dict(size=8),
+            bgcolor='rgba(255,255,255,0.9)',
+            bordercolor='blue',
+            borderwidth=1,
+            entrywidthmode='pixels',
+            entrywidth=80,
+            groupclick='toggleitem',
+            itemsizing='trace',
+            itemclick='toggle'
+        ),
+        # 为下子图创建独立的图例（曲线图内部）
+        legend2=dict(
+            orientation="h",
+            yanchor="top",
+            y=0.53,  # 下子图内部顶部（相对于整个图表坐标系）
+            xanchor="left",
+            x=0.0,  # 左边位置
+            traceorder='grouped',
+            tracegroupgap=60,
+            itemwidth=40,
+            font=dict(size=8),
+            bgcolor='rgba(255,255,255,0.9)',
+            bordercolor='red',
+            borderwidth=1,
+            entrywidthmode='pixels',
+            entrywidth=80,
+            groupclick='toggleitem',
+            itemsizing='trace',
+            itemclick='toggle'
         ),
         hovermode='x unified',  # 统一悬停模式
-        margin=dict(l=60, r=40, t=100, b=80)  # 减少上边距（从120改为100），为图注留出空间但不覆盖曲线
+        margin=dict(l=60, r=40, t=120, b=80)  # 增加上边距为图注和标题留出空间但不覆盖曲线
     )
     
     return fig

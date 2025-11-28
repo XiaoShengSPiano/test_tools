@@ -11,7 +11,7 @@ SPMID音符匹配器
 """
 
 from .spmid_reader import Note
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Union, Optional
 from utils.logger import Logger
 
 logger = Logger.get_logger()
@@ -22,7 +22,7 @@ class NoteMatcher:
     def __init__(self, global_time_offset: float = 0.0):
         """
         初始化音符匹配器
-        
+
         Args:
             global_time_offset: 全局时间偏移量（已废弃，固定为0）
         """
@@ -33,6 +33,8 @@ class NoteMatcher:
         # 记录超过阈值但有最佳配对的匹配对：List[Tuple[int, int, Note, Note]]，格式与matched_pairs相同
         # 这些匹配对虽然超过阈值，但仍然有最佳配对，可以用于显示对比曲线图
         self.exceeds_threshold_matched_pairs: List[Tuple[int, int, Note, Note]] = []
+        # 缓存平均误差，避免重复计算
+        self._mean_error_cached: Optional[float] = None
     
     def find_all_matched_pairs(self, record_data: List[Note], replay_data: List[Note]) -> List[Tuple[int, int, Note, Note]]:
         """
@@ -47,9 +49,10 @@ class NoteMatcher:
         """
         matched_pairs = []
         used_replay_indices = set()
-        # 清空上一轮失败原因和超过阈值的匹配对
+        # 清空上一轮失败原因、超过阈值的匹配对和缓存的平均误差
         self.failure_reasons.clear()
         self.exceeds_threshold_matched_pairs.clear()
+        self._clear_mean_error_cache()
         
         logger.info(f"🎯 开始音符匹配: 录制数据{len(record_data)}个音符, 回放数据{len(replay_data)}个音符")
         
@@ -164,13 +167,16 @@ class NoteMatcher:
                 self.failure_reasons[("record", i)] = reason
         
         self.matched_pairs = matched_pairs
-        
+
         # 记录匹配结果统计
         success_count = len(matched_pairs)
         failure_count = len(record_data) - success_count
         logger.info(f"🎯 音符匹配完成: 成功匹配{success_count}对, 失败{failure_count}个, "
                    f"成功率{success_count/len(record_data)*100:.1f}%")
-        
+
+        # 匹配完成后计算并缓存平均误差
+        self._mean_error_cached = self._calculate_mean_error()
+
         return matched_pairs
 
     def _generate_sorted_candidates_within_threshold(self, notes_list: List[Note], target_keyon: float, target_keyoff: float, target_key_id: int) -> Tuple[List[Dict[str, float]], float, str]:
@@ -356,14 +362,14 @@ class NoteMatcher:
         return self.matched_pairs.copy()
     
     # TODO
-    def get_offset_alignment_data(self) -> List[Dict[str, Any]]:
+    def get_offset_alignment_data(self) -> List[Dict[str, Union[int, float]]]:
         """
         获取偏移对齐数据 - 计算每个匹配对的时间偏移
         
         Returns:
-            List[Dict[str, Any]]: 偏移对齐数据列表
+            List[Dict[str, Union[int, float]]]: 偏移对齐数据列表
         """
-        offset_data = []
+        offset_data: List[Dict[str, Union[int, float]]] = []
         
         for record_idx, replay_idx, record_note, replay_note in self.matched_pairs:
             # 计算录制和播放音符的时间
@@ -398,7 +404,7 @@ class NoteMatcher:
         
         return offset_data
     
-    def get_invalid_notes_offset_analysis(self, record_data: List[Note], replay_data: List[Note]) -> List[Dict[str, Any]]:
+    def get_invalid_notes_offset_analysis(self, record_data: List[Note], replay_data: List[Note]) -> List[Dict[str, Union[int, float, str]]]:
         """
         获取无效音符的偏移对齐分析
         
@@ -407,7 +413,7 @@ class NoteMatcher:
             replay_data: 播放数据
             
         Returns:
-            List[Dict[str, Any]]: 无效音符偏移分析数据
+            List[Dict[str, Union[int, float, str]]]: 无效音符偏移分析数据
         """
         invalid_offset_data = []
         
@@ -428,7 +434,7 @@ class NoteMatcher:
         return invalid_offset_data
     
     def _analyze_invalid_notes(self, notes_data: List[Note], matched_indices: set, data_type: str, 
-                              other_notes_data: List[Note] = None) -> List[Dict[str, Any]]:
+                              other_notes_data: List[Note] = None) -> List[Dict[str, Union[int, float, str]]]:
         """
         分析无效音符的通用方法
         
@@ -439,7 +445,7 @@ class NoteMatcher:
             other_notes_data: 另一个数据类型的音符列表，用于分析匹配失败原因
             
         Returns:
-            List[Dict[str, Any]]: 无效音符分析数据
+            List[Dict[str, Union[int, float, str]]]: 无效音符分析数据
         """
         invalid_notes = []
         
@@ -756,29 +762,46 @@ class NoteMatcher:
     
     def get_mean_error(self) -> float:
         """
-        计算已匹配按键对的平均误差（ME，带符号的平均偏差）
+        获取已匹配按键对的平均误差（ME，带符号的平均偏差）
         对所有匹配对的keyon_offset（replay_keyon - record_keyon）求算术平均。
-        
+
         Returns:
             float: 平均误差ME（单位：0.1ms，UI显示为ms需除以10）
         """
+        # 返回缓存的平均误差，如果没有缓存则计算
+        if self._mean_error_cached is None:
+            self._mean_error_cached = self._calculate_mean_error()
+        return self._mean_error_cached
+
+    def _calculate_mean_error(self) -> float:
+        """
+        计算已匹配按键对的平均误差（内部方法）
+
+        Returns:
+            float: 平均误差ME（单位：0.1ms）
+        """
         if not self.matched_pairs:
             return 0.0
-        
+
         offset_data = self.get_offset_alignment_data()
         offsets = [item.get('keyon_offset', 0) for item in offset_data]
         if not offsets:
             return 0.0
         return sum(offsets) / len(offsets)
-    
 
+    def _clear_mean_error_cache(self) -> None:
+        """
+        清除平均误差缓存
+        当匹配对发生变化时调用此方法
+        """
+        self._mean_error_cached = None
     
-    def get_offset_statistics(self) -> Dict[str, Any]:
+    def get_offset_statistics(self) -> Dict[str, Union[int, Dict[str, float]]]:
         """
         获取偏移统计信息
         
         Returns:
-            Dict[str, Any]: 偏移统计信息
+            Dict[str, Union[int, Dict[str, float]]]: 偏移统计信息
         """
         if not self.matched_pairs:
             return {

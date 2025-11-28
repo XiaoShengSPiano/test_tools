@@ -8,13 +8,16 @@
 
 import os
 import tempfile
+import traceback
 import pandas as pd
 import numpy as np
-from typing import Optional, Tuple, Dict, Any, List
+from typing import Optional, Tuple, Dict, Any, List, Union
 from utils.logger import Logger
 
 # SPMID相关导入
+import spmid
 from spmid.spmid_analyzer import SPMIDAnalyzer
+import spmid.spmid_plot as spmid
 
 # 导入各个模块
 from .data_manager import DataManager
@@ -80,7 +83,13 @@ class PianoAnalysisBackend:
         # 清理多算法管理器
         if self.multi_algorithm_manager:
             self.multi_algorithm_manager.clear_all()
-        
+
+        # 清除上传状态，允许重新上传同一文件
+        self._last_upload_content = None
+        self._last_upload_time = None
+        self._last_selected_history_id = None
+        self._last_history_time = None
+
         logger.info("✅ 所有数据状态已清理")
     
     def set_upload_data_source(self, filename: str) -> None:
@@ -98,15 +107,18 @@ class PianoAnalysisBackend:
     def process_file_upload(self, contents, filename):
         """
         处理文件上传 - 统一的文件上传入口
-        
+
         Args:
             contents: 上传文件的内容（base64编码）
             filename: 上传文件的文件名
-            
+
         Returns:
             tuple: (info_content, error_content, error_msg)
         """
-        return self.data_manager.process_file_upload(contents, filename, self.history_manager)
+        # 使用统一的上传管理器处理
+        from backend.upload_manager import UploadManager
+        upload_manager = UploadManager(self)
+        return upload_manager.process_upload(contents, filename)
     
     def process_history_selection(self, history_id):
         """
@@ -487,7 +499,7 @@ class PianoAnalysisBackend:
             return fig
         except Exception as e:
             logger.error(f"生成延时时间序列图失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return self.plot_generator._create_empty_plot(f"生成延时时间序列图失败: {str(e)}")
     
@@ -636,7 +648,7 @@ class PianoAnalysisBackend:
             return fig
         except Exception as e:
             logger.error(f"生成延时直方图失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return self.plot_generator._create_empty_plot(f"生成延时直方图失败: {str(e)}")
     
@@ -733,12 +745,12 @@ class PianoAnalysisBackend:
             return filtered_data
         except Exception as e:
             logger.error(f"获取延时范围数据点失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return []
 
     
-    def get_offset_alignment_data(self) -> List[Dict[str, Any]]:
+    def get_offset_alignment_data(self) -> List[Dict[str, Union[int, float, str]]]:
         """获取偏移对齐数据 - 转换为DataTable格式，包含无效音符分析（支持单算法和多算法模式）"""
         
         # 检查是否在多算法模式
@@ -762,7 +774,6 @@ class PianoAnalysisBackend:
             
             # 使用字典按按键ID分组，每个按键ID包含多个算法的数据
             from collections import defaultdict
-            import numpy as np
             
             # 第一层：按键ID -> 第二层：算法名称 -> 数据
             key_algorithm_data = defaultdict(dict)
@@ -895,7 +906,6 @@ class PianoAnalysisBackend:
             
             # 按按键ID分组并计算统计信息
             from collections import defaultdict
-            import numpy as np
             
             # 按按键ID分组有效匹配的偏移数据（使用带符号的keyon_offset，保留正负值）
             key_groups = defaultdict(list)
@@ -1024,8 +1034,7 @@ class PianoAnalysisBackend:
             std_values = []
             variance_values = []
             status_list = []
-            
-            import numpy as np
+        
             
             for item in alignment_data:
                 key_id = item['key_id']
@@ -1320,7 +1329,7 @@ class PianoAnalysisBackend:
             
         except Exception as e:
             logger.error(f"❌ 生成偏移对齐分析柱状图失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return self.plot_generator._create_empty_plot(f"生成柱状图失败: {str(e)}")
     
@@ -1527,7 +1536,7 @@ class PianoAnalysisBackend:
             
         except Exception as e:
             logger.error(f"❌ 生成散点图失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return self.plot_generator._create_empty_plot(f"生成散点图失败: {str(e)}")
     
@@ -1647,7 +1656,6 @@ class PianoAnalysisBackend:
                 return self.plot_generator._create_empty_plot("没有有效的散点图数据")
             
             # 计算Z-Score（与按键与延时Z-Score散点图相同的计算方式）
-            import numpy as np
             import math
             me_0_1ms = self.get_mean_error()  # 总体均值（0.1ms单位，带符号）
             std_0_1ms = self.get_standard_deviation()  # 总体标准差（0.1ms单位，带符号）
@@ -1741,20 +1749,7 @@ class PianoAnalysisBackend:
                     hovertemplate='Z-Score = -3 (下阈值)<extra></extra>'
                 ))
             
-            # 更新布局
-            # 生成对数刻度的标签（显示原始锤速值，但坐标轴是对数形式）
-            if len(hammer_velocities) > 0:
-                min_vel = min(hammer_velocities)
-                max_vel = max(hammer_velocities)
-                # 生成合理的刻度点（10的幂次）
-                min_log = math.floor(math.log10(min_vel))
-                max_log = math.ceil(math.log10(max_vel))
-                tick_vals = [10**i for i in range(min_log, max_log + 1) if 10**i >= min_vel and 10**i <= max_vel]
-                tick_texts = [f"{int(v)}" for v in tick_vals]
-                tick_positions = [math.log10(v) for v in tick_vals]
-            else:
-                tick_positions = []
-                tick_texts = []
+            # 简单的布局更新，不需要复杂的刻度计算
             
             fig.update_layout(
                 # 删除title，因为UI区域已有标题
@@ -1764,9 +1759,11 @@ class PianoAnalysisBackend:
                     showgrid=True,
                     gridcolor='lightgray',
                     gridwidth=1,
-                    tickmode='array' if tick_positions else 'auto',
-                    tickvals=tick_positions if tick_positions else None,
-                    ticktext=tick_texts if tick_texts else None
+                    # 使用线性刻度，让Plotly自动处理，但设置合适的范围
+                    autorange=True,
+                    # 设置刻度格式
+                    tickformat='.1f',  # 显示1位小数
+                    dtick=0.2  # 每0.2个单位一个刻度
                 ),
                 yaxis=dict(
                     showgrid=True,
@@ -1797,7 +1794,7 @@ class PianoAnalysisBackend:
             
         except Exception as e:
             logger.error(f"❌ 生成散点图失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return self.plot_generator._create_empty_plot(f"生成散点图失败: {str(e)}")
     
@@ -1955,7 +1952,7 @@ class PianoAnalysisBackend:
             
         except Exception as e:
             logger.error(f"❌ 生成散点图失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return self.plot_generator._create_empty_plot(f"生成散点图失败: {str(e)}")
 
@@ -2131,7 +2128,7 @@ class PianoAnalysisBackend:
             
         except Exception as e:
             logger.error(f"❌ 获取{delay_type}延迟对应的音符失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return None
     
@@ -2225,7 +2222,7 @@ class PianoAnalysisBackend:
             
         except Exception as e:
             logger.error(f"❌ 获取第一个数据点失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return None
     
@@ -2292,7 +2289,7 @@ class PianoAnalysisBackend:
             
         except Exception as e:
             logger.error(f"❌ 测试曲线对齐失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return {
                 'status': 'error',
@@ -2328,12 +2325,20 @@ class PianoAnalysisBackend:
         if record_note is None or play_note is None:
             logger.warning(f"⚠️ 未找到匹配对: record_index={record_index}, replay_index={replay_index}")
             return None, None, None
-        
+
+        # 计算平均延时
+        mean_delays = {}
+        if self.analyzer:
+            mean_error_0_1ms = self.analyzer.get_mean_error()
+            mean_delays['default'] = mean_error_0_1ms / 10.0  # 转换为毫秒
+        else:
+            logger.warning("⚠️ 无法获取单算法模式的平均延时")
+
         # 使用spmid模块生成详细图表
-        import spmid
-        detail_figure1 = spmid.plot_note_comparison_plotly(record_note, None)
-        detail_figure2 = spmid.plot_note_comparison_plotly(None, play_note)
-        detail_figure_combined = spmid.plot_note_comparison_plotly(record_note, play_note)
+
+        detail_figure1 = spmid.plot_note_comparison_plotly(record_note, None, mean_delays=mean_delays)
+        detail_figure2 = spmid.plot_note_comparison_plotly(None, play_note, mean_delays=mean_delays)
+        detail_figure_combined = spmid.plot_note_comparison_plotly(record_note, play_note, mean_delays=mean_delays)
         
         logger.info(f"✅ 生成散点图点击的详细曲线图，record_index={record_index}, replay_index={replay_index}")
         return detail_figure1, detail_figure2, detail_figure_combined
@@ -2378,12 +2383,19 @@ class PianoAnalysisBackend:
         if record_note is None or play_note is None:
             logger.warning(f"⚠️ 未找到匹配对: 算法={algorithm_name}, record_index={record_index}, replay_index={replay_index}")
             return None, None, None
-        
+
+        # 计算平均延时
+        mean_delays = {}
+        if algorithm.analyzer:
+            mean_error_0_1ms = algorithm.analyzer.get_mean_error()
+            mean_delays[algorithm_name] = mean_error_0_1ms / 10.0  # 转换为毫秒
+        else:
+            logger.warning(f"⚠️ 无法获取算法 '{algorithm_name}' 的平均延时")
+
         # 使用spmid模块生成详细图表
-        import spmid
-        detail_figure1 = spmid.plot_note_comparison_plotly(record_note, None, algorithm_name=algorithm_name)
-        detail_figure2 = spmid.plot_note_comparison_plotly(None, play_note, algorithm_name=algorithm_name)
-        detail_figure_combined = spmid.plot_note_comparison_plotly(record_note, play_note, algorithm_name=algorithm_name)
+        detail_figure1 = spmid.plot_note_comparison_plotly(record_note, None, algorithm_name=algorithm_name, mean_delays=mean_delays)
+        detail_figure2 = spmid.plot_note_comparison_plotly(None, play_note, algorithm_name=algorithm_name, mean_delays=mean_delays)
+        detail_figure_combined = spmid.plot_note_comparison_plotly(record_note, play_note, algorithm_name=algorithm_name, mean_delays=mean_delays)
         
         logger.info(f"✅ 生成多算法散点图点击的详细曲线图，算法={algorithm_name}, record_index={record_index}, replay_index={replay_index}")
         return detail_figure1, detail_figure2, detail_figure_combined
@@ -2541,11 +2553,16 @@ class PianoAnalysisBackend:
                         record_note = r_note
                         break
         
+        # 计算平均延时
+        mean_delays = {}
+        if algorithm.analyzer:
+            mean_error_0_1ms = algorithm.analyzer.get_mean_error()
+            mean_delays[algorithm_name] = mean_error_0_1ms / 10.0  # 转换为毫秒
+
         # 使用spmid模块生成详细图表
-        import spmid
-        detail_figure1 = spmid.plot_note_comparison_plotly(record_note, None, algorithm_name=algorithm_name)
-        detail_figure2 = spmid.plot_note_comparison_plotly(None, play_note, algorithm_name=algorithm_name)
-        detail_figure_combined = spmid.plot_note_comparison_plotly(record_note, play_note, algorithm_name=algorithm_name)
+        detail_figure1 = spmid.plot_note_comparison_plotly(record_note, None, algorithm_name=algorithm_name, mean_delays=mean_delays)
+        detail_figure2 = spmid.plot_note_comparison_plotly(None, play_note, algorithm_name=algorithm_name, mean_delays=mean_delays)
+        detail_figure_combined = spmid.plot_note_comparison_plotly(record_note, play_note, algorithm_name=algorithm_name, mean_delays=mean_delays)
         
         logger.info(f"✅ 生成算法 '{algorithm_name}' 的详细图表，索引={index}, 类型={'record' if is_record else 'play'}")
         return detail_figure1, detail_figure2, detail_figure_combined
@@ -2677,7 +2694,7 @@ class PianoAnalysisBackend:
             return None, None, None
         
         # 生成图表
-        import spmid.spmid_plot as spmid
+
         try:
             # 验证 Note 对象是否有效
             if error_type == 'drop' and record_note:
@@ -2685,9 +2702,15 @@ class PianoAnalysisBackend:
             elif error_type == 'multi' and play_note:
                 logger.info(f"🔍 多锤 - play_note ID={play_note.id}, after_touch长度={len(play_note.after_touch) if hasattr(play_note, 'after_touch') and play_note.after_touch is not None else 0}, hammers长度={len(play_note.hammers) if hasattr(play_note, 'hammers') and play_note.hammers is not None else 0}")
             
-            detail_figure1 = spmid.plot_note_comparison_plotly(record_note, None, algorithm_name=algorithm_name)
-            detail_figure2 = spmid.plot_note_comparison_plotly(None, play_note, algorithm_name=algorithm_name)
-            detail_figure_combined = spmid.plot_note_comparison_plotly(record_note, play_note, algorithm_name=algorithm_name)
+            # 计算平均延时
+            mean_delays = {}
+            if algorithm and algorithm.analyzer:
+                mean_error_0_1ms = algorithm.analyzer.get_mean_error()
+                mean_delays[algorithm_name] = mean_error_0_1ms / 10.0  # 转换为毫秒
+
+            detail_figure1 = spmid.plot_note_comparison_plotly(record_note, None, algorithm_name=algorithm_name, mean_delays=mean_delays)
+            detail_figure2 = spmid.plot_note_comparison_plotly(None, play_note, algorithm_name=algorithm_name, mean_delays=mean_delays)
+            detail_figure_combined = spmid.plot_note_comparison_plotly(record_note, play_note, algorithm_name=algorithm_name, mean_delays=mean_delays)
             
             # 验证图表是否有效
             if detail_figure1 is None or detail_figure2 is None or detail_figure_combined is None:
@@ -2699,7 +2722,7 @@ class PianoAnalysisBackend:
             return detail_figure1, detail_figure2, detail_figure_combined
         except Exception as e:
             logger.error(f"❌ 生成图表时出错: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return None, None, None
     
@@ -2848,7 +2871,7 @@ class PianoAnalysisBackend:
                     
                 except Exception as e:
                     logger.error(f"❌ 获取算法 '{algorithm_name}' 的无效音符统计数据失败: {e}")
-                    import traceback
+                    
                     logger.error(traceback.format_exc())
                     continue
             
@@ -2942,7 +2965,7 @@ class PianoAnalysisBackend:
 
         except Exception as e:
             logger.error(f"错误分析失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
     
     # ==================== 延时关系分析相关方法 ====================
@@ -2971,7 +2994,7 @@ class PianoAnalysisBackend:
             
         except Exception as e:
             logger.error(f"❌ 延时与按键分析失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return {
                 'status': 'error',
@@ -3002,7 +3025,7 @@ class PianoAnalysisBackend:
             
         except Exception as e:
             logger.error(f"❌ 延时与锤速分析失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return {
                 'status': 'error',
@@ -3034,7 +3057,7 @@ class PianoAnalysisBackend:
             
         except Exception as e:
             logger.error(f"❌ 生成延时与按键分析图表失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return {
                 'boxplot': self.plot_generator._create_empty_plot(f"生成失败: {str(e)}"),
@@ -3058,7 +3081,7 @@ class PianoAnalysisBackend:
             
         except Exception as e:
             logger.error(f"❌ 生成延时与锤速分析图表失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return self.plot_generator._create_empty_plot(f"生成失败: {str(e)}")
     
@@ -3140,7 +3163,7 @@ class PianoAnalysisBackend:
             
         except Exception as e:
             logger.error(f"❌ 按键力度-延时分析失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return {
                 'status': 'error',
@@ -3232,14 +3255,13 @@ class PianoAnalysisBackend:
             
         except Exception as e:
             logger.error(f"❌ 按键-力度交互分析失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return {
                 'status': 'error',
                 'message': f'分析失败: {str(e)}'
             }
     
-    # generate_force_delay_by_key_plot 已删除（功能与按键-力度交互效应图重复）
     
     def generate_key_force_interaction_plot(self) -> Any:
         """
@@ -3258,7 +3280,7 @@ class PianoAnalysisBackend:
             
         except Exception as e:
             logger.error(f"❌ 生成交互效应图失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return self.plot_generator._create_empty_plot(f"生成失败: {str(e)}")
     
@@ -3356,7 +3378,7 @@ class PianoAnalysisBackend:
             
         except Exception as e:
             logger.error(f"❌ 迁移现有数据失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return False, str(e)
     
@@ -3411,7 +3433,7 @@ class PianoAnalysisBackend:
             
         except Exception as e:
             logger.error(f"❌ 添加算法失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return False, str(e)
     
@@ -3635,13 +3657,36 @@ class PianoAnalysisBackend:
                     me_0_1ms = algorithm.analyzer.note_matcher.get_mean_error()
                     mean_delay_ms = me_0_1ms / 10.0  # 转换为ms
                     
-                    # 计算相对延时
+                    # 计算相对延时和锤速差值
                     relative_delays = []
+                    hammer_velocity_diffs = []  # 锤速差值列表
                     for item in offset_data:
                         keyon_offset_0_1ms = item.get('keyon_offset', 0.0)
                         absolute_delay_ms = keyon_offset_0_1ms / 10.0
                         relative_delay_ms = absolute_delay_ms - mean_delay_ms
                         relative_delays.append(relative_delay_ms)
+
+                        # 获取锤速差值（播放锤速 - 录制锤速）
+                        # 注意：这里需要从匹配对中获取锤速信息
+                        record_idx = item.get('record_index')
+                        replay_idx = item.get('replay_index')
+                        if record_idx is not None and replay_idx is not None:
+                            # 查找匹配对
+                            matched_pairs = algorithm.analyzer.note_matcher.get_matched_pairs()
+                            for r_idx, p_idx, record_note, replay_note in matched_pairs:
+                                if r_idx == record_idx and p_idx == replay_idx:
+                                    # 获取录制音符的锤速（通常是固定的参考值）
+                                    record_velocity = 100  # 默认录制锤速，通常是100
+                                    if len(replay_note.hammers) > 0:
+                                        replay_velocity = replay_note.hammers.values[0] if hasattr(replay_note.hammers, 'values') else replay_note.hammers[0]
+                                        velocity_diff = replay_velocity - record_velocity
+                                        hammer_velocity_diffs.append({
+                                            'key_id': record_note.id,
+                                            'record_velocity': record_velocity,
+                                            'replay_velocity': replay_velocity,
+                                            'velocity_diff': velocity_diff
+                                        })
+                                    break
                     
                     if relative_delays:
                         group_relative_delays.extend(relative_delays)
@@ -3669,7 +3714,8 @@ class PianoAnalysisBackend:
                             'filename_display': filename_display,
                             'mean_delay_ms': mean_delay_ms,
                             'relative_delays': relative_delays,  # 该曲子的相对延时列表
-                            'relative_delay_count': len(relative_delays)
+                            'relative_delay_count': len(relative_delays),
+                            'hammer_velocity_diffs': hammer_velocity_diffs  # 该曲子的锤速差值列表
                         })
                 
                 if group_relative_delays:
@@ -3686,7 +3732,6 @@ class PianoAnalysisBackend:
                 }
             
             # 计算统计信息
-            import numpy as np
             relative_delays_array = np.array(all_relative_delays)
             
             statistics = {
@@ -3724,7 +3769,7 @@ class PianoAnalysisBackend:
             
         except Exception as e:
             logger.error(f"❌ 分析同种算法相对延时分布失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return {
                 'status': 'error',
@@ -3811,7 +3856,7 @@ class PianoAnalysisBackend:
             
         except Exception as e:
             logger.error(f"获取相对延时范围数据点失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return []
     
@@ -3837,7 +3882,7 @@ class PianoAnalysisBackend:
             
         except Exception as e:
             logger.error(f"❌ 生成相对延时分布图失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return self.plot_generator._create_empty_plot(f"生成失败: {str(e)}")
     

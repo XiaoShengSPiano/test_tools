@@ -8,6 +8,7 @@
 """
 
 import time
+import traceback
 from typing import List, Dict, Any, Tuple, Optional
 import dash_bootstrap_components as dbc
 from dash import html, no_update
@@ -155,23 +156,23 @@ class MultiFileUploadHandler:
             if existing_store_data and isinstance(existing_store_data, dict):
                 processed_files = set(existing_store_data.get('filenames', []))
             
-            # 创建文件卡片列表
+            # 创建文件卡片列表 - 统一上传管理器已处理重复检测，这里总是处理
             file_items = []
             for i, (content, filename) in enumerate(zip(contents_list, filename_list)):
-                # 只处理新上传的文件
-                if filename not in processed_files:
-                    file_id = self.generate_file_id(timestamp, i)
-                    file_card = self.create_file_card(file_id, filename)
-                    file_items.append(file_card)
-                    
-                    # 添加到新的store数据
-                    new_store_data['contents'].append(content)
-                    new_store_data['filenames'].append(filename)
-                    new_store_data['file_ids'].append(file_id)
+                file_id = self.generate_file_id(timestamp, i)
+                file_card = self.create_file_card(file_id, filename)
+                file_items.append(file_card)
+
+                # 添加到新的store数据
+                new_store_data['contents'].append(content)
+                new_store_data['filenames'].append(filename)
+                new_store_data['file_ids'].append(file_id)
+
+                logger.info(f"📄 添加文件到多算法处理队列: {filename}")
             
             if not file_items:
-                # 没有新文件，可能是重复上传
-                status_text = html.Span("没有新文件，请上传不同的文件", style={'color': '#ffc107'})
+                # 没有文件
+                status_text = html.Span("没有上传文件", style={'color': '#ffc107'})
                 return no_update, status_text, no_update
             
             # 合并到现有的store_data（保留之前未处理的文件）
@@ -245,7 +246,7 @@ class MultiFileUploadHandler:
             
         except Exception as e:
             logger.error(f"❌ 处理多文件上传失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             error_text = html.Span(f"处理失败: {str(e)}", style={'color': '#dc3545'})
             return no_update, error_text, no_update

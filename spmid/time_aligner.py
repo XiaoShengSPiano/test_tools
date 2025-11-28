@@ -77,13 +77,3 @@ class TimeAligner:
         """
         logger.debug(f"使用简单全局DTW对齐：录制{len(record_times)}个音符, 播放{len(replay_times)}个音符")
         return self._calculate_dtw_offset(record_times, replay_times, "简单DTW")
-    
-    
-    def get_global_time_offset(self) -> float:
-        """
-        获取全局时间偏移量
-        
-        Returns:
-            float: 全局时间偏移量
-        """
-        return self.global_time_offset

@@ -6,6 +6,9 @@ import dash_bootstrap_components as dbc
 from dash import dcc, html, dash_table
 import plotly.graph_objects as go
 
+from utils.logger import Logger
+logger = Logger.get_logger()
+
 
 # 创建空白图形
 empty_figure = go.Figure()
@@ -431,8 +434,6 @@ def create_main_layout():
         dcc.Graph(id='key-delay-scatter-plot', figure={}, style={'display': 'none'}),
         dcc.Graph(id='key-delay-zscore-scatter-plot', figure={}, style={'display': 'none'}),
         dcc.Graph(id='hammer-velocity-delay-scatter-plot', figure={}, style={'display': 'none'}),
-        # key-hammer-velocity-scatter-plot 已删除（功能与按键-力度交互效应图重复）
-        # force-delay-by-key-scatter-plot 已删除（功能与按键-力度交互效应图重复）
         dcc.Graph(id='key-force-interaction-plot', figure={}, style={'display': 'none'}),
         dcc.Store(id='key-force-interaction-selected-algorithms', data=[]),  # 存储选中的算法列表
         dcc.Store(id='key-force-interaction-selected-keys', data=[]),  # 存储选中的按键列表
@@ -692,8 +693,6 @@ def create_main_layout():
 
 def _create_single_algorithm_overview_row(algorithm, algorithm_name):
     """为单个算法创建数据概览行（不包含卡片，只返回行内容）"""
-    from utils.logger import Logger
-    logger = Logger.get_logger()
     
     try:
         # 获取算法的统计数据
@@ -771,9 +770,6 @@ def _create_single_algorithm_overview_row(algorithm, algorithm_name):
 
 def _create_single_algorithm_error_stats_row(algorithm, algorithm_name):
     """为单个算法创建延时误差统计指标行（不包含卡片，只返回行内容）"""
-    from utils.logger import Logger
-    logger = Logger.get_logger()
-    
     try:
         # 获取算法的统计数据
         if not algorithm.analyzer:
@@ -937,9 +933,6 @@ def _create_single_algorithm_error_tables(algorithm, algorithm_name):
     Returns:
         Tuple[html.Div, html.Div]: (丢锤表格区域, 多锤表格区域)
     """
-    from utils.logger import Logger
-    logger = Logger.get_logger()
-    
     try:
         if not algorithm.analyzer:
             return None, None
@@ -1254,6 +1247,7 @@ def create_report_layout(backend):
             dcc.Graph(id='key-delay-scatter-plot', figure=empty_fig, style={'display': 'none'}),
             dcc.Graph(id='key-delay-zscore-scatter-plot', figure=empty_fig, style={'display': 'none'}),
             dcc.Graph(id='hammer-velocity-delay-scatter-plot', figure=empty_fig, style={'display': 'none'}),
+            dcc.Graph(id='hammer-velocity-comparison-plot', figure=empty_fig, style={'display': 'none'}),
             # key-hammer-velocity-scatter-plot 已删除（功能与按键-力度交互效应图重复）
             # force-delay-by-key-scatter-plot 已删除（功能与按键-力度交互效应图重复）
             dcc.Graph(id='key-force-interaction-plot', figure=empty_fig, style={'display': 'none'}),
@@ -1396,7 +1390,7 @@ def create_report_layout(backend):
             ], width=12)
         ]),
         
-                # 按键与延时Z-Score标准化散点图区域
+        # 按键与延时Z-Score标准化散点图区域
         dbc.Row([
             dbc.Col([
                 html.Div([
@@ -1433,10 +1427,27 @@ def create_report_layout(backend):
                         ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
             ], width=12)
         ]),
-        
-                # 每个按键的力度-延时散点图已删除（功能与按键-力度交互效应图重复）
-        
-                # 按键-力度交互效应图
+
+        # 锤速对比图区域
+        dbc.Row([
+            dbc.Col([
+                html.Div([
+                    dbc.Row([
+                        dbc.Col([
+                            html.H6("锤速对比图", className="mb-2",
+                                   style={'color': '#ff9800', 'fontWeight': 'bold', 'borderBottom': '2px solid #ff9800', 'paddingBottom': '5px'}),
+                        ], width=12)
+                    ]),
+                    dcc.Graph(
+                        id='hammer-velocity-comparison-plot',
+                        figure={},
+                        style={'height': '500px'}
+                    ),
+                ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
+            ], width=12)
+        ]),
+
+        # 按键-力度交互效应图
         dbc.Row([
             dbc.Col([
                 html.Div([
@@ -1457,7 +1468,7 @@ def create_report_layout(backend):
             ], width=12)
         ]),
         
-                # 同种算法相对延时分布图
+        # 同种算法相对延时分布图
         dbc.Row([
             dbc.Col([
                 html.Div([
@@ -1475,7 +1486,7 @@ def create_report_layout(backend):
         # 曲线对齐测试区域
         create_curve_alignment_test_area(),
 
-                # 延时时间序列图
+        # 延时时间序列图
         dbc.Row([
             dbc.Col([
                 html.Div([
@@ -1494,7 +1505,7 @@ def create_report_layout(backend):
             ], width=12)
         ]),
         
-                # 延时分布直方图（附正态拟合曲线）- 使用相对时延
+        # 延时分布直方图（附正态拟合曲线）- 使用相对时延
         dbc.Row([
             dbc.Col([
                 html.Div([
@@ -1561,9 +1572,9 @@ def create_report_layout(backend):
             ], width=12)
         ]),
         
-                # 主要内容区域：为每个算法创建独立的丢锤和多锤表格（已在上面通过列表展开添加）
-                # 这里保留原有的单算法模式表格（用于向后兼容，但多算法模式下不会使用）
-            dbc.Row([
+        # 主要内容区域：为每个算法创建独立的丢锤和多锤表格（已在上面通过列表展开添加）
+        # 这里保留原有的单算法模式表格（用于向后兼容，但多算法模式下不会使用）
+        dbc.Row([
                 # 左侧：丢锤问题表格
                 dbc.Col([
                     html.Div([

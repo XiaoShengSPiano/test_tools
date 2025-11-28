@@ -1,67 +1,93 @@
 """
 钢琴数据分析工具 - 主应用入口
 """
+import os
 import warnings
-# 抑制来自 dash 及其依赖库的日期解析弃用警告
-warnings.filterwarnings('ignore', category=DeprecationWarning, message='.*Parsing dates.*')
+from typing import Optional
+
 import dash
 import dash_bootstrap_components as dbc
-from utils.logger import Logger
-import os
 
-# 导入模块化组件
+# 本地模块导入
 from backend.history_manager import HistoryManager
 from backend.session_manager import SessionManager
-from ui.layout_components import create_main_layout
 from ui.callbacks import register_callbacks
+from ui.layout_components import create_main_layout
+from utils.logger import Logger
 
-# 全局变量（使用单例模式，避免在debug模式下重复初始化）
-# 注意：在Flask debug模式下，模块会被重新加载，但单例模式可以确保只初始化一次
-_history_manager = None
-_session_manager = None
+# 常量定义
+HOST = '0.0.0.0'
+PORT = 9999
+DEBUG = True
 
-def get_history_manager():
-    """获取HistoryManager单例"""
-    global _history_manager
-    if _history_manager is None:
-        _history_manager = HistoryManager()
-    return _history_manager
+# 抑制来自 dash 及其依赖库的日期解析弃用警告
+warnings.filterwarnings('ignore', category=DeprecationWarning, message='.*Parsing dates.*')
 
-def get_session_manager():
-    """获取SessionManager单例"""
-    global _session_manager
-    if _session_manager is None:
-        _session_manager = SessionManager(get_history_manager())
-    return _session_manager
 
-# 初始化单例
-history_manager = get_history_manager()
-session_manager = get_session_manager()
+class ApplicationManager:
+    """应用管理器 - 使用单例模式管理核心组件"""
 
-# 初始化Dash应用
-app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
+    _instance: Optional['ApplicationManager'] = None
+    _history_manager: Optional[HistoryManager] = None
+    _session_manager: Optional[SessionManager] = None
+    _app: Optional[dash.Dash] = None
 
-# 设置suppress_callback_exceptions=True以支持动态组件
-app.config.suppress_callback_exceptions = True
+    def __new__(cls) -> 'ApplicationManager':
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
 
-# 设置主界面布局
-app.layout = create_main_layout()
+    @property
+    def history_manager(self) -> HistoryManager:
+        """获取历史管理器单例"""
+        if self._history_manager is None:
+            self._history_manager = HistoryManager()
+        return self._history_manager
 
-# 注册回调函数
-print("=" * 100)
-print("🔧 开始注册回调函数...")
-print("=" * 100)
-register_callbacks(app, session_manager, history_manager)
-print("=" * 100)
-print("✅ 回调函数注册完成！")
-print("=" * 100)
+    @property
+    def session_manager(self) -> SessionManager:
+        """获取会话管理器单例"""
+        if self._session_manager is None:
+            self._session_manager = SessionManager(self.history_manager)
+        return self._session_manager
 
-logger = Logger.get_logger()
+    @property
+    def app(self) -> dash.Dash:
+        """获取Dash应用单例"""
+        if self._app is None:
+            self._app = self._create_app()
+        return self._app
+
+    def _create_app(self) -> dash.Dash:
+        """创建并配置Dash应用"""
+        app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
+        app.config.suppress_callback_exceptions = True
+        # 创建主界面布局
+        app.layout = create_main_layout()
+        register_callbacks(app, self.session_manager, self.history_manager)
+        return app
+
+    def run(self) -> None:
+        """运行应用"""
+        logger = Logger.get_logger()
+
+        # 只在主进程中记录启动信息，避免Flask debug模式下的重复日志
+        if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+            logger.info("✅ SPMID模块加载成功")
+            logger.info(f"📁 数据库路径: {self.history_manager.db_path}")
+            logger.info("✅ 数据库初始化完成")
+            logger.info(f"🌐 访问地址: http://{HOST}:{PORT}")
+
+        self.app.run(debug=DEBUG, host=HOST, port=PORT)
+
+
+# 创建应用管理器实例
+app_manager = ApplicationManager()
+
+# 导出常用对象以保持向后兼容
+app = app_manager.app
+history_manager = app_manager.history_manager
+session_manager = app_manager.session_manager
 
 if __name__ == '__main__':
-    if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
-        logger.info("✅ SPMID模块加载成功 (utils)")
-        logger.info(f"📁 数据库路径: {history_manager.db_path}")
-        logger.info("✅ 数据库初始化完成")
-        logger.info("🌐 访问地址: http://localhost:9090")
-    app.run(debug=True, host='0.0.0.0', port=9090)
+    app_manager.run()

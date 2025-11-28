@@ -19,7 +19,7 @@ from .data_filter import DataFilter
 from .note_matcher import NoteMatcher
 from .error_detector import ErrorDetector
 from .dtw_aligner import DTWAligner
-from typing import List, Tuple, Optional, Dict, Any
+from typing import List, Tuple, Optional, Dict, Any, Union
 from utils.logger import Logger
 
 import pandas as pd
@@ -276,7 +276,7 @@ class SPMIDAnalyzer:
         """
         return getattr(self, 'initial_valid_replay_data', None)
     
-    def get_offset_alignment_data(self) -> List[Dict[str, Any]]:
+    def get_offset_alignment_data(self) -> List[Dict[str, Union[int, float]]]:
         """
         获取偏移对齐数据
         
