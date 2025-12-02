@@ -944,14 +944,14 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
     @app.callback(
         [Output('key-curves-modal', 'style', allow_duplicate=True),
          Output('key-curves-comparison-container', 'children', allow_duplicate=True),
-         Output('current-clicked-point-info', 'data', allow_duplicate=True)],
+         Output('current-clicked-point-info', 'data', allow_duplicate=True),
+         Output('key-delay-zscore-scatter-plot', 'clickData', allow_duplicate=True)],
         [Input('key-delay-zscore-scatter-plot', 'clickData'),  # Z-Score标准化散点图点击输入
         Input('close-key-curves-modal', 'n_clicks'),
         Input('close-key-curves-modal-btn', 'n_clicks')],
         [State('session-id', 'data'),
         State('key-curves-modal', 'style')],
-        prevent_initial_call=True,
-        prevent_duplicate=True
+        prevent_initial_call=True
     )
     def handle_zscore_scatter_click(zscore_scatter_clickData, close_modal_clicks, close_btn_clicks, session_id, current_style):
         """处理Z-Score标准化散点图点击，显示曲线对比（悬浮窗）并支持跳转到瀑布图"""
@@ -959,21 +959,25 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         ctx = callback_context
         if not ctx.triggered:
             logger.debug("[WARNING] Z-Score散点图点击回调：没有触发源")
-            return current_style, [], no_update
+            return current_style, [], no_update, no_update
 
         trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
         logger.info(f"[PROCESS] Z-Score散点图点击回调触发：trigger_id={trigger_id}")
 
         # 如果点击了关闭按钮，隐藏模态框
         if trigger_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
-            return _handle_zscore_modal_close()
+            # 注意：这里需要返回 None 给 clickData，以重置图表点击状态
+            result = _handle_zscore_modal_close()
+            return result[0], result[1], result[2], None
 
         # 如果是Z-Score散点图点击
         if trigger_id == 'key-delay-zscore-scatter-plot' and zscore_scatter_clickData:
-            return _handle_zscore_plot_click(zscore_scatter_clickData, session_id, current_style)
+            result = _handle_zscore_plot_click(zscore_scatter_clickData, session_id, current_style)
+            # 保持 clickData 不变 (no_update) 或返回当前值
+            return result[0], result[1], result[2], no_update
 
         # 其他情况，返回默认值
-        return current_style, [], no_update
+        return current_style, [], no_update, no_update
 
 
     # PDF导出回调，添加加载动画和异常处理
@@ -1751,7 +1755,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
 
         except (AttributeError, IndexError, KeyError, TypeError) as e:
             logger.debug(f"提取{note_type}锤速失败: {e}")
-            return None
+        return None
 
     def _create_velocity_comparison_plot(velocity_data: List[VelocityDataItem]) -> Figure:
         """
@@ -1890,7 +1894,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             'hover_texts': hover_texts,
             'custom_data': custom_data
         }
-
+    
     
     def _extract_algorithm_from_customdata(customdata):
         """从customdata中提取算法名称"""
@@ -2258,7 +2262,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         if selected_key is None:
             return []
         return [selected_key]
-    
+
     # 按键-力度交互效应图自动生成和更新回调函数
     @app.callback(
         Output('key-force-interaction-plot', 'figure'),
@@ -2961,7 +2965,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
     )
     def handle_relative_delay_distribution_click(click_data, session_id, plot_id):
         """处理同种算法相对延时分布图点击事件，显示该相对延时范围内的数据点详情"""
-
+        
         
         logger.info(f"🔍 相对延时分布图点击回调被触发，click_data: {click_data}")
         print(f"🔍 相对延时分布图点击回调被触发，click_data: {click_data}")
@@ -3206,7 +3210,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 logger.warning(f"[WARNING] 从offset_data获取信息失败: {e}")
 
         return record_note, replay_note, center_time_ms
-
+    
     # 同种算法相对延时分布图详情表格点击回调 - 显示录制与播放对比曲线
     @app.callback(
         [Output('key-curves-modal', 'style', allow_duplicate=True),
@@ -3218,8 +3222,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         [State({'type': 'relative-delay-distribution-table', 'index': dash.dependencies.ALL}, 'data'),
          State('session-id', 'data'),
          State('key-curves-modal', 'style')],
-        prevent_initial_call=True,
-        prevent_duplicate=True
+        prevent_initial_call=True
     )
     def handle_relative_delay_distribution_table_click(active_cells, close_modal_clicks, close_btn_clicks, table_data_list, session_id, current_style):
         """处理同种算法相对延时分布图详情表格点击，显示录制与播放对比曲线（悬浮窗）并支持跳转到瀑布图"""
@@ -3236,19 +3239,19 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         backend = session_manager.get_backend(session_id)
         if not backend:
             return current_style, [], no_update
-
+        
         # 3. 获取触发的表格行数据
         try:
             triggered_table_idx = next((i for i, cell in enumerate(active_cells) if cell), None)
             if triggered_table_idx is None or triggered_table_idx >= len(table_data_list):
                 return current_style, [], no_update
-                
+
             table_data = table_data_list[triggered_table_idx]
             active_cell = active_cells[triggered_table_idx]
-            
+
             if not active_cell or not table_data:
                 return current_style, [], no_update
-                
+
             row_data = table_data[active_cell.get('row')]
             record_index = int(row_data.get('record_index'))
             replay_index = int(row_data.get('replay_index'))
@@ -3267,7 +3270,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             else:
                 logger.warning("[WARNING] 非多算法模式或无效调用")
                 return current_style, [], no_update
-
+            
             # 5. 获取音符数据与时间
             record_note, replay_note, center_time_ms = _get_notes_and_center_time(target_algorithm, record_index, replay_index, key_id)
             
@@ -3293,7 +3296,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             
             if not detail_figure:
                 return current_style, [], no_update
-
+            
             # 7. 构建返回数据
             source_subplot_idx = triggered_table_idx + 1 # 假设索引+1
             point_info = {
@@ -3321,7 +3324,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         except Exception as e:
             logger.error(f"[ERROR] 处理表格点击失败: {e}")
             logger.error(traceback.format_exc())
-            return current_style, [], no_update
+        return current_style, [], no_update
 
     # 延时时间序列图回调 - 报告内容加载时自动生成
     @app.callback(
@@ -3357,14 +3360,14 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
     @app.callback(
         [Output('key-curves-modal', 'style', allow_duplicate=True),
          Output('key-curves-comparison-container', 'children', allow_duplicate=True),
-         Output('current-clicked-point-info', 'data', allow_duplicate=True)],
+         Output('current-clicked-point-info', 'data', allow_duplicate=True),
+         Output('delay-time-series-plot', 'clickData', allow_duplicate=True)],
         [Input('delay-time-series-plot', 'clickData'),
          Input('close-key-curves-modal', 'n_clicks'),
          Input('close-key-curves-modal-btn', 'n_clicks')],
         [State('session-id', 'data'),
          State('key-curves-modal', 'style')],
-        prevent_initial_call=True,
-        prevent_duplicate=True
+        prevent_initial_call=True
     )
     def handle_delay_time_series_click(click_data, close_modal_clicks, close_btn_clicks, session_id, current_style):
         """处理延时时间序列图点击，显示音符分析曲线（悬浮窗）并支持跳转到瀑布图"""
@@ -3373,7 +3376,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         # 检测触发源
         ctx = callback_context
         if not ctx.triggered:
-            return current_style, [], no_update
+            return current_style, [], no_update, no_update
         
         trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
         logger.info(f"🔍 触发ID: {trigger_id}")
@@ -3391,7 +3394,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 'backgroundColor': 'rgba(0,0,0,0.6)',
                 'backdropFilter': 'blur(5px)'
             }
-            return modal_style, [], no_update
+            return modal_style, [], no_update, None
         
         # 如果是时间序列图点击
         if trigger_id == 'delay-time-series-plot' and click_data:
@@ -3400,17 +3403,17 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             backend = session_manager.get_backend(session_id)
             if not backend:
                 logger.warning("[WARNING] backend为空")
-                return current_style, [], no_update
+                return current_style, [], no_update, no_update
             
             try:
                 if 'points' not in click_data or len(click_data['points']) == 0:
                     logger.warning("[WARNING] clickData中没有points")
-                    return current_style, [], no_update
+                    return current_style, [], no_update, no_update
                 
                 point = click_data['points'][0]
                 if not point.get('customdata'):
                     logger.warning("[WARNING] point中没有customdata")
-                    return current_style, [], no_update
+                    return current_style, [], no_update, no_update
                 
                 # 提取customdata: [key_id, record_index, replay_index] 或 [key_id, record_index, replay_index, algorithm_name, ...]
                 # 多算法模式可能包含更多信息: [key_id, record_index, replay_index, algorithm_name, delay, mean_delay, replay_time, record_time]
@@ -3419,7 +3422,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 
                 if not isinstance(customdata, list) or len(customdata) < 3:
                     logger.warning(f"[WARNING] customdata格式错误: {customdata}")
-                    return current_style, [], no_update
+                    return current_style, [], no_update, no_update
                 
                 key_id = customdata[0]
                 record_index = customdata[1]
@@ -3488,7 +3491,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                     # 单算法模式
                     if not backend.analyzer or not backend.analyzer.note_matcher:
                         logger.warning("[WARNING] analyzer或note_matcher为空")
-                        return current_style, [], no_update
+                        return current_style, [], no_update, no_update
                     
                     matched_pairs = backend.analyzer.matched_pairs if hasattr(backend.analyzer, 'matched_pairs') else []
                     
@@ -3527,7 +3530,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 
                 if not record_note or not replay_note:
                     logger.warning("[WARNING] 未找到匹配对")
-                    return current_style, [], no_update
+                    return current_style, [], no_update, no_update
                 
                 # 在多算法模式下，查找所有算法中匹配到同一个录制音符的播放音符
                 other_algorithm_notes = []  # [(algorithm_name, play_note), ...]
@@ -3558,7 +3561,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                         mean_delays[algorithm_name] = mean_error_0_1ms / 10.0  # 转换为毫秒
                     else:
                         logger.error(f"[ERROR] 无法获取算法 '{algorithm_name}' 的平均延时")
-                        return current_style, [], no_update
+                        return current_style, [], no_update, no_update, no_update
                 else:
                     # 单算法模式
                     if backend.analyzer:
@@ -3566,7 +3569,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                         mean_delays[final_algorithm_name or 'default'] = mean_error_0_1ms / 10.0  # 转换为毫秒
                     else:
                         logger.error("[ERROR] 无法获取单算法模式的平均延时")
-                        return current_style, [], no_update
+                        return current_style, [], no_update, no_update
                 
                 # 生成对比曲线（包含其他算法的播放曲线）
                 import spmid
@@ -3580,7 +3583,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 
                 if not detail_figure_combined:
                     logger.error("[ERROR] 曲线生成失败")
-                    return current_style, [], no_update
+                    return current_style, [], no_update, no_update
                 
                 # 存储当前点击的数据点信息，用于跳转按钮
                 point_info = {
@@ -3608,15 +3611,15 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 rendered_row = dcc.Graph(figure=detail_figure_combined, style={'height': '600px'})
                 
                 logger.info("[OK] 延时时间序列图点击处理成功")
-                return modal_style, [rendered_row], point_info
+                return modal_style, [rendered_row], point_info, no_update
                 
             except Exception as e:
                 logger.error(f"[ERROR] 处理延时时间序列图点击失败: {e}")
                 
                 logger.error(traceback.format_exc())
-                return current_style, [], no_update
+                return current_style, [], no_update, no_update
         
-        return current_style, [], no_update
+        return current_style, [], no_update, no_update
     
     # 处理最大/最小延迟字段点击，显示对应按键的曲线对比图
     @app.callback(
@@ -3630,8 +3633,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
          State({'type': 'min-delay-value', 'algorithm': dash.dependencies.ALL}, 'id'),
          State('session-id', 'data'),
          State('key-curves-modal', 'style')],
-        prevent_initial_call=True,
-        prevent_duplicate=True
+        prevent_initial_call=True
     )
     def handle_delay_value_click(max_clicks_list, min_clicks_list, close_modal_clicks, close_btn_clicks, 
                                   max_ids_list, min_ids_list, session_id, current_style):
@@ -3811,13 +3813,40 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                             logger.info(f"[OK] 找到算法 '{alg.metadata.algorithm_name}' 的匹配播放音符")
                             break
             
-            # 生成对比曲线（包含其他算法的播放曲线）
+            # 计算平均延时，用于曲线偏移显示
+            mean_delays = {}
+            # 在多算法模式下找到对应的算法对象
+            if backend.multi_algorithm_mode and backend.multi_algorithm_manager:
+                active_algorithms = backend.multi_algorithm_manager.get_active_algorithms()
+                target_algorithm = None
+                for alg in active_algorithms:
+                    if alg.metadata.algorithm_name == algorithm_name:
+                        target_algorithm = alg
+                        break
+
+                if target_algorithm and target_algorithm.analyzer:
+                    mean_error_0_1ms = target_algorithm.analyzer.get_mean_error()
+                    if mean_error_0_1ms is not None:
+                        mean_delays[algorithm_name] = mean_error_0_1ms / 10.0  # 转换为ms单位
+                        logger.info(f"[OK] 计算平均延时: {mean_delays[algorithm_name]:.2f}ms")
+                    else:
+                        logger.warning("[WARNING] 无法获取平均延时，使用默认值0")
+                        mean_delays[algorithm_name] = 0.0
+                else:
+                    logger.warning("[WARNING] 未找到目标算法或分析器，使用默认平均延时0")
+                    mean_delays[algorithm_name] = 0.0
+            else:
+                logger.warning("[WARNING] 非多算法模式，无法计算平均延时，使用默认值0")
+                mean_delays[algorithm_name] = 0.0
+
+            # 生成对比曲线（包含其他算法的播放曲线和平均延时偏移）
             import spmid
             detail_figure_combined = spmid.plot_note_comparison_plotly(
                 record_note, 
                 replay_note, 
                 algorithm_name=algorithm_name,
-                other_algorithm_notes=other_algorithm_notes  # 传递其他算法的播放音符
+                other_algorithm_notes=other_algorithm_notes,  # 传递其他算法的播放音符
+                mean_delays=mean_delays
             )
             
             if not detail_figure_combined:
@@ -4023,8 +4052,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         [State('delay-histogram-detail-table', 'data'),
          State('session-id', 'data'),
          State('key-curves-modal', 'style')],
-        prevent_initial_call=True,
-        prevent_duplicate=True
+        prevent_initial_call=True
     )
     def handle_delay_histogram_table_click(active_cell, close_modal_clicks, close_btn_clicks, table_data, session_id, current_style):
         """处理延时分布直方图详情表格点击，显示录制与播放对比曲线（悬浮窗）并支持跳转到瀑布图"""
@@ -4261,7 +4289,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                         mean_delays[final_algorithm_name or 'default'] = mean_error_0_1ms / 10.0  # 转换为毫秒
                     else:
                         logger.error("[ERROR] 无法获取单算法模式的平均延时")
-                        return current_style, [], no_update
+                        return current_style, [], no_update, no_update
                 
                 # 生成对比曲线图（包含其他算法的播放曲线）
                 import spmid
@@ -4275,7 +4303,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 
                 if not detail_figure_combined:
                     logger.error("[ERROR] 曲线生成失败")
-                    return current_style, [], no_update
+                    return current_style, [], no_update, no_update
                 
                 logger.info(f"[OK] 成功生成对比曲线: record_index={record_index}, replay_index={replay_index}")
                 print(f"[OK] 成功生成对比曲线: record_index={record_index}, replay_index={replay_index}")
@@ -4486,8 +4514,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         [State('upload-multi-algorithm-data', 'filename'),
          State('session-id', 'data'),
          State('multi-algorithm-files-store', 'data')],
-        prevent_initial_call=True,
-        prevent_duplicate=True
+        prevent_initial_call=True
     )
     def handle_multi_file_upload(contents_list, filename_list, session_id, store_data):
         """处理多文件上传，显示文件列表供用户输入算法名称"""
@@ -4600,7 +4627,6 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         [Input('algorithm-list-trigger', 'data'),
          Input({'type': 'algorithm-toggle', 'index': dash.dependencies.ALL}, 'value')],
         [State('session-id', 'data')],
-        prevent_duplicate=True,
         prevent_initial_call=True
     )
     def update_plot_on_algorithm_change(trigger_data, toggle_values, session_id):
@@ -4889,7 +4915,6 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
          State({'type': 'algorithm-delete-btn', 'index': dash.dependencies.ALL}, 'id'),
          State('session-id', 'data'),
          State('multi-algorithm-files-store', 'data')],
-        prevent_duplicate=True,
         prevent_initial_call=True
     )
     def handle_algorithm_management(toggle_values, delete_clicks_list, toggle_ids, delete_ids, session_id, store_data):
@@ -5166,8 +5191,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         [State('offset-alignment-table', 'data'),
          State('session-id', 'data'),
          State('key-curves-modal', 'style')],
-        prevent_initial_call=True,
-        prevent_duplicate=True
+        prevent_initial_call=True
     )
     def handle_key_table_click(active_cell, close_modal_clicks, close_btn_clicks, table_data, session_id, current_style):
         """处理按键延时分析表格点击，显示按键曲线对比（悬浮窗）并支持跳转到瀑布图"""
@@ -5545,8 +5569,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
          Input('close-waterfall-curves-modal-btn', 'n_clicks')],
         [State('session-id', 'data'),
          State('waterfall-curves-modal', 'style')],
-        prevent_initial_call=True,
-        prevent_duplicate=True
+        prevent_initial_call=True
     )
     def handle_waterfall_click(click_data, close_modal_clicks, close_btn_clicks, session_id, current_style):
         """处理瀑布图点击，显示曲线对比（悬浮窗）"""
@@ -5974,14 +5997,14 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         [Output('key-curves-modal', 'style', allow_duplicate=True),
          Output('key-curves-comparison-container', 'children', allow_duplicate=True),
          Output('main-plot', 'figure', allow_duplicate=True),
-         Output('current-clicked-point-info', 'data', allow_duplicate=True)],
+         Output('current-clicked-point-info', 'data', allow_duplicate=True),
+         Output('key-force-interaction-plot', 'clickData', allow_duplicate=True)],
         [Input('key-force-interaction-plot', 'clickData'),
          Input('close-key-curves-modal', 'n_clicks'),
          Input('close-key-curves-modal-btn', 'n_clicks')],
         [State('session-id', 'data'),
          State('key-curves-modal', 'style')],
-        prevent_initial_call=True,
-        prevent_duplicate=True
+        prevent_initial_call=True
     )
     def handle_key_force_interaction_plot_click(click_data, close_modal_clicks, close_btn_clicks, session_id, current_style):
         """处理按键-力度交互效应图点击，显示曲线对比（悬浮窗）并调整瀑布图显示范围"""
@@ -6010,7 +6033,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 'backgroundColor': 'rgba(0,0,0,0.6)',
                 'backdropFilter': 'blur(5px)'
             }
-            return modal_style, [], no_update, no_update
+            return modal_style, [], no_update, no_update, None
         
         # 如果是散点图点击
         if trigger_id == 'key-force-interaction-plot':
@@ -6018,11 +6041,11 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             backend = session_manager.get_backend(session_id)
             if not backend:
                 logger.warning("[WARNING] 没有找到backend")
-                return current_style, [], no_update, no_update
+                return current_style, [], no_update, no_update, no_update
             
             if not click_data or 'points' not in click_data or not click_data['points']:
                 logger.warning("[WARNING] click_data为空或没有points")
-                return current_style, [], no_update, no_update
+                return current_style, [], no_update, no_update, no_update
             
             try:
                 # 获取点击的数据点
@@ -6031,7 +6054,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 
                 if not point.get('customdata'):
                     logger.warning("[WARNING] 按键-力度交互效应图点击 - 点没有customdata")
-                    return current_style, [], no_update, no_update
+                    return current_style, [], no_update, no_update, no_update
                 
                 # 安全地提取customdata
                 raw_customdata = point['customdata']
@@ -6045,7 +6068,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 # 确保customdata是列表类型
                 if not isinstance(customdata, list):
                     logger.warning(f"[WARNING] 按键-力度交互效应图点击 - customdata不是列表类型: {type(customdata)}, 值: {customdata}")
-                    return current_style, [], no_update, no_update
+                    return current_style, [], no_update, no_update, no_update
                 
                 logger.info(f"🔍 按键-力度交互效应图点击 - customdata: {customdata}, 长度: {len(customdata)}")
                 
@@ -6054,7 +6077,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 # 单算法模式: [key_id, orig_force, abs_delay, rel_delay, record_idx, replay_idx]
                 if len(customdata) < 5:
                     logger.warning(f"[WARNING] customdata长度不足：{len(customdata)}，期望至少5个元素")
-                    return current_style, [], no_update, no_update
+                    return current_style, [], no_update, no_update, no_update
                 
                 # 判断是单算法还是多算法模式
                 if len(customdata) >= 8:
@@ -6229,7 +6252,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                             'backdropFilter': 'blur(5px)'
                         }
                         logger.info("[OK] 按键-力度交互效应图点击回调 - 返回模态框和图表")
-                        return modal_style, dcc.Graph(figure=detail_figure_combined, style={'height': '600px'}), waterfall_fig, point_info
+                        return modal_style, dcc.Graph(figure=detail_figure_combined, style={'height': '600px'}), waterfall_fig, point_info, no_update
                     else:
                         logger.warning(f"[WARNING] 按键-力度交互效应图点击回调 - 图表生成失败，部分图表为None")
                         modal_style = {
@@ -6245,7 +6268,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                         }
                         return modal_style, [html.Div([
                             html.P("图表生成失败", className="text-danger text-center")
-                        ])], waterfall_fig, point_info
+                        ])], waterfall_fig, point_info, no_update, no_update
                 else:
                     # 单算法模式：使用generate_scatter_detail_plot_by_indices
                     detail_figure1, detail_figure2, detail_figure_combined = backend.generate_scatter_detail_plot_by_indices(
@@ -6268,7 +6291,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                             'backdropFilter': 'blur(5px)'
                         }
                         logger.info("[OK] 按键-力度交互效应图点击回调（单算法） - 返回模态框和图表")
-                        return modal_style, dcc.Graph(figure=detail_figure_combined, style={'height': '600px'}), waterfall_fig, point_info
+                        return modal_style, dcc.Graph(figure=detail_figure_combined, style={'height': '600px'}), waterfall_fig, point_info, no_update
                     else:
                         logger.warning(f"[WARNING] 按键-力度交互效应图点击回调（单算法） - 图表生成失败，部分图表为None")
                         modal_style = {
@@ -6284,7 +6307,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                         }
                         return modal_style, [html.Div([
                             html.P("图表生成失败", className="text-danger text-center")
-                        ])], waterfall_fig, point_info
+                        ])], waterfall_fig, point_info, no_update
                 
             except Exception as e:
                 logger.error(f"[ERROR] 生成曲线对比失败: {e}")
@@ -6303,10 +6326,10 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 }
                 return modal_style, [html.Div([
                     html.P(f"生成曲线对比失败: {str(e)}", className="text-danger text-center")
-                ])], no_update, no_update
+                ])], no_update, no_update, no_update
         
         # 其他情况，保持当前状态
-        return current_style, [], no_update, no_update
+        return current_style, [], no_update, no_update, no_update
     
     # 跳转到瀑布图按钮回调
     @app.callback(
@@ -6317,8 +6340,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         [Input('jump-to-waterfall-btn', 'n_clicks')],
         [State('session-id', 'data'),
          State('current-clicked-point-info', 'data')],
-        prevent_initial_call=True,
-        prevent_duplicate=True
+        prevent_initial_call=True
     )
     def handle_jump_to_waterfall(n_clicks, session_id, point_info):
         """处理跳转到瀑布图按钮点击"""
@@ -6536,8 +6558,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
          Output('scroll-to-plot-trigger', 'data', allow_duplicate=True)],
         [Input('btn-return-to-report', 'n_clicks')],
         [State('jump-source-plot-id', 'data')],
-        prevent_initial_call=True,
-        prevent_duplicate=True
+        prevent_initial_call=True
     )
     def handle_return_to_report(n_clicks, source_plot_id):
         """处理返回报告界面按钮点击，并触发滚动到来源图表"""
@@ -6733,14 +6754,14 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         [Output('key-curves-modal', 'style', allow_duplicate=True),
          Output('key-curves-comparison-container', 'children', allow_duplicate=True),
          Output('main-plot', 'figure', allow_duplicate=True),
-         Output('current-clicked-point-info', 'data', allow_duplicate=True)],
+         Output('current-clicked-point-info', 'data', allow_duplicate=True),
+         Output('hammer-velocity-delay-scatter-plot', 'clickData', allow_duplicate=True)],
         [Input('hammer-velocity-delay-scatter-plot', 'clickData'),
          Input('close-key-curves-modal', 'n_clicks'),
          Input('close-key-curves-modal-btn', 'n_clicks')],
         [State('session-id', 'data'),
          State('key-curves-modal', 'style')],
-        prevent_initial_call=True,
-        prevent_duplicate=True
+        prevent_initial_call=True
     )
     def handle_hammer_velocity_scatter_click(click_data, close_modal_clicks, close_btn_clicks, session_id, current_style):
         """处理锤速与延时散点图点击，显示曲线对比（悬浮窗）并调整瀑布图显示范围"""
@@ -6750,7 +6771,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         ctx = callback_context
         if not ctx.triggered:
             logger.debug("[WARNING] 散点图点击回调：没有触发源")
-            return current_style, [], no_update, no_update
+            return current_style, [], no_update, no_update, no_update
         
         trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
         logger.info(f"[PROCESS] 散点图点击回调触发：trigger_id={trigger_id}")
@@ -6769,7 +6790,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 'backgroundColor': 'rgba(0,0,0,0.6)',
                 'backdropFilter': 'blur(5px)'
             }
-            return modal_style, [], no_update, no_update
+            return modal_style, [], no_update, no_update, None
         
         # 如果是散点图点击
         if trigger_id == 'hammer-velocity-delay-scatter-plot':
@@ -6777,11 +6798,11 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             backend = session_manager.get_backend(session_id)
             if not backend:
                 logger.warning("[WARNING] 没有找到backend")
-                return current_style, [], no_update, no_update
+                return current_style, [], no_update, no_update, no_update
             
             if not click_data or 'points' not in click_data or not click_data['points']:
                 logger.warning("[WARNING] click_data为空或没有points")
-                return current_style, [], no_update, no_update
+                return current_style, [], no_update, no_update, no_update
             
             try:
                 # 获取点击的数据点
@@ -6790,7 +6811,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 
                 if not point.get('customdata'):
                     logger.warning("[WARNING] 散点图点击 - 点没有customdata")
-                    return current_style, [], no_update, no_update
+                    return current_style, [], no_update, no_update, no_update
                 
                 # 安全地提取customdata（参考Z-Score散点图的逻辑）
                 raw_customdata = point['customdata']
@@ -6804,7 +6825,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 # 确保customdata是列表类型
                 if not isinstance(customdata, list):
                     logger.warning(f"[WARNING] 散点图点击 - customdata不是列表类型: {type(customdata)}, 值: {customdata}")
-                    return current_style, [], no_update, no_update
+                    return current_style, [], no_update, no_update, no_update
                 
                 logger.info(f"🔍 散点图点击 - customdata: {customdata}, 长度: {len(customdata)}")
                 
@@ -6813,7 +6834,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 # 多算法模式: [delay_ms, original_velocity, record_idx, replay_idx, algorithm_name, key_id]
                 if len(customdata) < 5:
                     logger.warning(f"[WARNING] customdata长度不足：{len(customdata)}，期望至少5个元素")
-                    return current_style, [], no_update, no_update
+                    return current_style, [], no_update, no_update, no_update
                 
                 delay_ms = customdata[0]
                 original_velocity = customdata[1]  # 原始锤速值（用于显示）
@@ -6921,7 +6942,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                         }
                         logger.info("[OK] 散点图点击回调 - 返回模态框和图表")
                         # 将Plotly figure对象包装在dcc.Graph组件中
-                        return modal_style, dcc.Graph(figure=detail_figure_combined, style={'height': '600px'}), waterfall_fig, point_info
+                        return modal_style, dcc.Graph(figure=detail_figure_combined, style={'height': '600px'}), waterfall_fig, point_info, no_update
                     else:
                         logger.warning(f"[WARNING] 散点图点击回调 - 图表生成失败，部分图表为None")
                         modal_style = {
@@ -6937,7 +6958,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                         }
                         return modal_style, [html.Div([
                             html.P("图表生成失败", className="text-danger text-center")
-                        ])], waterfall_fig, point_info
+                        ])], waterfall_fig, point_info, no_update, no_update
                 else:
                     # 单算法模式：使用generate_scatter_detail_plot_by_indices
                     detail_figure1, detail_figure2, detail_figure_combined = backend.generate_scatter_detail_plot_by_indices(
@@ -6977,7 +6998,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                         }
                         return modal_style, [html.Div([
                             html.P("图表生成失败", className="text-danger text-center")
-                        ])], waterfall_fig, point_info
+                        ])], waterfall_fig, point_info, no_update
                 
             except Exception as e:
                 logger.error(f"[ERROR] 生成曲线对比失败: {e}")
@@ -6995,24 +7016,24 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 }
                 return modal_style, [html.Div([
                     html.P(f"生成对比图失败: {str(e)}", className="text-danger text-center")
-                ])], no_update, no_update
+                ])], no_update, no_update, no_update
         
         # 其他情况，保持当前状态
-        return current_style, [], no_update, no_update
+        return current_style, [], no_update, no_update, no_update
 
     # ==================== 锤速对比图点击回调 ====================
     @app.callback(
         [Output('key-curves-modal', 'style', allow_duplicate=True),
          Output('key-curves-comparison-container', 'children', allow_duplicate=True),
          Output('main-plot', 'figure', allow_duplicate=True),
-         Output('current-clicked-point-info', 'data', allow_duplicate=True)],
+         Output('current-clicked-point-info', 'data', allow_duplicate=True),
+         Output('hammer-velocity-comparison-plot', 'clickData', allow_duplicate=True)],
         [Input('hammer-velocity-comparison-plot', 'clickData'),
          Input('close-key-curves-modal', 'n_clicks'),
          Input('close-key-curves-modal-btn', 'n_clicks')],
         [State('session-id', 'data'),
          State('key-curves-modal', 'style')],
-        prevent_initial_call=True,
-        prevent_duplicate=True
+        prevent_initial_call=True
     )
     def handle_hammer_velocity_comparison_click(
         click_data: Optional[Dict[str, Any]],
@@ -7020,7 +7041,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         close_btn_clicks: Optional[int],
         session_id: str,
         current_style: Dict[str, Any]
-    ) -> Tuple[Dict[str, Any], List[Union[html.Div, dcc.Graph]], Union[Figure, NoUpdate], Dict[str, Any]]:
+    ) -> Tuple[Dict[str, Any], List[Union[html.Div, dcc.Graph]], Union[Figure, NoUpdate], Dict[str, Any], Optional[Dict[str, Any]]]:
         """处理锤速对比图点击，显示对应按键的曲线对比（悬浮窗）"""
         from dash import callback_context
 
@@ -7028,7 +7049,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         ctx = callback_context
         if not ctx.triggered:
             logger.debug("[WARNING] 锤速对比图点击回调：没有触发源")
-            return current_style, [], no_update, no_update
+            return current_style, [], no_update, no_update, no_update
 
         trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
         logger.info(f"[PROCESS] 锤速对比图点击回调触发：trigger_id={trigger_id}")
@@ -7047,7 +7068,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 'backgroundColor': 'rgba(0,0,0,0.6)',
                 'backdropFilter': 'blur(5px)'
             }
-            return modal_style, [], no_update, no_update
+            return modal_style, [], no_update, no_update, None
 
         # 如果是锤速对比图点击
         if trigger_id == 'hammer-velocity-comparison-plot' and click_data:
@@ -7056,7 +7077,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             backend = session_manager.get_backend(session_id)
             if not backend:
                 logger.warning("[WARNING] 没有找到backend")
-                return current_style, [], no_update, no_update
+                return current_style, [], no_update, no_update, no_update
 
             try:
                 # 解析点击数据
@@ -7131,7 +7152,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                         return modal_style, [dcc.Graph(
                                         figure=detail_figure_combined,
                             style={'height': '800px'}
-                        )], waterfall_fig, point_info
+                        )], waterfall_fig, point_info, no_update
 
                     else:
                         logger.error("[ERROR] 生成瀑布图失败")
@@ -7148,11 +7169,11 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                         }
                         return modal_style, [html.Div([
                             html.P("生成瀑布图失败", className="text-danger text-center")
-                        ])], no_update, no_update
+                        ])], no_update, no_update, no_update
 
                 else:
                     logger.error("[ERROR] 点击数据格式错误")
-                    return current_style, [], no_update, no_update
+                    return current_style, [], no_update, no_update, no_update
 
             except Exception as e:
                 logger.error(f"[ERROR] 处理锤速对比图点击失败: {e}")
@@ -7170,10 +7191,10 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 }
                 return modal_style, [html.Div([
                     html.P(f"处理点击失败: {str(e)}", className="text-danger text-center")
-                ])], no_update, no_update
+                ])], no_update, no_update, no_update
 
         # 其他情况，保持当前状态
-        return current_style, [], no_update, no_update
+        return current_style, [], no_update, no_update, no_update
 
     # ==================== 曲线对齐测试回调 ====================
     @app.callback(

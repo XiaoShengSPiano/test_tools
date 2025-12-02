@@ -2291,16 +2291,9 @@ class MultiAlgorithmPlotGenerator:
                     ])
                 
                 # 计算密度曲线（KDE）
-                try:
-                    kde = stats.gaussian_kde(delays_array)
-                    x_density = np.linspace(delays_array.min(), delays_array.max(), 200)
-                    y_density = kde(x_density) * len(delays_array)  # 转换为频数
-                except:
-                    # 如果KDE失败，使用正态分布近似
-                    mean = np.mean(delays_array)
-                    std = np.std(delays_array)
-                    x_density = np.linspace(delays_array.min(), delays_array.max(), 200)
-                    y_density = stats.norm.pdf(x_density, mean, std) * len(delays_array) * (bin_edges[1] - bin_edges[0])
+                kde = stats.gaussian_kde(delays_array)
+                x_density = np.linspace(delays_array.min(), delays_array.max(), 200)
+                y_density = kde(x_density) * len(delays_array)  # 转换为频数
                 
                 # 添加直方图
                 fig.add_trace(
