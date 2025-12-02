@@ -342,32 +342,49 @@ class MultiAlgorithmPlotGenerator:
     def generate_multi_algorithm_offset_alignment_plot(
         self,
         algorithms: List[AlgorithmDataset]
-    ) -> Any:
+    ) -> List[Dict[str, Any]]:
         """
         生成多算法偏移对齐分析图（并排柱状图，不同颜色）
         
-        为每个算法生成并排的柱状图，使用不同颜色区分，显示4个子图：
+        返回5个独立的图表，每个图表显示一个指标：
         - 中位数偏移
         - 均值偏移
         - 标准差
         - 方差
+        - 相对延时
         
         Args:
             algorithms: 激活的算法数据集列表
             
         Returns:
-            go.Figure: Plotly图表对象
+            List[Dict[str, Any]]: 包含图表信息的字典列表
+            每个字典包含: {'title': str, 'figure': go.Figure}
         """
         if not algorithms:
             logger.warning("⚠️ 没有激活的算法，无法生成多算法偏移对齐分析图")
-            return self._create_empty_plot("没有激活的算法")
+            # 返回包含5个空图表的列表
+            empty_fig = self._create_empty_plot("没有激活的算法")
+            return [
+                {'title': '中位数偏移', 'figure': empty_fig},
+                {'title': '均值偏移', 'figure': empty_fig},
+                {'title': '标准差', 'figure': empty_fig},
+                {'title': '方差', 'figure': empty_fig},
+                {'title': '相对延时', 'figure': empty_fig}
+            ]
         
         try:
             # 过滤出就绪的算法
             ready_algorithms = [alg for alg in algorithms if alg.is_ready()]
             if not ready_algorithms:
                 logger.warning("⚠️ 没有就绪的算法，无法生成多算法偏移对齐分析图")
-                return self._create_empty_plot("没有就绪的算法")
+                empty_fig = self._create_empty_plot("没有就绪的算法")
+                return [
+                    {'title': '中位数偏移', 'figure': empty_fig},
+                    {'title': '均值偏移', 'figure': empty_fig},
+                    {'title': '标准差', 'figure': empty_fig},
+                    {'title': '方差', 'figure': empty_fig},
+                    {'title': '相对延时', 'figure': empty_fig}
+                ]
             
             logger.info(f"📊 开始生成多算法偏移对齐分析图，共 {len(ready_algorithms)} 个算法")
             
@@ -383,14 +400,6 @@ class MultiAlgorithmPlotGenerator:
                 '#7f7f7f'   # 灰色
             ]
             
-            # 创建5个子图（添加相对延时图）
-            fig = make_subplots(
-                rows=5, cols=1,
-                subplot_titles=('中位数偏移', '均值偏移', '标准差', '方差', '相对延时（减去各自曲子的平均延时）'),
-                vertical_spacing=0.05,
-                row_heights=[0.20, 0.20, 0.20, 0.20, 0.20]
-            )
-            
             # 收集所有算法的数据
             all_algorithms_data = []
             
@@ -402,11 +411,9 @@ class MultiAlgorithmPlotGenerator:
                     continue
                 
                 # 获取偏移对齐数据（需要从analyzer中获取）
-                # 由于get_offset_alignment_data是backend的方法，我们需要直接调用analyzer的方法
                 try:
                     # 从analyzer获取偏移数据
                     offset_data = algorithm.analyzer.get_offset_alignment_data()
-                    invalid_offset_data = algorithm.analyzer.get_invalid_notes_offset_analysis()
                     
                     # 按按键ID分组并计算统计信息
                     from collections import defaultdict
@@ -474,228 +481,128 @@ class MultiAlgorithmPlotGenerator:
             
             if not all_algorithms_data:
                 logger.warning("⚠️ 没有有效的偏移对齐数据，无法生成柱状图")
-                return self._create_empty_plot("没有有效的偏移对齐数据")
+                empty_fig = self._create_empty_plot("没有有效的偏移对齐数据")
+                return [
+                    {'title': '中位数偏移', 'figure': empty_fig},
+                    {'title': '均值偏移', 'figure': empty_fig},
+                    {'title': '标准差', 'figure': empty_fig},
+                    {'title': '方差', 'figure': empty_fig},
+                    {'title': '相对延时', 'figure': empty_fig}
+                ]
             
-            # 为每个算法添加柱状图（使用grouped bar chart）
-            # 计算每个键位的x轴位置（使用grouped bar chart的方式）
+            # 准备独立的图表列表
+            figures_list = []
+            
+            # 定义5个指标的配置
+            metrics = [
+                ('中位数偏移', 'median', 'ms', 'median'),
+                ('均值偏移', 'mean', 'ms', 'mean'),
+                ('标准差', 'std', 'ms', 'std'),
+                ('方差', 'variance', 'ms²', 'variance'),
+                ('相对延时', 'relative_mean', 'ms', 'relative')
+            ]
+            
+            # 计算x轴位置逻辑（grouped bar chart）
             # 获取所有键位的并集
             all_key_ids = set()
             for alg_data in all_algorithms_data:
                 all_key_ids.update(alg_data['key_ids'])
             all_key_ids = sorted(list(all_key_ids))
             
-            # 为每个算法计算x轴位置（使用grouped bar chart）
+            # 为每个算法计算x轴位置
             num_algorithms = len(all_algorithms_data)
-            bar_width = 0.8 / num_algorithms  # 每个算法的柱状图宽度
+            bar_width = 0.8 / num_algorithms
             
-            for alg_idx, alg_data in enumerate(all_algorithms_data):
-                algorithm_name = alg_data['name']
-                display_name = alg_data.get('display_name', algorithm_name)  # 使用显示名称
-                color = alg_data['color']
-                
-                # 计算x轴位置（每个算法偏移一定距离）
-                x_positions = []
-                median_values = []
-                mean_values = []
-                std_values = []
-                variance_values = []
-                relative_mean_values = []
-                
-                # 创建键位到值的映射
-                key_to_median = dict(zip(alg_data['key_ids'], alg_data['median']))
-                key_to_mean = dict(zip(alg_data['key_ids'], alg_data['mean']))
-                key_to_std = dict(zip(alg_data['key_ids'], alg_data['std']))
-                key_to_variance = dict(zip(alg_data['key_ids'], alg_data['variance']))
-                key_to_relative_mean = dict(zip(alg_data['key_ids'], alg_data['relative_mean']))
-                
-                for key_id in all_key_ids:
-                    if key_id in alg_data['key_ids']:
-                        x_positions.append(key_id + (alg_idx - num_algorithms / 2 + 0.5) * bar_width)
-                        median_values.append(key_to_median[key_id])
-                        mean_values.append(key_to_mean[key_id])
-                        std_values.append(key_to_std[key_id])
-                        variance_values.append(key_to_variance[key_id])
-                        relative_mean_values.append(key_to_relative_mean[key_id])
-                    else:
-                        # 如果该算法没有这个键位的数据，跳过
-                        continue
-                
-                if not x_positions:
-                    continue
-                
-                # 添加中位数柱状图（带数值标注）
-                fig.add_trace(
-                    go.Bar(
-                        x=x_positions,
-                        y=median_values,
-                        name=display_name,
-                        marker_color=color,
-                        opacity=0.8,
-                        width=bar_width,
-                        text=[f'{val:.2f}' for val in median_values],
-                        textposition='outside',
-                        textfont=dict(size=8),
-                        showlegend=True,
-                        legendgroup=algorithm_name,
-                        hovertemplate=f'算法: {display_name}<br>键位: %{{x:.0f}}<br>中位数: %{{y:.2f}}ms<extra></extra>'
-                    ),
-                    row=1, col=1
-                )
-                
-                # 添加均值柱状图（带数值标注）
-                fig.add_trace(
-                    go.Bar(
-                        x=x_positions,
-                        y=mean_values,
-                        name=display_name,
-                        marker_color=color,
-                        opacity=0.8,
-                        width=bar_width,
-                        text=[f'{val:.2f}' for val in mean_values],
-                        textposition='outside',
-                        textfont=dict(size=8),
-                        showlegend=False,  # 只在第一个子图显示图例
-                        legendgroup=algorithm_name,
-                        hovertemplate=f'算法: {display_name}<br>键位: %{{x:.0f}}<br>均值: %{{y:.2f}}ms<extra></extra>'
-                    ),
-                    row=2, col=1
-                )
-                
-                # 添加标准差柱状图（带数值标注）
-                fig.add_trace(
-                    go.Bar(
-                        x=x_positions,
-                        y=std_values,
-                        name=display_name,
-                        marker_color=color,
-                        opacity=0.8,
-                        width=bar_width,
-                        text=[f'{val:.2f}' for val in std_values],
-                        textposition='outside',
-                        textfont=dict(size=8),
-                        showlegend=False,
-                        legendgroup=algorithm_name,
-                        hovertemplate=f'算法: {display_name}<br>键位: %{{x:.0f}}<br>标准差: %{{y:.2f}}ms<extra></extra>'
-                    ),
-                    row=3, col=1
-                )
-                
-                # 添加方差柱状图（带数值标注）
-                fig.add_trace(
-                    go.Bar(
-                        x=x_positions,
-                        y=variance_values,
-                        name=display_name,
-                        marker_color=color,
-                        opacity=0.8,
-                        width=bar_width,
-                        text=[f'{val:.2f}' for val in variance_values],
-                        textposition='outside',
-                        textfont=dict(size=8),
-                        showlegend=False,
-                        legendgroup=algorithm_name,
-                        hovertemplate=f'算法: {display_name}<br>键位: %{{x:.0f}}<br>方差: %{{y:.2f}}ms²<extra></extra>'
-                    ),
-                    row=4, col=1
-                )
-                
-                # 添加相对延时柱状图（带数值标注）
-                fig.add_trace(
-                    go.Bar(
-                        x=x_positions,
-                        y=relative_mean_values,
-                        name=display_name,
-                        marker_color=color,
-                        opacity=0.8,
-                        width=bar_width,
-                        text=[f'{val:.2f}' for val in relative_mean_values],
-                        textposition='outside',
-                        textfont=dict(size=8),
-                        showlegend=False,
-                        legendgroup=algorithm_name,
-                        hovertemplate=f'算法: {display_name}<br>键位: %{{x:.0f}}<br>相对延时: %{{y:.2f}}ms<extra></extra>'
-                    ),
-                    row=5, col=1
-                )
-            
-            # 确保key_ids的最小值至少为1（按键ID不可能为负数）
             min_key_id = max(1, min(all_key_ids)) if all_key_ids else 1
             max_key_id = max(all_key_ids) if all_key_ids else 90
             
-            # 设置x轴刻度（显示所有键位）和范围（确保不显示负数）
-            fig.update_xaxes(
-                tickmode='linear',
-                tick0=min_key_id,
-                dtick=1,
-                title_text='键位ID',
-                range=[min_key_id - 1, max_key_id + 1],  # 设置x轴范围，确保不显示负数
-                row=1, col=1
-            )
-            fig.update_xaxes(
-                tickmode='linear',
-                tick0=min_key_id,
-                dtick=1,
-                title_text='键位ID',
-                range=[min_key_id - 1, max_key_id + 1],
-                row=2, col=1
-            )
-            fig.update_xaxes(
-                tickmode='linear',
-                tick0=min_key_id,
-                dtick=1,
-                title_text='键位ID',
-                range=[min_key_id - 1, max_key_id + 1],
-                row=3, col=1
-            )
-            fig.update_xaxes(
-                tickmode='linear',
-                tick0=min_key_id,
-                dtick=1,
-                title_text='键位ID',
-                range=[min_key_id - 1, max_key_id + 1],
-                row=4, col=1
-            )
-            fig.update_xaxes(
-                tickmode='linear',
-                tick0=min_key_id,
-                dtick=1,
-                title_text='键位ID',
-                range=[min_key_id - 1, max_key_id + 1],
-                row=5, col=1
-            )
+            for metric_name, data_key, unit, legend_group_suffix in metrics:
+                fig = go.Figure()
+                
+                for alg_idx, alg_data in enumerate(all_algorithms_data):
+                    algorithm_name = alg_data['name']
+                    display_name = alg_data.get('display_name', algorithm_name)
+                    color = alg_data['color']
+                    
+                    # 准备数据
+                    x_positions = []
+                    y_values = []
+                    
+                    key_to_val = dict(zip(alg_data['key_ids'], alg_data[data_key]))
+                    
+                    for key_id in all_key_ids:
+                        if key_id in alg_data['key_ids']:
+                            x_positions.append(key_id + (alg_idx - num_algorithms / 2 + 0.5) * bar_width)
+                            y_values.append(key_to_val[key_id])
+                        # 如果没有数据则不添加
+                    
+                    if not x_positions:
+                        continue
+                        
+                    # 添加柱状图trace
+                    fig.add_trace(go.Bar(
+                        x=x_positions,
+                        y=y_values,
+                        name=display_name,
+                        marker_color=color,
+                        opacity=0.8,
+                        width=bar_width,
+                        text=[f'{val:.2f}' for val in y_values],
+                        textposition='outside',
+                        textfont=dict(size=8),
+                        showlegend=True,
+                        legend='legend',  # 默认legend
+                        legendgroup=algorithm_name, # 所有图表共用legendgroup，实现联动显示/隐藏
+                        hovertemplate=f'算法: {display_name}<br>键位: %{{x:.0f}}<br>{metric_name}: %{{y:.2f}}{unit}<extra></extra>'
+                    ))
+                
+                # 设置图表布局
+                fig.update_layout(
+                    title=dict(text=metric_name, x=0.5, xanchor='center'),
+                    xaxis_title='键位ID',
+                    yaxis_title=f'{metric_name} ({unit})',
+                    xaxis=dict(
+                        tickmode='linear',
+                        tick0=min_key_id,
+                        dtick=1,
+                        range=[min_key_id - 1, max_key_id + 1]
+                    ),
+                    yaxis=dict(
+                        showgrid=True,
+                        gridcolor='lightgray',
+                        gridwidth=1
+                    ),
+                    template='simple_white',
+                    showlegend=True,
+                    legend=dict(
+                        x=0.01, y=1.12, xanchor='left', yanchor='top',
+                        bgcolor='rgba(255,255,255,0.8)', bordercolor='rgba(0,0,0,0.2)', borderwidth=1,
+                        orientation='h', font=dict(size=11),
+                        title_text=metric_name
+                    ),
+                    margin=dict(l=60, r=40, t=100, b=60),
+                    height=500,  # 每个图表的独立高度
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    font=dict(size=12)
+                )
+                
+                figures_list.append({
+                    'title': metric_name,
+                    'figure': fig
+                })
             
-            # 设置y轴标题
-            fig.update_yaxes(title_text='中位数偏移 (ms)', row=1, col=1)
-            fig.update_yaxes(title_text='均值偏移 (ms)', row=2, col=1)
-            fig.update_yaxes(title_text='标准差 (ms)', row=3, col=1)
-            fig.update_yaxes(title_text='方差 (ms²)', row=4, col=1)
-            fig.update_yaxes(title_text='相对延时 (ms)', row=5, col=1)
-            
-            # 设置布局（删除title，因为UI区域已有标题）
-            fig.update_layout(
-                height=2750,  # 增加高度以容纳5个子图（2200 * 5/4 ≈ 2750）
-                template='simple_white',
-                showlegend=True,
-                legend=dict(
-                    orientation='h',
-                    yanchor='bottom',
-                    y=1.02,
-                    xanchor='right',
-                    x=1
-                ),
-                paper_bgcolor='rgba(0,0,0,0)',
-                plot_bgcolor='rgba(0,0,0,0)',
-                font=dict(size=12)
-            )
-            
-            logger.info(f"✅ 多算法偏移对齐分析图生成成功，共 {len(all_algorithms_data)} 个算法")
-            return fig
+            logger.info(f"✅ 多算法偏移对齐分析图生成成功，共 {len(figures_list)} 个独立图表")
+            return figures_list
             
         except Exception as e:
             logger.error(f"❌ 生成多算法偏移对齐分析图失败: {e}")
             import traceback
             logger.error(traceback.format_exc())
-            return self._create_empty_plot(f"生成失败: {str(e)}")
+            empty_fig = self._create_empty_plot(f"生成失败: {str(e)}")
+            return [
+                {'title': '生成失败', 'figure': empty_fig}
+            ]
     
     def generate_multi_algorithm_delay_histogram_plot(
         self,
@@ -2437,4 +2344,3 @@ class MultiAlgorithmPlotGenerator:
             import traceback
             logger.error(traceback.format_exc())
             return self._create_empty_plot(f"生成失败: {str(e)}")
-

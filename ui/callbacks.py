@@ -1372,7 +1372,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
 
     # 偏移对齐分析 - 页面加载时自动生成
     @app.callback(
-        Output('offset-alignment-plot', 'figure', allow_duplicate=True),
+        Output('offset-alignment-plot', 'children', allow_duplicate=True),
         Output('offset-alignment-table', 'data', allow_duplicate=True),
         [Input('report-content', 'children')],
         [State('session-id', 'data')],
@@ -1390,18 +1390,40 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             if not active_algorithms:
                 logger.warning("[WARNING] 没有激活的算法，无法生成偏移对齐分析")
                 empty = backend.plot_generator._create_empty_plot("没有激活的算法")
-                return empty, []
+                return [dcc.Graph(figure=empty)], []
             
-            fig = backend.generate_offset_alignment_plot()
+            result = backend.generate_offset_alignment_plot()
             table_data = backend.get_offset_alignment_data()
+            
+            children = []
+            if isinstance(result, list):
+                # 多图模式：返回多个独立的图表
+                for item in result:
+                    fig = item.get('figure')
+                    
+                    # 创建单个图表的容器
+                    children.append(html.Div([
+                        dcc.Graph(
+                            figure=fig,
+                            style={'height': '500px'},
+                            config={'displayModeBar': True}
+                        )
+                    ], className="mb-4", style={'border': '1px solid #eee', 'padding': '10px', 'borderRadius': '5px', 'backgroundColor': 'white', 'boxShadow': '0 1px 3px rgba(0,0,0,0.1)'}))
+            else:
+                # 单图模式 (Legacy)：返回单个图表
+                children.append(dcc.Graph(
+                    figure=result,
+                    style={'height': '800px'}
+                ))
+            
             logger.info("[OK] 偏移对齐分析（自动）生成成功")
-            return fig, table_data
+            return children, table_data
             
         except Exception as e:
             logger.error(f"[ERROR] 自动生成偏移对齐分析失败: {e}")
             logger.error(traceback.format_exc())
             empty = backend.plot_generator._create_empty_plot(f"生成失败: {str(e)}")
-            return empty, no_update
+            return [dcc.Graph(figure=empty)], no_update
 
     # 按键与延时Z-Score标准化散点图自动生成回调函数 - 当报告内容加载时自动生成
     @app.callback(
@@ -2587,15 +2609,19 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             ])
 
         # 计算密度曲线
+        bin_width = bin_edges[1] - bin_edges[0]
         try:
+            if len(delays_array) < 2 or np.std(delays_array) == 0:
+                raise ValueError("Insufficient data or zero variance")
+                
             kde = stats.gaussian_kde(delays_array)
             x_density = np.linspace(delays_array.min(), delays_array.max(), 200)
-            y_density = kde(x_density) * len(delays_array)
+            # 修正：乘以bin_width
+            y_density = kde(x_density) * len(delays_array) * bin_width
         except:
-            mean = np.mean(delays_array)
-            std = np.std(delays_array)
-            x_density = np.linspace(delays_array.min(), delays_array.max(), 200)
-            y_density = stats.norm.pdf(x_density, mean, std) * len(delays_array) * (bin_edges[1] - bin_edges[0])
+            # KDE计算失败（如数据点太少或全相同），不绘制曲线
+            y_density = []
+            x_density = []
 
         # 创建独立的图表
         fig = go.Figure()
@@ -4435,7 +4461,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                             dcc.Graph(id='key-delay-zscore-scatter-plot', figure=empty_fig, style={'display': 'none'}),
                             dcc.Graph(id='hammer-velocity-delay-scatter-plot', figure=empty_fig, style={'display': 'none'}),
                             # key-hammer-velocity-scatter-plot 已删除（功能与按键-力度交互效应图重复）
-                            dcc.Graph(id='offset-alignment-plot', figure=empty_fig, style={'display': 'none'}),
+                            html.Div(id='offset-alignment-plot', style={'display': 'none'}),
                             html.Div([
                                 dash_table.DataTable(
                                     id='offset-alignment-table',
@@ -4460,7 +4486,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                         dcc.Graph(id='key-force-interaction-plot', figure=empty_fig, style={'display': 'none'}),
                         dcc.Store(id='key-force-interaction-selected-algorithms', data=[]),
                         dcc.Graph(id='relative-delay-distribution-plot', figure=empty_fig, style={'display': 'none'}),
-                        dcc.Graph(id='offset-alignment-plot', figure=empty_fig, style={'display': 'none'}),
+                        html.Div(id='offset-alignment-plot', style={'display': 'none'}),
                         dcc.Graph(id='delay-time-series-plot', figure=empty_fig, style={'display': 'none'}),
                         dcc.Graph(id='delay-histogram-plot', figure=empty_fig, style={'display': 'none'}),
                         html.Div([
@@ -4678,7 +4704,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                     dcc.Graph(id='key-delay-zscore-scatter-plot', figure=empty_fig, style={'display': 'none'}),
                     dcc.Graph(id='hammer-velocity-delay-scatter-plot', figure=empty_fig, style={'display': 'none'}),
                     # key-hammer-velocity-scatter-plot 已删除（功能与按键-力度交互效应图重复）
-                    dcc.Graph(id='offset-alignment-plot', figure=empty_fig, style={'display': 'none'}),
+                    html.Div(id='offset-alignment-plot', style={'display': 'none'}),
                     html.Div([
                         dash_table.DataTable(
                             id='offset-alignment-table',
@@ -4988,11 +5014,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                                 backend.remove_algorithm(algorithm_name)
                                 algorithm_deleted = True
 
-                                # 删除算法后清除上传状态
-                                from backend.upload_manager import UploadManager
-                                upload_manager = UploadManager(backend)
-                                upload_manager.clear_all_states()
-                                logger.info(f"[OK] 清除算法 '{algorithm_name}' 的所有状态")
+                                logger.info(f"[OK] 算法 '{algorithm_name}' 已删除")
                                 break
                     else:
                         return no_update, no_update, no_update, no_update, no_update, no_update

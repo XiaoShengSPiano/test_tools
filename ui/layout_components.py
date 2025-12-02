@@ -418,7 +418,7 @@ def create_main_layout():
         dcc.Store(id='key-force-interaction-selected-algorithms', data=[]),  # 存储选中的算法列表
         dcc.Store(id='key-force-interaction-selected-keys', data=[]),  # 存储选中的按键列表
         dcc.Graph(id='relative-delay-distribution-plot', figure={}, style={'display': 'none'}),
-        dcc.Graph(id='offset-alignment-plot', figure={}, style={'display': 'none'}),
+        html.Div(id='offset-alignment-plot', style={'display': 'none'}),
         dcc.Graph(id='delay-time-series-plot', figure={}, style={'display': 'none'}),
         dcc.Graph(id='delay-histogram-plot', figure={}, style={'display': 'none'}),
         html.Div([
@@ -1318,7 +1318,7 @@ def create_report_layout(backend):
             dcc.Store(id='key-force-interaction-selected-algorithms', data=[]),
             dcc.Store(id='key-force-interaction-selected-keys', data=[]),
             dcc.Graph(id='relative-delay-distribution-plot', figure=empty_fig, style={'display': 'none'}),
-            dcc.Graph(id='offset-alignment-plot', figure=empty_fig, style={'display': 'none'}),
+            html.Div(id='offset-alignment-plot', style={'display': 'none'}),
             dcc.Graph(id='delay-time-series-plot', figure=empty_fig, style={'display': 'none'}),
             dcc.Graph(id='delay-histogram-plot', figure=empty_fig, style={'display': 'none'}),
             html.Div([
@@ -1445,10 +1445,10 @@ def create_report_layout(backend):
                                    style={'color': '#6f42c1', 'fontWeight': 'bold', 'borderBottom': '2px solid #6f42c1', 'paddingBottom': '5px'}),
                                 ], width=12)
                     ]),
-                    dcc.Graph(
+                    html.Div(
                         id='offset-alignment-plot',
-                        figure={},
-                                style={'height': '2750px'}  # 增加高度以容纳5个子图（包括相对延时图）
+                        children=[],
+                        style={'minHeight': '500px'}
                     ),
                 ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
             ], width=12)

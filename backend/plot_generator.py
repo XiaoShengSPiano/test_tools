@@ -849,21 +849,28 @@ class PlotGenerator:
         """生成对数刻度的刻度点"""
         if not velocities:
             return [], []
-        
+
         min_vel = min(velocities)
         max_vel = max(velocities)
-        
+
         if min_vel <= 0 or max_vel <= 0:
             return [], []
-        
+
         min_log = math.floor(math.log10(min_vel))
         max_log = math.ceil(math.log10(max_vel))
-        
-        # 刻度位置是log10整数值
-        tick_positions = list(range(min_log, max_log + 1))
-        # 刻度标签显示实际锤速值
-        tick_texts = [f"{10**i:.0f}" for i in tick_positions]
-        
+
+        # 生成更密集的刻度，每0.2个单位一个刻度
+        tick_positions = []
+        tick_texts = []
+
+        current = min_log
+        while current <= max_log:
+            tick_positions.append(current)
+            # 显示对应的实际锤速值，而不是log10值
+            actual_velocity = 10 ** current
+            tick_texts.append(f"{actual_velocity:.0f}")
+            current += 0.2  # 每0.2个log10单位一个刻度
+
         return tick_positions, tick_texts
     
     def _create_algorithm_control_legends(self, fig, algorithm_names, algorithm_colors):
