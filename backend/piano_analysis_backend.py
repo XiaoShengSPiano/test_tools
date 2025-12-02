@@ -12,6 +12,7 @@ import traceback
 import pandas as pd
 import numpy as np
 from typing import Optional, Tuple, Dict, Any, List, Union
+from plotly.graph_objects import Figure
 from utils.logger import Logger
 
 # SPMID相关导入
@@ -28,6 +29,7 @@ from .table_data_generator import TableDataGenerator
 from .history_manager import HistoryManager
 from .delay_analysis import DelayAnalysis
 from .multi_algorithm_manager import MultiAlgorithmManager, AlgorithmDataset, AlgorithmStatus
+from .force_curve_analyzer import ForceCurveAnalyzer
 
 logger = Logger.get_logger()
 
@@ -50,6 +52,9 @@ class PianoAnalysisBackend:
         self.plot_generator = PlotGenerator(self.data_filter)
         self.time_filter = TimeFilter()
         self.table_generator = TableDataGenerator()
+        
+        # 初始化力度曲线分析器
+        self.force_curve_analyzer = ForceCurveAnalyzer()
         
         # 使用全局的历史管理器实例
         self.history_manager = history_manager
@@ -2246,6 +2251,27 @@ class PianoAnalysisBackend:
             
             record_note, replay_note = notes
             
+            # 计算平均延时
+            mean_delay = 0.0
+            
+            # 多算法模式下，需要从对应的算法获取平均延时
+            if self.multi_algorithm_mode and self.multi_algorithm_manager:
+                # 获取第一个激活的算法（与get_first_data_point_notes逻辑一致）
+                active_algorithms = self.multi_algorithm_manager.get_active_algorithms()
+                if active_algorithms:
+                    algorithm = active_algorithms[0]
+                    if algorithm.analyzer:
+                         mean_error_0_1ms = algorithm.analyzer.get_mean_error()
+                         if mean_error_0_1ms is not None:
+                             mean_delay = mean_error_0_1ms / 10.0
+            # 单算法模式（兼容）
+            elif self.analyzer:
+                mean_error_0_1ms = self.analyzer.get_mean_error()
+                if mean_error_0_1ms is not None:
+                    mean_delay = mean_error_0_1ms / 10.0  # 转换为毫秒
+            
+            logger.info(f"测试曲线对齐 - 获取平均延时: {mean_delay}ms")
+            
             # 创建曲线分析器
             # 减少平滑强度，保持波峰和波谷特征
             analyzer = ForceCurveAnalyzer(
@@ -2259,7 +2285,8 @@ class PianoAnalysisBackend:
                 record_note, 
                 replay_note,
                 record_note=record_note,
-                replay_note=replay_note
+                replay_note=replay_note,
+                mean_delay=mean_delay  # 传入平均延时
             )
             
             if result is None:
@@ -2268,10 +2295,16 @@ class PianoAnalysisBackend:
                     'message': '曲线对比失败'
                 }
             
-            # 生成所有处理阶段的对比图
+            # 生成所有处理阶段的对比图 (大图)
             all_stages_fig = None
+            # 生成独立的处理阶段图表列表
+            individual_stage_figures = []
+            
             if 'processing_stages' in result:
+                # 兼容旧的大图逻辑
                 all_stages_fig = analyzer.visualize_all_processing_stages(result)
+                # 生成新的独立图表列表
+                individual_stage_figures = analyzer.generate_processing_stages_figures(result)
             
             # 生成对齐前后对比图（保持向后兼容）
             comparison_fig = None
@@ -2281,8 +2314,9 @@ class PianoAnalysisBackend:
             return {
                 'status': 'success',
                 'result': result,
-                'comparison_figure': comparison_fig,  # 对齐前后对比图（向后兼容）
-                'all_stages_figure': all_stages_fig,  # 所有处理阶段的对比图
+                'comparison_figure': comparison_fig,
+                'all_stages_figure': all_stages_fig, # 保留以兼容
+                'individual_stage_figures': individual_stage_figures, # 新增字段
                 'record_index': record_note.id if hasattr(record_note, 'id') else 'N/A',
                 'replay_index': replay_note.id if hasattr(replay_note, 'id') else 'N/A'
             }
@@ -2299,11 +2333,11 @@ class PianoAnalysisBackend:
     def generate_scatter_detail_plot_by_indices(self, record_index: int, replay_index: int) -> Tuple[Any, Any, Any]:
         """
         根据record_index和replay_index生成散点图点击的详细曲线图
-        
+
         Args:
             record_index: 录制音符索引
             replay_index: 播放音符索引
-            
+
         Returns:
             Tuple[Any, Any, Any]: (录制音符图, 播放音符图, 对比图)
         """
@@ -2328,18 +2362,33 @@ class PianoAnalysisBackend:
 
         # 计算平均延时
         mean_delays = {}
+        mean_delay_val = 0.0
         if self.analyzer:
             mean_error_0_1ms = self.analyzer.get_mean_error()
-            mean_delays['default'] = mean_error_0_1ms / 10.0  # 转换为毫秒
+            mean_delay_val = mean_error_0_1ms / 10.0  # 转换为毫秒
+            mean_delays['default'] = mean_delay_val
         else:
             logger.warning("⚠️ 无法获取单算法模式的平均延时")
 
         # 使用spmid模块生成详细图表
-
         detail_figure1 = spmid.plot_note_comparison_plotly(record_note, None, mean_delays=mean_delays)
         detail_figure2 = spmid.plot_note_comparison_plotly(None, play_note, mean_delays=mean_delays)
         detail_figure_combined = spmid.plot_note_comparison_plotly(record_note, play_note, mean_delays=mean_delays)
         
+        # 生成全过程处理图
+        processing_stages_figure = None
+        if self.force_curve_analyzer:
+            try:
+                comparison_result = self.force_curve_analyzer.compare_curves(
+                    record_note, 
+                    play_note,
+                    mean_delay=mean_delay_val  # 传入平均延时
+                )
+                if comparison_result:
+                    processing_stages_figure = self.force_curve_analyzer.visualize_all_processing_stages(comparison_result)
+            except Exception as e:
+                logger.error(f"❌ 生成全过程处理图失败: {e}")
+
         logger.info(f"✅ 生成散点图点击的详细曲线图，record_index={record_index}, replay_index={replay_index}")
         return detail_figure1, detail_figure2, detail_figure_combined
     
@@ -2351,12 +2400,12 @@ class PianoAnalysisBackend:
     ) -> Tuple[Any, Any, Any]:
         """
         根据算法名称、record_index和replay_index生成多算法散点图点击的详细曲线图
-        
+
         Args:
             algorithm_name: 算法名称
             record_index: 录制音符索引
             replay_index: 播放音符索引
-            
+
         Returns:
             Tuple[Any, Any, Any]: (录制音符图, 播放音符图, 对比图)
         """
@@ -2396,6 +2445,16 @@ class PianoAnalysisBackend:
         detail_figure1 = spmid.plot_note_comparison_plotly(record_note, None, algorithm_name=algorithm_name, mean_delays=mean_delays)
         detail_figure2 = spmid.plot_note_comparison_plotly(None, play_note, algorithm_name=algorithm_name, mean_delays=mean_delays)
         detail_figure_combined = spmid.plot_note_comparison_plotly(record_note, play_note, algorithm_name=algorithm_name, mean_delays=mean_delays)
+        
+        # 生成全过程处理图
+        processing_stages_figure = None
+        if self.force_curve_analyzer:
+            try:
+                comparison_result = self.force_curve_analyzer.compare_curves(record_note, play_note)
+                if comparison_result:
+                    processing_stages_figure = self.force_curve_analyzer.visualize_all_processing_stages(comparison_result)
+            except Exception as e:
+                logger.error(f"❌ 生成全过程处理图失败: {e}")
         
         logger.info(f"✅ 生成多算法散点图点击的详细曲线图，算法={algorithm_name}, record_index={record_index}, replay_index={replay_index}")
         return detail_figure1, detail_figure2, detail_figure_combined
@@ -2490,21 +2549,21 @@ class PianoAnalysisBackend:
             return None
     
     def generate_multi_algorithm_detail_plot_by_index(
-        self, 
-        algorithm_name: str, 
-        index: int, 
+        self,
+        algorithm_name: str,
+        index: int,
         is_record: bool
-    ) -> Tuple[Any, Any, Any]:
+    ) -> Tuple[Figure, Figure, Figure]:
         """
         多算法模式下，根据算法名称和索引生成详细图表
-        
+
         Args:
             algorithm_name: 算法名称
             index: 音符索引
             is_record: 是否为录制数据
-            
+
         Returns:
-            Tuple[Any, Any, Any]: (录制音符图, 播放音符图, 对比图)
+            Tuple[Figure, Figure, Figure]: (录制音符图, 播放音符图, 对比图)
         """
         if not self.multi_algorithm_manager:
             self._ensure_multi_algorithm_manager()
@@ -2563,6 +2622,16 @@ class PianoAnalysisBackend:
         detail_figure1 = spmid.plot_note_comparison_plotly(record_note, None, algorithm_name=algorithm_name, mean_delays=mean_delays)
         detail_figure2 = spmid.plot_note_comparison_plotly(None, play_note, algorithm_name=algorithm_name, mean_delays=mean_delays)
         detail_figure_combined = spmid.plot_note_comparison_plotly(record_note, play_note, algorithm_name=algorithm_name, mean_delays=mean_delays)
+        
+        # 生成全过程处理图
+        processing_stages_figure = None
+        if self.force_curve_analyzer and record_note and play_note:
+            try:
+                comparison_result = self.force_curve_analyzer.compare_curves(record_note, play_note)
+                if comparison_result:
+                    processing_stages_figure = self.force_curve_analyzer.visualize_all_processing_stages(comparison_result)
+            except Exception as e:
+                logger.error(f"❌ 生成全过程处理图失败: {e}")
         
         logger.info(f"✅ 生成算法 '{algorithm_name}' 的详细图表，索引={index}, 类型={'record' if is_record else 'play'}")
         return detail_figure1, detail_figure2, detail_figure_combined
@@ -3675,10 +3744,28 @@ class PianoAnalysisBackend:
                             matched_pairs = algorithm.analyzer.note_matcher.get_matched_pairs()
                             for r_idx, p_idx, record_note, replay_note in matched_pairs:
                                 if r_idx == record_idx and p_idx == replay_idx:
-                                    # 获取录制音符的锤速（通常是固定的参考值）
-                                    record_velocity = 100  # 默认录制锤速，通常是100
-                                    if len(replay_note.hammers) > 0:
-                                        replay_velocity = replay_note.hammers.values[0] if hasattr(replay_note.hammers, 'values') else replay_note.hammers[0]
+                                    # 从匹配的音符对中提取真实的锤速值
+                                    record_velocity = None
+                                    replay_velocity = None
+
+                                    # 提取录制锤速
+                                    if hasattr(record_note, 'hammers') and record_note.hammers is not None:
+                                        if hasattr(record_note.hammers, 'empty'):
+                                            if not record_note.hammers.empty:
+                                                record_velocity = record_note.hammers.values[0] if hasattr(record_note.hammers, 'values') else record_note.hammers[0]
+                                        elif len(record_note.hammers) > 0:
+                                            record_velocity = record_note.hammers.values[0] if hasattr(record_note.hammers, 'values') else record_note.hammers[0]
+
+                                    # 提取播放锤速
+                                    if hasattr(replay_note, 'hammers') and replay_note.hammers is not None:
+                                        if hasattr(replay_note.hammers, 'empty'):
+                                            if not replay_note.hammers.empty:
+                                                replay_velocity = replay_note.hammers.values[0] if hasattr(replay_note.hammers, 'values') else replay_note.hammers[0]
+                                        elif len(replay_note.hammers) > 0:
+                                            replay_velocity = replay_note.hammers.values[0] if hasattr(replay_note.hammers, 'values') else replay_note.hammers[0]
+
+                                    # 只有当两个锤速都有效时才添加数据
+                                    if record_velocity is not None and replay_velocity is not None:
                                         velocity_diff = replay_velocity - record_velocity
                                         hammer_velocity_diffs.append({
                                             'key_id': record_note.id,

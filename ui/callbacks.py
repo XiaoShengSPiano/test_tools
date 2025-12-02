@@ -6,22 +6,24 @@ import base64
 import time
 import traceback
 import uuid
+import math
 from typing import Dict, Optional, Union, TypedDict, Tuple, List, Any
 
 import pandas as pd
+import numpy as np
 
 # SPMID导入
 from spmid.spmid_analyzer import SPMIDAnalyzer
 
 
-from dash import html
+from dash import html, no_update
 from dash._callback import NoUpdate
-
-
+            
 import dash
 import dash.dependencies
+import dash.dcc as dcc
 import dash_bootstrap_components as dbc
-from dash import Input, Output, State, callback_context, no_update, html, dcc, dash_table
+from dash import Input, Output, State, callback_context, dcc, dash_table
 from dash._callback_context import CallbackContext
 from datetime import datetime
 
@@ -46,6 +48,7 @@ class VelocityDataItem(TypedDict):
     """锤速数据项的类型定义"""
     algorithm_name: str
     display_name: str
+    filename: str  # 添加文件名以区分同种算法的不同文件
     key_id: int
     record_index: int  # 录制音符在matched_pairs中的索引
     replay_index: int  # 播放音符在matched_pairs中的索引
@@ -238,8 +241,6 @@ def _detect_trigger_from_context(ctx: CallbackContext, current_state: StateDict,
     elif 'history-dropdown' in recent_trigger:
         return _handle_history_trigger(current_state, previous_state, backend, current_time)
     
-    # 移除瀑布图和报告按钮，改为自动生成
-    
     return None
 
 def _handle_upload_trigger(current_state: StateDict, previous_state: StateDict,
@@ -321,52 +322,6 @@ def _process_file_upload_result(success: bool, result_data: Optional[UploadResul
 
     return info_content, error_content
 
-
-def _perform_successful_upload_actions(backend, key_filter):
-    """执行成功上传后的所有操作"""
-    # 执行数据分析
-    backend._perform_error_analysis()
-
-    # 设置键ID筛选
-    if key_filter:
-        backend.set_key_filter(key_filter)
-    else:
-        backend.set_key_filter(None)
-
-    # 自动生成瀑布图和报告
-    fig = backend.generate_waterfall_plot()
-    report_content = create_report_layout(backend)
-
-    return fig, report_content
-
-
-def _prepare_ui_state_data(backend, key_filter):
-    """准备UI状态相关的所有数据"""
-    # 获取键ID和时间筛选相关数据
-    available_keys = backend.get_available_keys()
-    key_options = [{'label': f'键位 {key_id}', 'value': key_id} for key_id in available_keys]
-    key_status = backend.get_key_filter_status()
-
-    # 将key_status转换为可渲染的字符串
-    if key_status['enabled']:
-        key_status_text = f"已筛选 {len(key_status['filtered_keys'])} 个键位 (共 {key_status['total_available_keys']} 个)"
-    else:
-        key_status_text = f"显示全部 {key_status['total_available_keys']} 个键位"
-
-    # 完全避免更新滑块属性，防止无限递归
-    time_status = backend.get_time_filter_status()
-
-    # 将time_status转换为可渲染的字符串
-    if time_status['enabled']:
-        time_status_text = f"时间范围: {time_status['start_time']:.2f}s - {time_status['end_time']:.2f}s (时长: {time_status['duration']:.2f}s)"
-    else:
-        time_status_text = "显示全部时间范围"
-
-    current_value = key_filter if key_filter else []
-
-    return key_options, key_status_text, current_value, time_status_text
-
-
 def _handle_upload_error(error_msg, error_content):
     """处理上传错误情况"""
     if error_content:
@@ -374,20 +329,15 @@ def _handle_upload_error(error_msg, error_content):
             fig = _create_empty_figure_for_callback("[ERROR] SPMID文件只包含 1 个轨道，需要至少2个轨道（录制+播放）才能进行分析")
         else:
             fig = _create_empty_figure_for_callback("文件类型不符")
-        # 顺序: fig, report, history_options, key_options, key_status, key_value, time_min, time_max, time_value, time_status
-        return fig, error_content, no_update, [], "显示全部键位", [], 0, 1000, [0, 1000], "显示全部时间范围"
+        # 顺序: fig, report, history_options, time_min, time_max, time_value, time_status
+        return fig, error_content, no_update, 0, 1000, [0, 1000], "显示全部时间范围"
     else:
         fig = _create_empty_figure_for_callback("文件上传失败")
         error_div = html.Div([
             html.H4("文件上传失败", className="text-center text-danger"),
             html.P("请检查文件格式或联系管理员。", className="text-center")
         ])
-        return fig, error_div, no_update, [], "显示全部键位", [], 0, 1000, [0, 1000], "显示全部时间范围"
-
-
-# 已废弃：文件上传现在由统一的UploadManager处理
-# def _handle_file_upload(...)
-
+        return fig, error_div, no_update, 0, 1000, [0, 1000], "显示全部时间范围"
 
 def _handle_history_selection(history_id, backend):
     """处理历史记录选择操作"""
@@ -449,7 +399,7 @@ def _handle_history_selection(history_id, backend):
             html.H4("历史记录加载失败", className="text-center text-danger"),
             html.P("请尝试选择其他历史记录", className="text-center")
         ])
-        return empty_fig, error_content, no_update, [], "显示全部键位", 0, 1000, [0, 1000], "显示全部时间范围", no_update
+        return empty_fig, error_content, no_update, 0, 1000, [0, 1000], "显示全部时间范围", no_update
 
 
 def _handle_waterfall_button(backend):
@@ -489,19 +439,19 @@ def _handle_waterfall_button(backend):
                 
                 logger.info(f"⏰ 瀑布图按钮更新滑动条: min={time_min}, max={time_max}, 范围={range_size}")
                 # key_value 不在此回调中更新
-                return fig, no_update, no_update, [], "显示全部键位", no_update, time_min, time_max, [time_min, time_max], "显示全部时间范围"
+                return fig, no_update, no_update, time_min, time_max, [time_min, time_max], "显示全部时间范围"
             else:
                 logger.warning(f"[WARNING] 时间范围无效: {time_range}")
-                return fig, no_update, no_update, [], "显示全部键位", no_update, 0, 1000, [0, 1000], "显示全部时间范围"
+                return fig, no_update, no_update, 0, 1000, [0, 1000], "显示全部时间范围"
         except Exception as e:
             logger.error(f"[ERROR] 获取时间范围失败: {e}")
-            return fig, no_update, no_update, [], "显示全部键位", 0, 1000, [0, 1000], "显示全部时间范围", no_update
+            return fig, no_update, no_update, 0, 1000, [0, 1000], "显示全部时间范围", no_update
     else:
         if current_data_source == 'history':
             empty_fig = _create_empty_figure_for_callback("请选择历史记录或上传新文件")
         else:
             empty_fig = _create_empty_figure_for_callback("请先上传SPMID文件")
-            return empty_fig, no_update, no_update, [], "显示全部键位", no_update, 0, 1000, [0, 1000], "显示全部时间范围"
+            return empty_fig, no_update, no_update, 0, 1000, [0, 1000], "显示全部时间范围"
 
 
 def _handle_report_button(backend):
@@ -525,55 +475,6 @@ def _handle_report_button(backend):
                 html.P("需要先上传并分析SPMID文件才能生成报告", className="text-center")
             ])
         return no_update, error_content, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
-
-
-# 已废弃：文件上传和历史记录选择现在由统一的逻辑处理
-# def _handle_fallback_logic(contents, filename, history_id, backend):
-    """兜底逻辑：基于现有状态判断"""
-    if contents and filename and not history_id:
-        logger.info(f"[PROCESS] 兜底处理文件上传: {filename}")
-        
-        # 使用backend中的DataManager处理文件上传
-        success, result_data, error_msg = backend.process_file_upload(contents, filename)
-        fig = backend.generate_waterfall_plot()
-        report_content = create_report_layout(backend)
-        
-        # 不在这里更新历史记录选项，避免循环调用
-        return fig, report_content, no_update, [], "显示全部键位", [], 0, 1000, [0, 1000], "显示全部时间范围"
-        
-    elif history_id:
-        logger.info(f"[PROCESS] 兜底处理历史记录: {history_id}")
-        
-        # 使用UIProcessor生成UI内容
-        ui_processor = UIProcessor()
-        # 使用HistoryManager处理历史记录选择（包含状态初始化）
-        success, result_data, error_msg = backend.history_manager.process_history_selection(history_id, backend)
-        
-        if success:
-            if result_data['has_file_content']:
-                # 有文件内容，生成瀑布图和报告
-                waterfall_fig = ui_processor.generate_history_waterfall(backend, result_data['filename'], result_data['main_record'])
-                report_content = ui_processor.generate_history_report(backend, result_data['filename'], result_data['history_id'])
-            else:
-                # 没有文件内容，只显示基本信息
-                waterfall_fig = ui_processor.create_empty_figure("历史记录无文件内容")
-                report_content = ui_processor.create_history_basic_info_content(result_data)
-        else:
-            waterfall_fig = ui_processor.create_empty_figure("历史记录加载失败")
-            report_content = ui_processor.create_error_content("历史记录加载失败", error_msg)
-        if waterfall_fig and report_content:
-            return waterfall_fig, report_content, no_update, [], "显示全部键位", [], 0, 1000, [0, 1000], "显示全部时间范围"
-        else:
-            empty_fig = _create_empty_figure_for_callback("历史记录加载失败")
-            error_content = html.Div([
-                html.H4("历史记录加载失败", className="text-center text-danger"),
-                html.P("请尝试选择其他历史记录", className="text-center")
-            ])
-            return empty_fig, error_content, no_update, [], "显示全部键位", 0, 1000, [0, 1000], "显示全部时间范围", no_update
-
-    # 最终兜底：无上传、无历史选择、无触发
-    placeholder_fig = _create_empty_figure_for_callback("等待操作：请上传文件或选择历史记录")
-    return placeholder_fig, no_update, no_update, [], "显示全部键位", [], 0, 1000, [0, 1000], "显示全部时间范围"
 
 
 def register_callbacks(app, session_manager: SessionManager, history_manager):
@@ -980,7 +881,66 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
 
         logger.info("[OK] Z-Score标准化散点图点击回调 - 返回模态框和图表")
         return modal_style, dcc.Graph(figure=detail_figure_combined, style={'height': '600px'}), point_info
-    
+
+    def _handle_zscore_modal_close() -> Tuple[Dict[str, Any], List[Any], NoUpdate]:
+        """处理Z-Score模态框关闭逻辑"""
+        logger.info("[OK] 关闭按键曲线对比模态框")
+        modal_style = {
+            'display': 'none',
+            'position': 'fixed',
+            'zIndex': '9999',
+            'left': '0',
+            'top': '0',
+            'width': '100%',
+            'height': '100%',
+            'backgroundColor': 'rgba(0,0,0,0.6)',
+            'backdropFilter': 'blur(5px)'
+        }
+        return modal_style, [], no_update
+
+    def _handle_zscore_plot_click(zscore_scatter_clickData: Optional[Dict[str, Any]], session_id: str, current_style: Dict[str, Any]) -> Tuple[Dict[str, Any], List[Any], Union[Dict[str, Any], NoUpdate]]:
+        """处理Z-Score散点图点击的主要逻辑"""
+        logger.info(f"🔍 Z-Score标准化散点图点击回调被触发 - zscore_scatter_clickData: {zscore_scatter_clickData is not None}")
+
+        backend = session_manager.get_backend(session_id)
+        if not backend:
+            logger.warning("[WARNING] 没有找到backend")
+            return current_style, [], no_update
+
+        # 验证点击数据
+        point = _validate_zscore_click_data(zscore_scatter_clickData, backend)
+        if not point:
+            return current_style, [], no_update
+
+        # 提取customdata
+        click_data = _extract_zscore_customdata(point['customdata'])
+        if not click_data:
+            return current_style, [], no_update
+
+        # 计算中心时间
+        center_time_ms = _calculate_zscore_center_time(backend, click_data)
+
+        # 存储当前点击的数据点信息，用于跳转按钮
+        point_info = {
+            'algorithm_name': click_data['algorithm_name'],
+            'record_idx': click_data['record_index'],
+            'replay_idx': click_data['replay_index'],
+            'key_id': click_data['key_id'],
+            'source_plot_id': 'key-delay-zscore-scatter-plot',  # 记录来源图表ID
+            'center_time_ms': center_time_ms  # 预先计算的时间信息
+        }
+
+        # 生成详细曲线图
+        detail_figure1, detail_figure2, detail_figure_combined = _generate_zscore_detail_plots(backend, click_data)
+
+        # 检查图表生成是否成功
+        if detail_figure1 and detail_figure2 and detail_figure_combined:
+            modal_style, graph_component, point_info_response = _create_zscore_modal_response(detail_figure_combined, point_info)
+            return modal_style, graph_component, point_info_response
+        else:
+            logger.warning("[WARNING] Z-Score标准化散点图点击回调 - 图表生成失败，部分图表为None")
+            return current_style, [], no_update
+
     @app.callback(
         [Output('key-curves-modal', 'style', allow_duplicate=True),
          Output('key-curves-comparison-container', 'children', allow_duplicate=True),
@@ -992,7 +952,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         State('key-curves-modal', 'style')],
         prevent_initial_call=True,
         prevent_duplicate=True
-        )
+    )
     def handle_zscore_scatter_click(zscore_scatter_clickData, close_modal_clicks, close_btn_clicks, session_id, current_style):
         """处理Z-Score标准化散点图点击，显示曲线对比（悬浮窗）并支持跳转到瀑布图"""
         # 检测触发源
@@ -1000,68 +960,18 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         if not ctx.triggered:
             logger.debug("[WARNING] Z-Score散点图点击回调：没有触发源")
             return current_style, [], no_update
-        
+
         trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
         logger.info(f"[PROCESS] Z-Score散点图点击回调触发：trigger_id={trigger_id}")
-        
+
         # 如果点击了关闭按钮，隐藏模态框
         if trigger_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
-            logger.info("[OK] 关闭按键曲线对比模态框")
-            modal_style = {
-                'display': 'none',
-                'position': 'fixed',
-                'zIndex': '9999',
-                'left': '0',
-                'top': '0',
-                'width': '100%',
-                'height': '100%',
-                'backgroundColor': 'rgba(0,0,0,0.6)',
-                'backdropFilter': 'blur(5px)'
-            }
-            return modal_style, [], no_update
-        
+            return _handle_zscore_modal_close()
+
         # 如果是Z-Score散点图点击
         if trigger_id == 'key-delay-zscore-scatter-plot' and zscore_scatter_clickData:
-            logger.info(f"🔍 Z-Score标准化散点图点击回调被触发 - zscore_scatter_clickData: {zscore_scatter_clickData is not None}")
-            
-            backend = session_manager.get_backend(session_id)
-            if not backend:
-                logger.warning("[WARNING] 没有找到backend")
-                return current_style, [], no_update
-            
-            # 验证点击数据
-            point = _validate_zscore_click_data(zscore_scatter_clickData, backend)
-            if not point:
-                return current_style, [], no_update
-            
-            # 提取customdata
-            click_data = _extract_zscore_customdata(point['customdata'])
-            if not click_data:
-                return current_style, [], no_update
-            
-            # 计算中心时间
-            center_time_ms = _calculate_zscore_center_time(backend, click_data)
-                
-            # 存储当前点击的数据点信息，用于跳转按钮
-            point_info = {
-                'algorithm_name': click_data['algorithm_name'],
-                'record_idx': click_data['record_index'],
-                'replay_idx': click_data['replay_index'],
-                'key_id': click_data['key_id'],
-                'source_plot_id': 'key-delay-zscore-scatter-plot',  # 记录来源图表ID
-                'center_time_ms': center_time_ms  # 预先计算的时间信息
-            }
-                
-                # 生成详细曲线图
-            detail_figure1, detail_figure2, detail_figure_combined = _generate_zscore_detail_plots(backend, click_data)
+            return _handle_zscore_plot_click(zscore_scatter_clickData, session_id, current_style)
 
-            # 检查图表生成是否成功
-            if detail_figure1 and detail_figure2 and detail_figure_combined:
-                modal_style, graph_component, point_info_response = _create_zscore_modal_response(detail_figure_combined, point_info)
-                return modal_style, graph_component, point_info_response
-            else:
-                logger.warning(f"[WARNING] Z-Score标准化散点图点击回调 - 图表生成失败，部分图表为None")
-        
         # 其他情况，返回默认值
         return current_style, [], no_update
 
@@ -1225,69 +1135,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
 
         return [success_alert]
 
-    # 键ID筛选回调函数
-    @app.callback(
-        [Output('main-plot', 'figure', allow_duplicate=True),
-         Output('key-filter-status', 'children', allow_duplicate=True),
-         Output('key-filter-dropdown', 'options', allow_duplicate=True),
-         Output('key-filter-dropdown', 'value', allow_duplicate=True)],
-        [Input('key-filter-dropdown', 'value'),
-         Input('btn-show-all-keys', 'n_clicks')],
-        [State('session-id', 'data')],
-        prevent_initial_call=True
-    )
-    def handle_key_filter(key_filter, show_all_clicks, session_id):
-        """处理键ID筛选"""
-        backend = session_manager.get_backend(session_id)
-        if not backend:
-            return no_update, no_update, no_update, no_update
-        
-        # 检查是否有数据（通过DataManager的getter）
-        if not backend.data_manager.get_record_data() and not backend.data_manager.get_replay_data():
-            return no_update, no_update, no_update, no_update
-        
-        # 获取触发上下文
-        ctx = callback_context
-        if not ctx.triggered:
-            return no_update, no_update, no_update, no_update
-        
-        trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
-        
-        # 处理"显示全部键位"按钮
-        if trigger_id == 'btn-show-all-keys' and show_all_clicks and show_all_clicks > 0:
-            backend.set_key_filter(None)
-            key_filter = None
-            logger.info("🔍 重置键ID筛选")
-        # 处理键ID下拉框选择
-        elif trigger_id == 'key-filter-dropdown':
-            if key_filter:
-                backend.set_key_filter(key_filter)
-                logger.info(f"🔍 应用键ID筛选: {key_filter}")
-            else:
-                backend.set_key_filter(None)
-                logger.info("🔍 清除键ID筛选")
-        else:
-            return no_update, no_update, no_update, no_update
-        
-        # 重新生成瀑布图
-        fig = backend.generate_waterfall_plot()
-        key_status = backend.get_key_filter_status()
-        
-        # 将key_status转换为可渲染的字符串
-        if key_status['enabled']:
-            key_status_text = f"已筛选 {len(key_status['filtered_keys'])} 个键位 (共 {key_status['total_available_keys']} 个)"
-        else:
-            key_status_text = f"显示全部 {key_status['total_available_keys']} 个键位"
-        
-        logger.info(f"🔍 键ID筛选状态: {key_status}")
-        
-        # 获取键ID选项并转换为Dash Dropdown格式
-        available_keys = backend.get_available_keys()
-        key_options = [{'label': f'键位 {key_id}', 'value': key_id} for key_id in available_keys]
-        
-        # 返回当前选中的value，确保UI回显
-        return fig, key_status_text, key_options, (key_filter or [])
-
+    # TODO
     # 时间轴筛选回调函数
     @app.callback(
         [Output('main-plot', 'figure', allow_duplicate=True),
@@ -1518,10 +1366,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             
             return no_update, html.Span(error_message, style=error_style), no_update, no_update, no_update, no_update
 
-
-    # 已移除全局延迟统计图表相关回调（使用数据统计概览中的平均时延替代）
-
-    # 偏移对齐分析 - 页面加载时自动生成（无需点击按钮）
+    # 偏移对齐分析 - 页面加载时自动生成
     @app.callback(
         Output('offset-alignment-plot', 'figure', allow_duplicate=True),
         Output('offset-alignment-table', 'data', allow_duplicate=True),
@@ -1655,20 +1500,21 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         try:
             # 验证环境条件
             if not _validate_velocity_comparison_prerequisites(backend):
-                return backend.plot_generator._create_empty_plot("未启用多算法模式")
+                return go.Figure()  # 返回空图表
 
             # 收集锤速数据
             velocity_data = _collect_velocity_comparison_data(backend)
             if not velocity_data:
-                return backend.plot_generator._create_empty_plot("没有有效的锤速数据")
+                return go.Figure()  # 返回空图表
 
             # 生成对比图表
-            return _create_velocity_comparison_plot(velocity_data)
+            fig = _create_velocity_comparison_plot(velocity_data)
+            return fig.figure if hasattr(fig, 'figure') else fig
 
         except Exception as e:
             logger.error(f"[ERROR] 生成锤速对比图失败: {e}")
             logger.error(traceback.format_exc())
-            return backend.plot_generator._create_empty_plot(f"生成锤速对比图失败: {str(e)}")
+            return go.Figure()  # 返回空图表
 
     def _validate_velocity_comparison_prerequisites(backend: PianoAnalysisBackend) -> bool:
         """
@@ -1706,14 +1552,21 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         active_algorithms = backend.multi_algorithm_manager.get_active_algorithms()
         all_velocity_data = []
 
+        logger.info(f"[DEBUG] 开始收集锤速对比数据，激活算法数量: {len(active_algorithms)}")
+
         for algorithm in active_algorithms:
             if not algorithm.is_ready():
+                logger.info(f"[DEBUG] 算法 {algorithm.metadata.algorithm_name} 未就绪，跳过")
                 continue
+
+            logger.info(f"[DEBUG] 处理算法: {algorithm.metadata.algorithm_name} ({algorithm.metadata.display_name})")
 
             # 从单个算法提取数据
             algorithm_velocity_data = _extract_single_algorithm_velocity_data(algorithm)
+            logger.info(f"[DEBUG] 算法 {algorithm.metadata.algorithm_name} 提取到 {len(algorithm_velocity_data)} 个锤速数据点")
             all_velocity_data.extend(algorithm_velocity_data)
 
+        logger.info(f"[DEBUG] 总共收集到 {len(all_velocity_data)} 个锤速数据点")
         return all_velocity_data
 
     def _extract_single_algorithm_velocity_data(algorithm: AlgorithmInstance) -> List[VelocityDataItem]:
@@ -1730,19 +1583,24 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
 
         # 检查算法是否有必要的分析器
         if not (algorithm.analyzer and algorithm.analyzer.note_matcher):
+            logger.warning(f"[WARNING] 算法 {algorithm.metadata.algorithm_name} 缺少必要的分析器或音符匹配器")
             return velocity_data
 
         # 获取匹配对和偏移数据
         matched_pairs = algorithm.analyzer.note_matcher.get_matched_pairs()
         offset_data = algorithm.analyzer.note_matcher.get_offset_alignment_data()
 
+        logger.info(f"[DEBUG] 算法 {algorithm.metadata.algorithm_name}: 匹配对数量={len(matched_pairs) if matched_pairs else 0}, 偏移数据数量={len(offset_data) if offset_data else 0}")
+
         if not (matched_pairs and offset_data):
+            logger.warning(f"[WARNING] 算法 {algorithm.metadata.algorithm_name} 缺少匹配对或偏移数据")
             return velocity_data
 
         # 创建偏移数据的快速查找映射
         offset_map = _create_velocity_offset_map(offset_data)
 
         # 遍历匹配对，提取锤速数据
+        valid_count = 0
         for record_idx, replay_idx, record_note, replay_note in matched_pairs:
             velocity_item = _extract_velocity_data_from_pair(
                 record_idx, replay_idx, record_note, replay_note,
@@ -1750,7 +1608,9 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             )
             if velocity_item:
                 velocity_data.append(velocity_item)
+                valid_count += 1
 
+        logger.info(f"[DEBUG] 算法 {algorithm.metadata.algorithm_name}: 从 {len(matched_pairs)} 个匹配对中提取到 {valid_count} 个有效锤速数据点")
         return velocity_data
 
     def _create_velocity_offset_map(offset_data: List[OffsetAlignmentDataItem]) -> Dict[Tuple[int, int], OffsetAlignmentDataItem]:
@@ -1794,6 +1654,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         record_velocity = _get_velocity_from_note(record_note, 'record')
         replay_velocity = _get_velocity_from_note(replay_note, 'replay')
 
+
         # 计算录制第一个锤子时间
         record_hammer_time_ms = 0.0
         try:
@@ -1813,9 +1674,14 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         # 只有当两个锤速都有效时才返回数据
         if record_velocity is not None and replay_velocity is not None:
 
+            filename_display = algorithm.metadata.filename
+            # 尝试从display_name中提取更友好的文件名（如果display_name包含文件名）
+            # 这里简单处理，直接使用display_name作为主要标识，filename作为辅助
+            
             return {
                 'algorithm_name': algorithm.metadata.algorithm_name,
                 'display_name': algorithm.metadata.display_name,
+                'filename': algorithm.metadata.filename,
                 'key_id': record_note.id,
                 'record_index': record_idx,  # 添加录制音符索引
                 'replay_index': replay_idx,  # 添加播放音符索引
@@ -1840,13 +1706,52 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             Optional[float]: 锤速值，如果无法提取则返回None
         """
         try:
-            if hasattr(note, 'hammers') and len(note.hammers) > 0:
-                # 优先使用.values属性（如果是pandas Series），否则直接索引
-                return note.hammers.values[0] if hasattr(note.hammers, 'values') else note.hammers[0]
-        except (AttributeError, IndexError, KeyError) as e:
-            logger.debug(f"提取{note_type}锤速失败: {e}")
+            if not hasattr(note, 'hammers'):
+                logger.debug(f"提取{note_type}锤速失败: 音符没有hammers属性")
+                return None
 
-        return None
+            hammers = getattr(note, 'hammers', None)
+            if hammers is None:
+                logger.debug(f"提取{note_type}锤速失败: hammers属性为None")
+                return None
+
+            # 对于pandas Series，使用empty属性检查是否为空
+            if hasattr(hammers, 'empty'):
+                if hammers.empty:
+                    logger.debug(f"提取{note_type}锤速失败: hammers Series为空")
+                    return None
+                try:
+                    first_value = hammers.values[0] if hasattr(hammers, 'values') else hammers[0]
+                    # 检查值是否有效（不是NaN或None）
+                    if pd.isna(first_value) or first_value is None:
+                        logger.debug(f"提取{note_type}锤速失败: 第一个锤速值为无效值 {first_value}")
+                        return None
+                    return first_value
+                except (IndexError, KeyError, TypeError) as e:
+                    logger.debug(f"提取{note_type}锤速失败: 访问第一个值时出错 {e}")
+                    return None
+            # 对于其他序列类型，使用len()检查
+            elif hasattr(hammers, '__len__'):
+                if len(hammers) == 0:
+                    logger.debug(f"提取{note_type}锤速失败: hammers序列为空")
+                    return None
+                try:
+                    first_value = hammers.values[0] if hasattr(hammers, 'values') else hammers[0]
+                    # 检查值是否有效（不是NaN或None）
+                    if pd.isna(first_value) or first_value is None:
+                        logger.debug(f"提取{note_type}锤速失败: 第一个锤速值为无效值 {first_value}")
+                        return None
+                    return first_value
+                except (IndexError, KeyError, TypeError) as e:
+                    logger.debug(f"提取{note_type}锤速失败: 访问第一个值时出错 {e}")
+                    return None
+            else:
+                logger.debug(f"提取{note_type}锤速失败: hammers不是可迭代对象")
+                return None
+
+        except (AttributeError, IndexError, KeyError, TypeError) as e:
+            logger.debug(f"提取{note_type}锤速失败: {e}")
+            return None
 
     def _create_velocity_comparison_plot(velocity_data: List[VelocityDataItem]) -> Figure:
         """
@@ -1858,30 +1763,46 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         Returns:
             Figure: 配置完整的图表对象
         """
-        import plotly.graph_objects as go
+        logger.info(f"[DEBUG] 开始创建锤速对比图，输入数据点数量: {len(velocity_data)}")
+
+        if not velocity_data:
+            logger.warning("[WARNING] 没有锤速数据，创建空图表")
+            return go.Figure()
 
         velocity_fig = go.Figure()
 
         # 定义颜色方案
         colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
 
-        # 为每个算法分配颜色并添加散点
-        unique_algorithms = list(set(item['display_name'] for item in velocity_data))
+        # 为每个算法+文件组合分配颜色并添加散点
+        # 创建算法+文件的唯一标识符
+        # 使用 filename 来区分同种算法的不同文件
+        unique_algorithm_files = list(set(f"{item['display_name']} - {item['filename']}" for item in velocity_data))
 
-        for i, algorithm in enumerate(unique_algorithms):
+        logger.info(f"[DEBUG] 发现 {len(unique_algorithm_files)} 个不同的算法+文件组合: {unique_algorithm_files}")
+
+        for i, algorithm_file in enumerate(unique_algorithm_files):
             color = colors[i % len(colors)]
-            algorithm_data = [item for item in velocity_data if item['display_name'] == algorithm]
+            # 根据 display_name 和 filename 组合来筛选数据
+            algorithm_file_data = [item for item in velocity_data if f"{item['display_name']} - {item['filename']}" == algorithm_file]
 
-            if algorithm_data:
+            logger.info(f"[DEBUG] 算法文件 '{algorithm_file}' 有 {len(algorithm_file_data)} 个数据点")
+
+            if algorithm_file_data:
                 # 准备图表数据
-                plot_data = _prepare_velocity_plot_data(algorithm_data)
+                plot_data = _prepare_velocity_plot_data(algorithm_file_data)
+
+                logger.info(f"[DEBUG] 添加trace: {algorithm_file}, 数据点数量: {len(plot_data['x_values'])}")
+
+                # 从algorithm_file中提取display_name作为图注名称
+                display_name = algorithm_file.split(' - ')[0] if ' - ' in algorithm_file else algorithm_file
 
                 # 添加散点系列
-                velocity_fig.add_trace(go.Scatter(
+                trace = go.Scatter(
                     x=plot_data['x_values'],
                     y=plot_data['y_values'],
                     mode='markers',
-                    name=algorithm,
+                    name=display_name,
                     marker=dict(
                         color=color,
                         size=8,
@@ -1890,8 +1811,11 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                     ),
                     text=plot_data['hover_texts'],
                     customdata=plot_data['custom_data'],  # 添加自定义数据用于点击回调
-                    hovertemplate='%{text}<extra></extra>'
-                ))
+                    hovertemplate='%{text}<extra></extra>',
+                    showlegend=True  # 确保显示在图注中
+                )
+                velocity_fig.add_trace(trace)
+                logger.info(f"[DEBUG] 已添加trace '{display_name}' 到图表，包含 {len(plot_data['x_values'])} 个数据点")
 
         # 添加参考线（零差值线）
         velocity_fig.add_hline(
@@ -1908,17 +1832,24 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             height=500,
             template='plotly_white',
             hovermode='closest',
+            showlegend=True,
             legend=dict(
                 orientation="h",
-                yanchor="bottom",
-                y=1.02,
-                xanchor="right",
-                x=1
-            )
+                yanchor="top",
+                y=1.2,
+                xanchor="left",
+                x=0.0,
+                bgcolor='rgba(255, 255, 255, 0.9)',
+                bordercolor='rgba(0, 0, 0, 0.3)',
+                borderwidth=1
+            ),
+            margin=dict(t=100, b=40, l=40, r=40)  # 为图注留出更多上方空间
         )
 
         logger.info("[OK] 锤速对比散点图生成成功")
+
         return velocity_fig
+
 
     def _prepare_velocity_plot_data(algorithm_data: List[VelocityDataItem]) -> Dict[str, Union[List[str], List[float], List[str]]]:
         """
@@ -1960,163 +1891,373 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             'custom_data': custom_data
         }
 
-    # 处理算法选择：点击算法控制图注
-    @app.callback(
-        Output('key-force-interaction-selected-algorithms', 'data'),
-        [Input('key-force-interaction-plot', 'restyleData')],
-        [State('key-force-interaction-selected-algorithms', 'data'),
-         State('key-force-interaction-plot', 'figure')],
-        prevent_initial_call=True
-    )
-    def handle_key_force_interaction_algorithm_selection(restyle_data, current_selected_algorithms, figure):
-        """处理算法选择：点击算法控制图注，切换算法选择状态"""
-        ctx = dash.callback_context
-        if not ctx.triggered:
-            return current_selected_algorithms or []
-        
-        if not restyle_data or not figure or 'data' not in figure:
-            return current_selected_algorithms or []
-        
+    
+    def _extract_algorithm_from_customdata(customdata):
+        """从customdata中提取算法名称"""
+        if not customdata or not isinstance(customdata, list) or len(customdata) == 0:
+            return None
+
         try:
-            # restyleData格式: [{'visible': [...]}, [trace_indices]]
-            # 当点击legend时，可能会触发多个trace的visible变化
-            # 我们需要找到算法控制图注的trace
-            
-            selected_algorithms = current_selected_algorithms or []
-            
-            # 检查restyleData格式
-            if not isinstance(restyle_data, list) or len(restyle_data) < 2:
-                return current_selected_algorithms or []
-            
-            restyle_dict = restyle_data[0] if isinstance(restyle_data[0], dict) else {}
-            trace_indices = restyle_data[1] if len(restyle_data) > 1 and isinstance(restyle_data[1], list) else []
-            
-            # 遍历所有被影响的trace，找到算法控制图注
-            for idx in trace_indices:
-                if idx < len(figure['data']):
-                    trace = figure['data'][idx]
+            first_point_data = customdata[0]
+            if isinstance(first_point_data, list) and len(first_point_data) >= 2:
+                return first_point_data[1]
+        except (IndexError, TypeError) as e:
+            logger.debug(f"[WARNING] 提取算法名称时出错: {e}")
+            pass
+        return None
 
-                    # 检查是否是算法控制图注项
-                    legendgroup = trace.get('legendgroup') if isinstance(trace, dict) else (trace.legendgroup if hasattr(trace, 'legendgroup') else None)
-                    
-                    if legendgroup == 'algorithm_control':
-                        # 获取算法名称
-                        algorithm_name = None
-                        if isinstance(trace, dict):
-                            algorithm_name = trace.get('name')
+    def _check_algorithm_name_match(trace_algorithm_name, target_algorithm_name):
+        """检查算法名称是否匹配（包括括号处理）"""
+        if not trace_algorithm_name or not target_algorithm_name:
+            return False
+
+        # 精确匹配
+        if trace_algorithm_name == target_algorithm_name:
+            return True
+
+        # 如果目标算法名称包含括号，尝试匹配基础名称
+        # 例如：算法A (文件名) 应该匹配 算法A
+        if '(' in target_algorithm_name:
+            base_name = target_algorithm_name.split('(')[0].strip()
+            if trace_algorithm_name == base_name:
+                return True
+
+        # 如果trace算法名称包含括号，尝试匹配基础名称
+        if '(' in trace_algorithm_name:
+            base_name = trace_algorithm_name.split('(')[0].strip()
+            if base_name == target_algorithm_name:
+                return True
+
+        return False
+
+    def _check_algorithm_from_legendgroup(legendgroup, algorithm_name):
+        """从legendgroup检查算法匹配"""
+        if not legendgroup:
+            return False
+
+        # 精确匹配
+        if legendgroup.startswith(f'data_{algorithm_name}_'):
+            return True
+
+        # 如果算法名称包含括号，尝试匹配基础名称
+        if '(' in algorithm_name:
+            base_name = algorithm_name.split('(')[0].strip()
+            if legendgroup.startswith(f'data_{base_name}_'):
+                return True
+
+        return False
+
+    def _check_dict_trace_algorithm(trace, algorithm_name):
+        """检查dict类型trace是否属于指定算法"""
+        # 首先尝试从customdata获取
+        customdata = trace.get('customdata')
+        trace_algorithm_name = _extract_algorithm_from_customdata(customdata)
+        if trace_algorithm_name and _check_algorithm_name_match(trace_algorithm_name, algorithm_name):
+            return True
+
+        # 然后尝试从legendgroup获取
+        legendgroup = trace.get('legendgroup')
+        return _check_algorithm_from_legendgroup(legendgroup, algorithm_name)
+
+    def _check_plotly_trace_algorithm(trace, algorithm_name):
+        """检查Plotly trace对象是否属于指定算法"""
+        # 首先尝试从customdata获取
+        if hasattr(trace, 'customdata') and trace.customdata:
+            trace_algorithm_name = _extract_algorithm_from_customdata(trace.customdata)
+            if trace_algorithm_name and _check_algorithm_name_match(trace_algorithm_name, algorithm_name):
+                return True
+
+        # 然后尝试从legendgroup获取
+        if hasattr(trace, 'legendgroup') and trace.legendgroup:
+            return _check_algorithm_from_legendgroup(trace.legendgroup, algorithm_name)
+
+        return False
+
+    def trace_belongs_to_algorithm(trace, algorithm_name):
+        """检查trace是否属于指定的算法"""
+        if not algorithm_name:
+            return False
+
+        # 根据trace类型选择不同的检查方法
+        if isinstance(trace, dict):
+            return _check_dict_trace_algorithm(trace, algorithm_name)
+        else:
+            return _check_plotly_trace_algorithm(trace, algorithm_name)
+
+    def _prepare_key_force_interaction_figure(trigger_id: str, backend, current_figure):
+        """准备按键-力度交互效应图表对象"""
+        # 如果是report-content变化，需要重新生成图表
+        if trigger_id == 'report-content':
+            # 检查是否有激活的算法
+            active_algorithms = backend.get_active_algorithms()
+            if not active_algorithms:
+                logger.warning("[WARNING] 没有激活的算法，无法生成交互效应图")
+                return backend.plot_generator._create_empty_plot("没有激活的算法")
+
+            # 重新生成图表
+            fig = backend.generate_key_force_interaction_plot()
+        else:
+            # 如果是选择变化，使用当前图表并更新可见性
+            if current_figure and isinstance(current_figure, dict) and 'data' in current_figure:
+                # 从dict创建Figure，确保所有属性都被正确加载
+                fig = go.Figure(current_figure)
+                # 确保data是trace对象列表，而不是dict列表
+                if fig.data and isinstance(fig.data[0], dict):
+                    # 如果data是dict列表，需要转换为trace对象
+                    fig_data = []
+                    for trace_dict in fig.data:
+                        trace_type = trace_dict.get('type', 'scatter')
+                        if trace_type == 'scatter':
+                            fig_data.append(go.Scatter(trace_dict))
                         else:
-                            algorithm_name = trace.name if hasattr(trace, 'name') else None
+                            fig_data.append(trace_dict)
+                    fig.data = fig_data
+            else:
+                active_algorithms = backend.get_active_algorithms()
+                if not active_algorithms:
+                    return no_update
+                fig = backend.generate_key_force_interaction_plot()
 
-                        if algorithm_name:
-                            # 切换算法选择状态
+        return fig
+
+    def _update_algorithm_control_traces(data_list: List, selected_algorithms: List[str]):
+        """更新算法控制图注的透明度和大小"""
+        logger.info(f"[DRAW] 开始更新算法控制图注: 选中算法={selected_algorithms}")
+
+        for trace_idx, trace in enumerate(data_list):
+            # 处理dict类型的trace
+            if isinstance(trace, dict):
+                if trace.get('legendgroup') == 'algorithm_control':
+                    if 'name' in trace and trace['name']:
+                        algorithm_name = trace['name']
+                        if 'marker' not in trace:
+                            trace['marker'] = {}
+
+                        # 选中时：颜色变浓（完全不透明）并且变大
+                        # 未选中时：颜色变淡（半透明）并且变小
+                        if algorithm_name in selected_algorithms:
+                            trace['marker']['opacity'] = 1.0  # 选中时完全不透明，颜色更浓
+                            trace['marker']['size'] = 18  # 选中时明显更大
+                        else:
+                            trace['marker']['opacity'] = 0.4  # 未选中时半透明，颜色较淡
+                            trace['marker']['size'] = 12  # 未选中时正常大小
+
+                        data_list[trace_idx] = trace
+                        logger.info(f"[UPDATE] 更新算法控制图注 '{algorithm_name}' 透明度: {trace['marker']['opacity']} (选中: {algorithm_name in selected_algorithms})")
+            else:
+                # 处理Plotly trace对象
+                if hasattr(trace, 'legendgroup') and trace.legendgroup == 'algorithm_control':
+                    if hasattr(trace, 'name') and trace.name:
+                        algorithm_name = trace.name
+                        # 直接修改marker.opacity和size属性（对象引用已修改，不需要重新赋值）
+                        if hasattr(trace, 'marker') and trace.marker is not None:
+                            # 选中时：颜色变浓（完全不透明）并且变大
+                            # 未选中时：颜色变淡（半透明）并且变小
                             if algorithm_name in selected_algorithms:
-                                # 取消选择
-                                selected_algorithms = [a for a in selected_algorithms if a != algorithm_name]
-                                logger.info(f"[PROCESS] 取消选择算法: {algorithm_name}, 当前选中: {selected_algorithms}")
+                                trace.marker.opacity = 1.0  # 选中时完全不透明，颜色更浓
+                                trace.marker.size = 18  # 选中时明显更大
                             else:
-                                # 选择算法
-                                selected_algorithms = selected_algorithms + [algorithm_name]
-                                logger.info(f"[TARGET] 选择算法: {algorithm_name}, 当前选中: {selected_algorithms}")
-                            
-                            # 找到算法控制图注后立即返回，避免处理其他trace
-                            return selected_algorithms
-                        # 如果找到了算法控制图注但没有算法名称，继续查找下一个
-            
-            # 如果没有找到算法控制图注，可能是点击了其他图注，返回原状态
-            logger.debug(f"🔍 未找到算法控制图注，restyle_data: {restyle_data}")
-            
+                                trace.marker.opacity = 0.4  # 未选中时半透明，颜色较淡
+                                trace.marker.size = 12  # 未选中时正常大小
+
+    def _update_key_control_traces(data_list: List, selected_keys: List[int]):
+        """更新按键控制图注的透明度和大小"""
+        logger.info(f"[DRAW] 开始更新按键控制图注: 选中按键={selected_keys}")
+
+        for trace_idx, trace in enumerate(data_list):
+            # 处理dict类型的trace
+            if isinstance(trace, dict):
+                if trace.get('legendgroup') == 'key_control':
+                    if 'name' in trace and trace['name']:
+                        key_name = trace['name']
+                        # 从按键名称中提取按键ID
+                        import re
+                        key_id_match = re.match(r'按键 (\d+)', key_name)
+                        if key_id_match:
+                            key_id = int(key_id_match.group(1))
+
+                            if 'marker' not in trace:
+                                trace['marker'] = {}
+
+                            # 选中时：颜色变浓（完全不透明）并且变大
+                            if key_id in selected_keys:
+                                trace['marker']['opacity'] = 1.0  # 选中时完全不透明，颜色较浓
+                                trace['marker']['size'] = 16  # 选中时变大
+                            else:
+                                trace['marker']['opacity'] = 0.4  # 未选中时半透明，颜色较淡
+                                trace['marker']['size'] = 14  # 未选中时正常大小
+                            data_list[trace_idx] = trace
+            else:
+                # 处理trace对象
+                if hasattr(trace, 'legendgroup') and trace.legendgroup == 'key_control':
+                    if hasattr(trace, 'name') and trace.name:
+                        key_name = trace.name
+                        # 从按键名称中提取按键ID
+                        import re
+                        key_id_match = re.match(r'按键 (\d+)', key_name)
+                        if key_id_match:
+                            key_id = int(key_id_match.group(1))
+
+                            # 选中时：颜色变浓（完全不透明）并且变大
+                            if key_id in selected_keys:
+                                trace.marker.opacity = 1.0  # 选中时完全不透明，颜色较浓
+                                trace.marker.size = 16  # 选中时变大
+                            else:
+                                trace.marker.opacity = 0.4  # 未选中时半透明，颜色较淡
+                                trace.marker.size = 14  # 未选中时正常大小
+
+    def trace_belongs_to_algorithm_and_key(trace, selected_algorithms: List[str], selected_keys: List[int]) -> bool:
+        """检查trace是否属于选中的算法和按键（多选模式）"""
+        # 从trace的customdata中提取算法和按键信息
+        customdata = None
+        if isinstance(trace, dict):
+            customdata = trace.get('customdata')
+        else:
+            customdata = trace.customdata if hasattr(trace, 'customdata') else None
+
+        if not customdata:
+            logger.debug("[TRACE] trace没有customdata - 隐藏")
+            return False
+
+        # 转换为列表（处理numpy数组、tuple等）
+        try:
+            if hasattr(customdata, '__iter__') and not isinstance(customdata, str):
+                # 确保customdata是列表格式
+                if not isinstance(customdata, list):
+                    customdata = list(customdata)
+                
+                if len(customdata) == 0:
+                    logger.debug("[TRACE] customdata为空列表")
+                    return False
+                
+                # 获取第一个数据点
+                first_point = customdata[0]
+                
+                # 转换first_point为列表（如果需要）
+                if hasattr(first_point, '__iter__') and not isinstance(first_point, str):
+                    if not isinstance(first_point, list):
+                        first_point = list(first_point)
+                    
+                    # customdata格式: [key_id, replay_velocity, relative_delay, absolute_delay, algorithm_name, mean_delay]
+                    if len(first_point) >= 5:
+                        trace_key_id = int(first_point[0])      # 索引0：按键ID
+                        trace_algorithm = str(first_point[4]) if first_point[4] else ''  # 索引4：算法名称
+
+                        # 如果没有选择任何算法或按键，则显示所有
+                        if not selected_algorithms and not selected_keys:
+                            logger.info(f"[TRACE] ✓ key={trace_key_id}, alg='{trace_algorithm}' - 默认全部可见")
+                            return True
+                        
+                        # 算法匹配逻辑
+                        if selected_algorithms:
+                            # 如果选择了算法，trace的algorithm必须在选中列表中
+                            # 空字符串algorithm表示单算法模式，不匹配任何多算法选择
+                            algorithm_match = bool(trace_algorithm and trace_algorithm in selected_algorithms)
+                        else:
+                            # 如果没有选择任何算法，所有trace都匹配（无论algorithm是否为空）
+                            algorithm_match = True
+                        
+                        # 按键匹配：如果选择了按键，则必须匹配；否则任何按键都可以
+                        key_match = True
+                        if selected_keys:
+                            key_match = trace_key_id in selected_keys
+                        
+                        # 必须同时满足算法和按键条件（AND逻辑）
+                        result = algorithm_match and key_match
+                        
+                        # 详细日志
+                        if selected_keys and trace_key_id in selected_keys:
+                            logger.info(f"[TRACE] ★ key={trace_key_id}, alg='{trace_algorithm}', selected_algs={selected_algorithms}, selected_keys={selected_keys}, alg_match={algorithm_match}, key_match={key_match}, result={result}")
+
+                        return result
+                    else:
+                        logger.debug(f"[TRACE] first_point长度不足: {len(first_point)}, 内容: {first_point}")
+                else:
+                    logger.debug(f"[TRACE] first_point不可迭代, 类型: {type(first_point)}, 内容: {first_point}")
+            else:
+                logger.debug(f"[TRACE] customdata不可迭代, 类型: {type(customdata)}")
+                
         except Exception as e:
-            logger.error(f"[ERROR] 处理算法选择事件失败: {e}")
+            logger.error(f"[TRACE] 处理customdata时出错: {e}, 类型: {type(customdata)}")
             import traceback
             logger.error(traceback.format_exc())
+        
+        return False
 
-        return current_selected_algorithms or []
+    def _update_data_trace_visibility(data_list: List, selected_algorithms: List[str], selected_keys: List[int], trace_belongs_to_algorithm_and_key):
+        """更新数据trace的可见性"""
+        visible_count = 0
+        total_data_traces = 0
+        
+        logger.info(f"[VISIBILITY] 开始更新可见性, 选择的算法: {selected_algorithms}, 选择的按键: {selected_keys}")
+        logger.info(f"[VISIBILITY] 总trace数: {len(data_list)}")
+        
+        for trace_idx, trace in enumerate(data_list):
+            # 跳过控制图注项
+            legendgroup = trace.get('legendgroup') if isinstance(trace, dict) else (trace.legendgroup if hasattr(trace, 'legendgroup') else None)
+            if legendgroup in ['algorithm_control', 'key_control']:
+                continue
+
+            total_data_traces += 1
+            
+            # 数据trace：多选模式，需要同时满足算法和按键条件
+            target_visible = trace_belongs_to_algorithm_and_key(trace, selected_algorithms, selected_keys)
+            
+            if target_visible:
+                visible_count += 1
+                logger.debug(f"[VISIBILITY] Trace {trace_idx} 设置为可见 (legendgroup={legendgroup})")
+            else:
+                logger.debug(f"[VISIBILITY] Trace {trace_idx} 设置为隐藏 (legendgroup={legendgroup})")
+
+            # 更新可见性
+            if isinstance(trace, dict):
+                trace['visible'] = target_visible
+                data_list[trace_idx] = trace
+            else:
+                trace.visible = target_visible
+        
+        logger.info(f"[VISIBILITY] ✓ 完成: {visible_count}/{total_data_traces} 可见")
+
+    # 更新按键选择下拉菜单的选项
+    @app.callback(
+        Output('key-force-interaction-key-selector', 'options'),
+        [Input('key-force-interaction-plot', 'figure')],
+        prevent_initial_call=True
+    )
+    def update_key_selector_options(figure):
+        """根据图表数据更新按键选择器的选项"""
+        if not figure or 'data' not in figure:
+            return []
+        
+        # 提取所有按键ID
+        key_ids = set()
+        for trace in figure['data']:
+            legendgroup = trace.get('legendgroup', '')
+            # 只从数据trace中提取按键ID（不是控制图注）
+            if legendgroup and legendgroup.startswith('data_') and '_key_' in legendgroup:
+                try:
+                    # legendgroup格式：data_算法名_key_按键ID
+                    key_part = legendgroup.split('_key_')[1]
+                    key_id = int(key_part)
+                    key_ids.add(key_id)
+                except:
+                    pass
+        
+        # 生成下拉选项
+        options = [{'label': f'按键 {key_id}', 'value': key_id} for key_id in sorted(key_ids)]
+        return options
     
-    # 处理按键选择：点击按键控制图注
+    # 当下拉菜单选择改变时，更新selected_keys
     @app.callback(
         Output('key-force-interaction-selected-keys', 'data'),
-        [Input('key-force-interaction-plot', 'restyleData')],
-        [State('key-force-interaction-selected-keys', 'data'),
-         State('key-force-interaction-plot', 'figure')],
+        [Input('key-force-interaction-key-selector', 'value')],
         prevent_initial_call=True
     )
-    def handle_key_force_interaction_key_selection(restyle_data, current_selected_keys, figure):
-        """处理按键选择：点击按键控制图注，切换按键选择状态"""
-        ctx = dash.callback_context
-        if not ctx.triggered:
-            return current_selected_keys or []
-        
-        if not restyle_data or not figure or 'data' not in figure:
-            return current_selected_keys or []
-        
-        try:
-            # restyleData格式: [{'visible': [...]}, [trace_indices]]
-            selected_keys = current_selected_keys or []
-
-            # 检查restyleData格式
-            if not isinstance(restyle_data, list) or len(restyle_data) < 2:
-                return current_selected_keys or []
-
-            restyle_dict = restyle_data[0] if isinstance(restyle_data[0], dict) else {}
-            trace_indices = restyle_data[1] if len(restyle_data) > 1 and isinstance(restyle_data[1], list) else []
-
-            # 遍历所有被影响的trace，找到按键控制图注
-            for idx in trace_indices:
-                if idx < len(figure['data']):
-                    trace = figure['data'][idx]
-
-                    # 检查是否是按键控制图注项
-                    legendgroup = trace.get('legendgroup') if isinstance(trace, dict) else (trace.legendgroup if hasattr(trace, 'legendgroup') else None)
-
-                    if legendgroup == 'key_control':
-                        # 获取按键名称
-                        name = None
-                        if isinstance(trace, dict):
-                            name = trace.get('name')
-                        else:
-                            name = trace.name if hasattr(trace, 'name') else None
-                        
-                        if name and name.startswith('按键 '):
-                            try:
-                                # 提取按键ID：从"按键 "后面提取数字，直到遇到空格或非数字字符
-                                # 例如："按键 1" -> 1, "按键 12" -> 12
-                                name_part = name.split('按键 ')[1]
-                                # 提取开头的数字部分
-                                key_id_str = ''
-                                for char in name_part:
-                                    if char.isdigit():
-                                        key_id_str += char
-                                    else:
-                                        break
-                                
-                                if key_id_str:
-                                    clicked_key_id = int(key_id_str)
-                                    
-                                    # 切换按键选择状态
-                                    if clicked_key_id in selected_keys:
-                                        # 取消选择
-                                        selected_keys = [k for k in selected_keys if k != clicked_key_id]
-                                        logger.info(f"[PROCESS] 取消选择按键: {clicked_key_id}, 当前选中: {selected_keys}")
-                                    else:
-                                        # 选择按键
-                                        selected_keys = selected_keys + [clicked_key_id]
-                                        logger.info(f"[TARGET] 选择按键: {clicked_key_id}, 当前选中: {selected_keys}")
-
-                                    # 找到按键控制图注后立即返回，避免处理其他trace
-                                    return selected_keys
-                            except (ValueError, IndexError) as e:
-                                logger.debug(f"[WARNING] 解析按键ID失败: {name}, 错误: {e}")
-                                continue
-
-            # 如果没有找到按键控制图注，可能是点击了其他图注，返回原状态
-            logger.debug(f"🔍 未找到按键控制图注，restyle_data: {restyle_data}")
-
-        except Exception as e:
-            logger.error(f"[ERROR] 处理按键选择事件失败: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-        
-        return current_selected_keys or []
+    def update_selected_keys_from_dropdown(selected_key):
+        """当下拉菜单选择改变时，更新selected_keys"""
+        if selected_key is None:
+            return []
+        return [selected_key]
     
     # 按键-力度交互效应图自动生成和更新回调函数
     @app.callback(
@@ -2133,336 +2274,576 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         ctx = dash.callback_context
         if not ctx.triggered:
             return no_update
-        
+
         trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
-        
+
         backend = session_manager.get_backend(session_id)
         if not backend:
             return no_update
-        
+
         try:
             # 根据选中的算法和按键更新可见性
             selected_algorithms = selected_algorithms or []
             selected_keys = selected_keys or []
-            
-            # 如果是report-content变化，需要重新生成图表
-            if trigger_id == 'report-content':
-                # 检查是否有激活的算法
-                active_algorithms = backend.get_active_algorithms()
-                if not active_algorithms:
-                    logger.warning("[WARNING] 没有激活的算法，无法生成交互效应图")
-                    return backend.plot_generator._create_empty_plot("没有激活的算法")
-                
-                # 重新生成图表
-                fig = backend.generate_key_force_interaction_plot()
-                
-                # 重新生成图表后，需要根据选中的算法和按键恢复状态
-                # 继续执行下面的更新逻辑
-            else:
-                # 如果是选择变化，使用当前图表并更新可见性
-                if current_figure and isinstance(current_figure, dict) and 'data' in current_figure:
-                    # 从dict创建Figure，确保所有属性都被正确加载
-                    fig = go.Figure(current_figure)
-                    # 确保data是trace对象列表，而不是dict列表
-                    if fig.data and isinstance(fig.data[0], dict):
-                        # 如果data是dict列表，需要转换为trace对象
-                        fig_data = []
-                        for trace_dict in fig.data:
-                            trace_type = trace_dict.get('type', 'scatter')
-                            if trace_type == 'scatter':
-                                fig_data.append(go.Scatter(trace_dict))
-                            else:
-                                fig_data.append(trace_dict)
-                        fig.data = fig_data
-                else:
-                    active_algorithms = backend.get_active_algorithms()
-                    if not active_algorithms:
-                        return no_update
-                    fig = backend.generate_key_force_interaction_plot()
-            
-            # 如果没有选择任何算法或按键，不显示任何数据；只有选择后才显示
-            show_all = False  # 默认不显示，需要选择后才显示
-                
-            # 辅助函数：检查trace是否属于指定的算法
-            def trace_belongs_to_algorithm(trace, algorithm_name):
-                if not algorithm_name:
-                        return False
-                    
-                # 处理dict类型的trace
-                if isinstance(trace, dict):
-                    customdata = trace.get('customdata')
-                    if customdata:
-                        try:
-                            if isinstance(customdata, list) and len(customdata) > 0:
-                                first_point_data = customdata[0]
-                                if isinstance(first_point_data, list) and len(first_point_data) >= 2:
-                                    trace_algorithm_name = first_point_data[1]
-                                    # 精确匹配
-                                    if trace_algorithm_name == algorithm_name:
-                                        return True
-                                    # 如果算法名称包含括号（带文件名后缀），尝试匹配基础名称
-                                    # 例如：算法A (文件名) 应该匹配 算法A
-                                    if '(' in algorithm_name:
-                                        base_name = algorithm_name.split('(')[0].strip()
-                                        if trace_algorithm_name == base_name:
-                                            return True
-                                    if '(' in trace_algorithm_name:
-                                        base_name = trace_algorithm_name.split('(')[0].strip()
-                                        if base_name == algorithm_name:
-                                            return True
-                        except (IndexError, TypeError) as e:
-                            logger.debug(f"[WARNING] 检查算法匹配时出错: {e}")
-                            pass
-                    legendgroup = trace.get('legendgroup')
-                    if legendgroup:
-                        # 精确匹配
-                        if legendgroup.startswith(f'data_{algorithm_name}_'):
-                            return True
-                        # 如果算法名称包含括号，尝试匹配基础名称
-                        if '(' in algorithm_name:
-                            base_name = algorithm_name.split('(')[0].strip()
-                            if legendgroup.startswith(f'data_{base_name}_'):
-                                return True
-                else:
-                    # 处理Plotly trace对象
-                    if hasattr(trace, 'customdata') and trace.customdata:
-                        try:
-                            if isinstance(trace.customdata, list) and len(trace.customdata) > 0:
-                                first_point_data = trace.customdata[0]
-                                if isinstance(first_point_data, list) and len(first_point_data) >= 2:
-                                    trace_algorithm_name = first_point_data[1]
-                                    # 精确匹配
-                                    if trace_algorithm_name == algorithm_name:
-                                        return True
-                                    # 如果算法名称包含括号（带文件名后缀），尝试匹配基础名称
-                                    if '(' in algorithm_name:
-                                        base_name = algorithm_name.split('(')[0].strip()
-                                        if trace_algorithm_name == base_name:
-                                            return True
-                                    if '(' in trace_algorithm_name:
-                                        base_name = trace_algorithm_name.split('(')[0].strip()
-                                        if base_name == algorithm_name:
-                                            return True
-                        except (IndexError, TypeError) as e:
-                            logger.debug(f"[WARNING] 检查算法匹配时出错: {e}")
-                            pass
-                    if hasattr(trace, 'legendgroup') and trace.legendgroup:
-                        # 精确匹配
-                        if trace.legendgroup.startswith(f'data_{algorithm_name}_'):
-                            return True
-                        # 如果算法名称包含括号，尝试匹配基础名称
-                        if '(' in algorithm_name:
-                            base_name = algorithm_name.split('(')[0].strip()
-                            if trace.legendgroup.startswith(f'data_{base_name}_'):
-                                return True
-                    return False
-                
-            # 辅助函数：检查trace是否属于指定的按键
-            def trace_belongs_to_key(trace, key_id):
-                if key_id is None:
-                        return False
-                    
-                # 处理dict类型的trace
-                if isinstance(trace, dict):
-                    customdata = trace.get('customdata')
-                    if customdata:
-                        try:
-                            if isinstance(customdata, list) and len(customdata) > 0:
-                                first_point_data = customdata[0]
-                                if isinstance(first_point_data, list):
-                                    if first_point_data[0] == key_id:
-                                        return True
-                                else:
-                                    if first_point_data == key_id:
-                                        return True
-                        except (IndexError, TypeError):
-                            pass
-                    legendgroup = trace.get('legendgroup')
-                    if legendgroup:
-                        return f'_key_{key_id}' in legendgroup
-                else:
-                    # 处理Plotly trace对象
-                    if hasattr(trace, 'customdata') and trace.customdata:
-                        try:
-                            if isinstance(trace.customdata, list) and len(trace.customdata) > 0:
-                                first_point_data = trace.customdata[0]
-                                if isinstance(first_point_data, list):
-                                    if first_point_data[0] == key_id:
-                                        return True
-                                else:
-                                    if first_point_data == key_id:
-                                        return True
-                        except (IndexError, TypeError):
-                            pass
-                    if hasattr(trace, 'legendgroup') and trace.legendgroup:
-                        return f'_key_{key_id}' in trace.legendgroup
-                    return False
-            
+
+            # 准备图表对象
+            fig = _prepare_key_force_interaction_figure(trigger_id, backend, current_figure)
+            if fig is no_update or isinstance(fig, str):  # 如果是空图或错误，直接返回
+                return fig
+
             # 将fig.data转换为可修改的list
             data_list = list(fig.data)
-            
-            logger.info(f"[DRAW] 开始更新图注透明度: 选中算法={selected_algorithms}, 选中按键={selected_keys}")
-            
+
             # 更新算法控制图注的透明度
-            # 逻辑：选中的算法 -> 不透明（1.0），未选中的算法 -> 透明（0.2）
-            # 同时通过修改marker颜色深浅来增强视觉效果（因为legend文字颜色是全局的）
-            for trace_idx, trace in enumerate(data_list):
-                # 处理dict类型的trace
-                if isinstance(trace, dict):
-                    if trace.get('legendgroup') == 'algorithm_control':
-                        if 'name' in trace and trace['name']:
-                            algorithm_name = trace['name']
-                            if 'marker' not in trace:
-                                trace['marker'] = {}
-                            
-                            # 选中时：颜色变浓（完全不透明）并且变大
-                            # 未选中时：颜色变淡（半透明）并且变小
-                            if algorithm_name in selected_algorithms:
-                                trace['marker']['opacity'] = 1.0  # 选中时完全不透明，颜色更浓
-                                trace['marker']['size'] = 18  # 选中时明显更大
-                            else:
-                                trace['marker']['opacity'] = 0.4  # 未选中时半透明，颜色较淡
-                                trace['marker']['size'] = 12  # 未选中时正常大小
-                            
-                            data_list[trace_idx] = trace
-                            logger.info(f"[UPDATE] 更新算法控制图注 '{algorithm_name}' 透明度: {trace['marker']['opacity']} (选中: {algorithm_name in selected_algorithms})")
-                else:
-                    # 处理Plotly trace对象
-                    if hasattr(trace, 'legendgroup') and trace.legendgroup == 'algorithm_control':
-                        if hasattr(trace, 'name') and trace.name:
-                            algorithm_name = trace.name
-                            # 直接修改marker.opacity和size属性（对象引用已修改，不需要重新赋值）
-                            if hasattr(trace, 'marker') and trace.marker is not None:
-                                # 选中时：颜色变浓（完全不透明）并且变大
-                                # 未选中时：颜色变淡（半透明）并且变小
-                                if algorithm_name in selected_algorithms:
-                                    trace.marker.opacity = 1.0  # 选中时完全不透明，颜色更浓
-                                    trace.marker.size = 18  # 选中时明显更大
-                                else:
-                                    trace.marker.opacity = 0.4  # 未选中时半透明，颜色较淡
-                                    trace.marker.size = 12  # 未选中时正常大小
-                            # logger.info(f"[UPDATE] 更新算法控制图注 '{algorithm_name}' 透明度: {target_opacity} (选中: {algorithm_name in selected_algorithms})")
-                
+            _update_algorithm_control_traces(data_list, selected_algorithms)
+
             # 更新按键控制图注的透明度
-            # 逻辑：选中的按键 -> 不透明（1.0），未选中的按键 -> 透明（0.2）
-            # 同时通过修改marker大小来增强视觉效果
-            for trace_idx, trace in enumerate(data_list):
-                # 处理dict类型的trace
-                if isinstance(trace, dict):
-                    if trace.get('legendgroup') == 'key_control':
-                        if 'name' in trace and trace['name']:
-                            name = trace['name']
-                            if name.startswith('按键 '):
-                                try:
-                                    # 提取按键ID：从"按键 "后面提取数字，直到遇到空格或非数字字符
-                                    name_part = name.split('按键 ')[1]
-                                    key_id_str = ''
-                                    for char in name_part:
-                                        if char.isdigit():
-                                            key_id_str += char
-                                        else:
-                                            break
-                                    if key_id_str:
-                                        key_id = int(key_id_str)
-                                        if 'marker' not in trace:
-                                            trace['marker'] = {}
-                                        
-                                        # 选中时：颜色变浓（完全不透明）并且变大
-                                        # 未选中时：颜色变淡（半透明）并且变小
-                                        if key_id in selected_keys:
-                                            trace['marker']['opacity'] = 1.0  # 选中时完全不透明，颜色更浓
-                                            trace['marker']['size'] = 20  # 选中时明显更大
-                                        else:
-                                            trace['marker']['opacity'] = 0.4  # 未选中时半透明，颜色较淡
-                                            trace['marker']['size'] = 14  # 未选中时正常大小
-                                        
-                                        data_list[trace_idx] = trace
-                                        logger.info(f"[UPDATE] 更新按键控制图注 '按键 {key_id}' 透明度: {trace['marker']['opacity']} (选中: {key_id in selected_keys})")
-                                except (ValueError, IndexError):
-                                    continue
-                    else:
-                        # 处理Plotly trace对象
-                        if hasattr(trace, 'legendgroup') and trace.legendgroup == 'key_control':
-                            if hasattr(trace, 'name') and trace.name:
-                                name = trace.name
-                                if name.startswith('按键 '):
-                                    try:
-                                        # 提取按键ID：从"按键 "后面提取数字，直到遇到空格或非数字字符
-                                        name_part = name.split('按键 ')[1]
-                                        key_id_str = ''
-                                        for char in name_part:
-                                            if char.isdigit():
-                                                key_id_str += char
-                                            else:
-                                                break
-                                        if key_id_str:
-                                            key_id = int(key_id_str)
-                                            # 直接修改marker.opacity和size属性（对象引用已修改，不需要重新赋值）
-                                            if hasattr(trace, 'marker') and trace.marker is not None:
-                                                # 选中时：颜色变浓（完全不透明）并且变大
-                                                # 未选中时：颜色变淡（半透明）并且变小
-                                                if key_id in selected_keys:
-                                                    trace.marker.opacity = 1.0  # 选中时完全不透明，颜色更浓
-                                                    trace.marker.size = 20  # 选中时明显更大
-                                                else:
-                                                    trace.marker.opacity = 0.4  # 未选中时半透明，颜色较淡
-                                                    trace.marker.size = 14  # 未选中时正常大小
-                                    except (ValueError, IndexError):
-                                        continue
-            
+            _update_key_control_traces(data_list, selected_keys)
+
             # 更新数据trace的可见性
-            for trace_idx, trace in enumerate(data_list):
-                # 跳过控制图注项
-                legendgroup = trace.get('legendgroup') if isinstance(trace, dict) else (trace.legendgroup if hasattr(trace, 'legendgroup') else None)
-                if legendgroup in ['algorithm_control', 'key_control']:
-                        continue
-                    
-                # 数据trace：只有同时满足算法和按键条件时才显示
-                # 如果没有选择任何算法或按键，不显示任何数据
-                if len(selected_algorithms) == 0 and len(selected_keys) == 0:
-                    target_visible = False
-                else:
-                    # 检查是否属于选中的算法
-                    belongs_to_selected_algorithm = False
-                    if len(selected_algorithms) == 0:
-                        belongs_to_selected_algorithm = True  # 如果没有选择算法，显示所有算法
-                    else:
-                        # 尝试匹配每个选中的算法
-                        for alg in selected_algorithms:
-                            if trace_belongs_to_algorithm(trace, alg):
-                                belongs_to_selected_algorithm = True
-                                break
-                    
-                    # 检查是否属于选中的按键
-                    belongs_to_selected_key = False
-                    if len(selected_keys) == 0:
-                        belongs_to_selected_key = True  # 如果没有选择按键，显示所有按键
-                    else:
-                        for key_id in selected_keys:
-                            if trace_belongs_to_key(trace, key_id):
-                                belongs_to_selected_key = True
-                                break
-                    
-                    # 只有同时满足算法和按键条件时才显示
-                    target_visible = belongs_to_selected_algorithm and belongs_to_selected_key
-                
-                # 更新可见性
-                if isinstance(trace, dict):
-                    trace['visible'] = target_visible
-                    data_list[trace_idx] = trace
-                else:
-                    trace.visible = target_visible
-            
+            _update_data_trace_visibility(data_list, selected_algorithms, selected_keys, trace_belongs_to_algorithm_and_key)
+
             # 将修改后的trace列表赋值回fig.data
             fig.data = data_list
-            
-            logger.info("[OK] 按键-力度交互效应图更新成功")
+
+            logger.info(f"[OK] 按键-力度交互效应图更新成功 (触发器: {trigger_id})")
             return fig
-            
+
         except Exception as e:
             logger.error(f"[ERROR] 生成/更新按键-力度交互效应图失败: {e}")
             logger.error(traceback.format_exc())
             return backend.plot_generator._create_empty_plot(f"生成交互效应图失败: {str(e)}")
+
+    def _validate_multi_algorithm_analysis(backend):
+        """验证多算法模式并获取分析结果"""
+        # 检查是否在多算法模式
+        if not backend.multi_algorithm_mode or not backend.multi_algorithm_manager:
+            logger.warning("[WARNING] 未启用多算法模式，无法生成相对延时分布图")
+            return None, html.Div([
+                dbc.Alert("未启用多算法模式", color="warning")
+            ])
+
+        # 获取分析结果
+        analysis_result = backend.get_same_algorithm_relative_delay_analysis()
+        if analysis_result.get('status') != 'success':
+            return None, html.Div([
+                dbc.Alert(analysis_result.get('message', '分析失败'), color="danger")
+            ])
+
+        algorithm_groups = analysis_result.get('algorithm_groups', {})
+        if not algorithm_groups:
+            return None, html.Div([
+                dbc.Alert("没有算法组数据", color="warning")
+            ])
+
+        return analysis_result, None
+
+    def _collect_songs_data(algorithm_groups):
+        """收集所有需要绘制的曲子信息"""
+        all_songs = []
+        for display_name, group_data in algorithm_groups.items():
+            song_data = group_data.get('song_data', [])
+            group_relative_delays = group_data.get('relative_delays', [])
+
+            if not group_relative_delays:
+                continue
+
+            # 添加每个曲子
+            for song_info in song_data:
+                song_relative_delays = song_info.get('relative_delays', [])
+                if song_relative_delays:
+                    filename_display = song_info.get('filename_display', song_info.get('filename', '未知文件'))
+                    all_songs.append((display_name, filename_display, song_relative_delays, None, song_info))
+
+            # 添加汇总
+            all_songs.append((display_name, '汇总', None, group_relative_delays, None))
+
+        return all_songs
+
+    def _create_overall_velocity_plot(algorithm_groups):
+        """生成整体锤速对比图"""
+        try:
+            # 收集所有算法组的锤速数据
+            all_velocity_data = _collect_velocity_data(algorithm_groups)
+
+            if not all_velocity_data:
+                return None
+
+            # 按按键ID和算法分组计算平均锤速差值
+            key_algorithm_stats = _process_velocity_statistics(all_velocity_data)
+
+            # 计算每个按键在每个算法+曲子组合下的平均锤速差值
+            all_key_ids = sorted(key_algorithm_stats.keys())
+            all_algorithm_filenames = sorted(set(item['algorithm_filename'] for item in all_velocity_data))
+
+            plot_data = _prepare_multi_algorithm_velocity_plot_data(key_algorithm_stats, all_algorithm_filenames, all_key_ids)
+
+            # 创建整体锤速对比图
+            return _create_velocity_figure(plot_data)
+
+        except Exception as e:
+            logger.warning(f"生成整体锤速对比图失败: {e}")
+            return None
+
+    def _create_velocity_control_panel(plot_data):
+        """创建锤速对比图的控制面板"""
+        if not plot_data:
+            return html.Div("无数据")
+
+        # 提取所有算法+曲子名称
+        algorithm_filenames = [data['algorithm_filename'] for data in plot_data]
+
+        # 创建颜色映射
+        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
+
+        # 创建控制选项
+        control_options = []
+        for i, algorithm_filename in enumerate(algorithm_filenames):
+            color = colors[i % len(colors)]
+            control_options.append({
+                'label': html.Div([
+                    html.Span('●', style={'color': color, 'marginRight': '8px', 'fontSize': '12px'}),
+                    html.Span(algorithm_filename, style={'fontSize': '12px'})
+                ], style={'display': 'flex', 'alignItems': 'center'}),
+                'value': algorithm_filename
+            })
+
+        return dbc.Checklist(
+            id='velocity-plot-legend-control',
+            options=control_options,
+            value=algorithm_filenames,  # 默认全部选中
+            inline=False,
+            style={'columnCount': 2, 'columnGap': '20px'}  # 两列布局
+        )
+
+    def _collect_velocity_data(algorithm_groups):
+        """收集所有算法组的锤速数据"""
+        all_velocity_data = []
+        for display_name, group_data in algorithm_groups.items():
+            song_data = group_data.get('song_data', [])
+            for song_info in song_data:
+                hammer_velocity_diffs = song_info.get('hammer_velocity_diffs', [])
+                filename_display = song_info.get('filename_display', song_info.get('filename', '未知文件'))
+                if hammer_velocity_diffs:
+                    for item in hammer_velocity_diffs:
+                        all_velocity_data.append({
+                            'algorithm': display_name,
+                            'filename': filename_display,
+                            'algorithm_filename': f'{display_name} - {filename_display}',
+                            'key_id': item['key_id'],
+                            'velocity_diff': item['velocity_diff'],
+                            'record_velocity': item['record_velocity'],
+                            'replay_velocity': item['replay_velocity']
+                        })
+        return all_velocity_data
+
+    def _process_velocity_statistics(all_velocity_data):
+        """按按键ID和算法+曲子分组计算平均锤速差值"""
+        from collections import defaultdict
+        key_algorithm_stats = defaultdict(lambda: defaultdict(list))
+
+        for item in all_velocity_data:
+            key_id = item['key_id']
+            algorithm_filename = item['algorithm_filename']
+            key_algorithm_stats[key_id][algorithm_filename].append(item['velocity_diff'])
+
+        return key_algorithm_stats
+
+    def _prepare_multi_algorithm_velocity_plot_data(key_algorithm_stats, all_algorithm_filenames, all_key_ids):
+        """为多个算法+曲子组合准备绘图数据"""
+        plot_data = []
+
+        for algorithm_filename in all_algorithm_filenames:
+            x_keys = []
+            y_diffs = []
+            hover_texts = []
+
+            for key_id in all_key_ids:
+                if algorithm_filename in key_algorithm_stats[key_id]:
+                    diffs = key_algorithm_stats[key_id][algorithm_filename]
+                    avg_diff = np.mean(diffs)
+                    x_keys.append(str(key_id))
+                    y_diffs.append(avg_diff)
+
+                    # 计算平均播放锤速
+                    record_vel = 100  # 默认录制锤速
+                    replay_vel = record_vel + avg_diff
+                    hover_texts.append(f'按键 {key_id}<br>{algorithm_filename}<br>锤速差值: {avg_diff:.1f}<br>录制锤速: {record_vel}<br>平均播放锤速: {replay_vel:.1f}')
+                else:
+                    x_keys.append(str(key_id))
+                    y_diffs.append(0)  # 没有数据时显示0
+                    hover_texts.append(f'按键 {key_id}<br>{algorithm_filename}<br>无数据')
+
+            if y_diffs:  # 只有有数据时才添加
+                plot_data.append({
+                    'algorithm_filename': algorithm_filename,
+                    'x': x_keys,
+                    'y': y_diffs,
+                    'hovertext': hover_texts
+                })
+
+        return plot_data
+
+    def _create_velocity_figure(plot_data):
+        """创建整体锤速对比图表"""
+        if not plot_data:
+            return None
+
+        velocity_fig = go.Figure()
+
+        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
+        for i, data in enumerate(plot_data):
+            color = colors[i % len(colors)]
+            velocity_fig.add_trace(go.Bar(
+                x=data['x'],
+                y=data['y'],
+                name=data['algorithm_filename'],
+                marker=dict(color=color, opacity=0.8),
+                hovertext=data['hovertext'],
+                hovertemplate='%{hovertext}<extra></extra>'
+            ))
+
+        # 添加零线
+        velocity_fig.add_hline(
+            y=0,
+            line_dash="dash",
+            line_color="red",
+            opacity=0.7
+        )
+
+        velocity_fig.update_layout(
+            title='同种算法不同曲子的锤速对比',
+            xaxis_title='按键ID',
+            yaxis_title='锤速差值 (播放锤速 - 录制锤速)',
+            height=500,
+            template='plotly_white',
+            barmode='group',  # 分组柱状图
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1,
+                bgcolor='rgba(255, 255, 255, 0.8)',
+                bordercolor='rgba(0, 0, 0, 0.2)',
+                borderwidth=1
+            ),
+            showlegend=True
+        )
+
+        # 创建控制面板
+        control_panel = _create_velocity_control_panel(plot_data)
+
+        # 返回包含图表和控制面板的容器
+        return html.Div([
+            html.Div([
+                html.H6("图注控制", className="mb-2", style={'color': '#2c3e50', 'fontWeight': 'bold'}),
+                control_panel
+            ], className="mb-3", style={'backgroundColor': '#f8f9fa', 'padding': '15px', 'borderRadius': '8px', 'border': '1px solid #dee2e6'}),
+            dcc.Graph(
+                id='overall-hammer-velocity-comparison-plot',
+                figure=velocity_fig,
+                config={
+                    'displayModeBar': True,
+                    'displaylogo': False,
+                    'modeBarButtonsToRemove': ['pan2d', 'lasso2d', 'select2d'],
+                    'modeBarButtonsToAdd': []
+                },
+                style={'height': '500px'}
+            )
+        ])
+
+    def _create_subplot_figure(subplot_idx, display_name, filename_display, delays_array, base_color):
+        """为单个子图创建图表"""
+        
+        from scipy import stats
+
+        # 生成子图标题
+        if filename_display == '汇总':
+            subplot_title = f'{display_name} (汇总)'
+        else:
+            subplot_title = f'{display_name} - {filename_display}'
+
+        # 计算直方图数据
+        hist, bin_edges = np.histogram(delays_array, bins=50, density=False)
+        bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+
+        # 为每个bin创建customdata
+        customdata_list = []
+        for i, bin_center in enumerate(bin_centers):
+            bin_left = bin_edges[i]
+            bin_right = bin_edges[i + 1]
+            customdata_list.append([
+                subplot_idx,
+                display_name,
+                filename_display,
+                bin_center,
+                bin_left,
+                bin_right
+            ])
+
+        # 计算密度曲线
+        try:
+            kde = stats.gaussian_kde(delays_array)
+            x_density = np.linspace(delays_array.min(), delays_array.max(), 200)
+            y_density = kde(x_density) * len(delays_array)
+        except:
+            mean = np.mean(delays_array)
+            std = np.std(delays_array)
+            x_density = np.linspace(delays_array.min(), delays_array.max(), 200)
+            y_density = stats.norm.pdf(x_density, mean, std) * len(delays_array) * (bin_edges[1] - bin_edges[0])
+
+        # 创建独立的图表
+        fig = go.Figure()
+
+        # 添加直方图
+        fig.add_trace(
+            go.Bar(
+                x=bin_centers,
+                y=hist,
+                name='相对延时分布',
+                marker=dict(
+                    color=f'rgba({int(base_color[1:3], 16)}, {int(base_color[3:5], 16)}, {int(base_color[5:7], 16)}, 0.6)',
+                    line=dict(color=base_color, width=1.5 if filename_display == '汇总' else 1)
+                ),
+                opacity=0.7,
+                showlegend=False,
+                hovertemplate=f'相对延时: %{{x:.2f}} ms<br>频数: %{{y}}<extra></extra>',
+                customdata=customdata_list
+            )
+        )
+
+        # 添加密度曲线
+        fig.add_trace(
+            go.Scatter(
+                x=x_density,
+                y=y_density,
+                mode='lines',
+                name='密度曲线',
+                line=dict(
+                    color=base_color,
+                    width=3 if filename_display == '汇总' else 2,
+                    dash='dash' if filename_display == '汇总' else 'solid'
+                ),
+                showlegend=False,
+                hovertemplate=f'相对延时: %{{x:.2f}} ms<br>密度: %{{y:.2f}}<extra></extra>'
+            )
+        )
+
+        # 计算统计量
+        mean = np.mean(delays_array)
+        std = np.std(delays_array)
+        median = np.median(delays_array)
+
+        # 添加±1σ、±2σ、±3σ区间
+        for sigma, color in [(1, 'rgba(255, 0, 0, 0.08)'), (2, 'rgba(255, 0, 0, 0.12)'), (3, 'rgba(255, 0, 0, 0.15)')]:
+            fig.add_vrect(
+                x0=mean - sigma * std,
+                x1=mean + sigma * std,
+                fillcolor=color,
+                layer="below",
+                line_width=0
+            )
+
+        # 添加均值线
+        fig.add_vline(
+            x=mean,
+            line_dash="dash",
+            line_color="green",
+            line_width=1.5
+        )
+
+        # 添加中位数线
+        fig.add_vline(
+            x=median,
+            line_dash="dot",
+            line_color="orange",
+            line_width=1.5
+        )
+
+        # 更新布局
+        fig.update_layout(
+            title=subplot_title,
+            xaxis_title='相对延时 (ms)',
+            yaxis_title='频数',
+            height=500,
+            template='plotly_white',
+            showlegend=False
+        )
+
+        return fig
+
+    def _create_subplot_velocity_plot(subplot_title, song_info, subplot_idx):
+        """为单个子图创建锤速对比图"""
+        
+
+        if not song_info or 'hammer_velocity_diffs' not in song_info:
+            return None
+
+        hammer_velocity_diffs = song_info['hammer_velocity_diffs']
+        if not hammer_velocity_diffs:
+            return None
+
+        # 按按键ID分组计算平均锤速差值
+        from collections import defaultdict
+        key_velocity_stats = defaultdict(list)
+
+        for item in hammer_velocity_diffs:
+            key_id = item['key_id']
+            key_velocity_stats[key_id].append(item['velocity_diff'])
+
+        # 计算每个按键的平均锤速差值
+        key_avg_diffs = {}
+        for key_id, diffs in key_velocity_stats.items():
+            key_avg_diffs[key_id] = np.mean(diffs)
+
+        if not key_avg_diffs:
+            return None
+
+        # 排序按键ID
+        sorted_keys = sorted(key_avg_diffs.keys())
+        x_keys = [str(k) for k in sorted_keys]
+        y_diffs = [key_avg_diffs[k] for k in sorted_keys]
+
+        # 创建锤速对比图
+        velocity_fig = go.Figure()
+        velocity_fig.add_trace(go.Bar(
+            x=x_keys,
+            y=y_diffs,
+            name='锤速差值',
+            marker=dict(
+                color='#ff9800',
+                opacity=0.8,
+                line=dict(color='#e65100', width=1)
+            ),
+            hovertemplate='<b>按键 %{x}</b><br>' +
+                         '平均锤速差值: %{y:.1f}<br>' +
+                         '<b>录制锤速: 100</b><br>' +
+                         '<b>平均播放锤速: %{customdata:.1f}</b><extra></extra>',
+            customdata=[100 + diff for diff in y_diffs]  # 播放锤速 = 录制锤速 + 差值
+        ))
+
+        # 添加零线
+        velocity_fig.add_hline(
+            y=0,
+            line_dash="dash",
+            line_color="red",
+            opacity=0.7
+        )
+
+        velocity_fig.update_layout(
+            title=f'{subplot_title} - 锤速对比',
+            xaxis_title='按键ID',
+            yaxis_title='锤速差值 (播放锤速 - 录制锤速)',
+            height=400,
+            template='plotly_white',
+            showlegend=False
+        )
+
+        return dcc.Graph(
+            id={'type': 'hammer-velocity-comparison-plot', 'index': subplot_idx},
+            figure=velocity_fig,
+            style={'height': '400px', 'marginTop': '20px'}
+        )
+
+    def _create_subplot_container(subplot_idx, fig, velocity_plot, display_name, filename_display):
+        """创建完整的子图容器"""
+        # 创建图表和表格容器（使用字典形式的ID以支持Pattern Matching Callbacks）
+        plot_id = {'type': 'relative-delay-distribution-plot', 'index': subplot_idx}
+        table_id = {'type': 'relative-delay-distribution-table', 'index': subplot_idx}
+        title_id = {'type': 'relative-delay-distribution-title', 'index': subplot_idx}
+        info_id = {'type': 'relative-delay-distribution-info', 'index': subplot_idx}
+        container_id = {'type': 'relative-delay-distribution-container', 'index': subplot_idx}
+
+        # 添加相对延时分布图
+        plot_elements = [
+            dcc.Graph(
+                id=plot_id,
+                figure=fig,
+                style={'height': '500px'}
+            )
+        ]
+
+        # 如果有锤速对比图，也添加进去
+        if velocity_plot:
+            plot_elements.append(velocity_plot)
+
+        return html.Div([
+            *plot_elements,
+            html.P("💡 提示：点击直方图中的柱状图区域，可查看该相对延时范围内的数据点详情",
+                   className="text-muted",
+                   style={'fontSize': '12px', 'marginTop': '10px', 'marginBottom': '10px'}),
+            html.Div([
+                html.Div(id=title_id,
+                        style={'marginTop': '15px', 'marginBottom': '10px',
+                               'fontSize': '16px', 'fontWeight': 'bold',
+                               'color': '#9c27b0', 'padding': '8px 12px',
+                               'backgroundColor': '#f3e5f5', 'borderRadius': '4px',
+                               'borderLeft': '4px solid #9c27b0', 'display': 'none'}),
+                html.Div(id=info_id,
+                        style={'marginBottom': '10px', 'fontSize': '14px', 'fontWeight': 'bold', 'color': '#2c3e50', 'display': 'none'}),
+                dash_table.DataTable(
+                    id=table_id,
+                    columns=[
+                        {"name": "算法名称", "id": "algorithm_name"},
+                        {"name": "按键ID", "id": "key_id"},
+                        {"name": "相对延时(ms)", "id": "relative_delay_ms", "type": "numeric", "format": {"specifier": ".2f"}},
+                        {"name": "绝对延时(ms)", "id": "absolute_delay_ms", "type": "numeric", "format": {"specifier": ".2f"}},
+                        {"name": "录制索引", "id": "record_index"},
+                        {"name": "播放索引", "id": "replay_index"},
+                        {"name": "录制开始(0.1ms)", "id": "record_keyon"},
+                        {"name": "播放开始(0.1ms)", "id": "replay_keyon"},
+                        {"name": "持续时间差(0.1ms)", "id": "duration_offset"},
+                    ],
+                    data=[],
+                    page_action='none',
+                    style_cell={
+                        'textAlign': 'center',
+                        'fontSize': '12px',
+                        'fontFamily': 'Arial, sans-serif',
+                        'padding': '8px',
+                        'overflow': 'hidden',
+                        'textOverflow': 'ellipsis',
+                    },
+                    style_header={
+                        'backgroundColor': '#f8f9fa',
+                        'fontWeight': 'bold',
+                        'border': '1px solid #dee2e6',
+                        'position': 'sticky',
+                        'top': 0,
+                        'zIndex': 1
+                    },
+                    style_data={
+                        'whiteSpace': 'normal',
+                        'height': 'auto',
+                    },
+                    style_table={
+                        'overflowX': 'auto',
+                        'overflowY': 'auto',
+                        'maxHeight': '600px',
+                    }
+                )
+            ], style={'display': 'none'}, id=container_id)
+        ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'})
+
+    # 锤速对比图控制面板回调
+    @app.callback(
+        Output('overall-hammer-velocity-comparison-plot', 'figure'),
+        [Input('velocity-plot-legend-control', 'value')],
+        [State('overall-hammer-velocity-comparison-plot', 'figure')],
+        prevent_initial_call=True
+    )
+    def update_velocity_plot_visibility(selected_algorithms, current_figure):
+        """根据控制面板的选择更新锤速对比图的可见性"""
+        if not current_figure or not current_figure.data:
+            return current_figure
+
+        # 更新每个trace的可见性
+        for i, trace in enumerate(current_figure.data):
+            algorithm_filename = trace.name
+            trace.visible = algorithm_filename in selected_algorithms
+
+        return current_figure
 
 
     # 同种算法相对延时分布图回调 - 报告内容加载时自动生成
@@ -2477,178 +2858,34 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         backend = session_manager.get_backend(session_id)
         if not backend:
             return no_update
-        
+
         try:
-            # 检查是否在多算法模式
-            if not backend.multi_algorithm_mode or not backend.multi_algorithm_manager:
-                logger.warning("[WARNING] 未启用多算法模式，无法生成相对延时分布图")
-                return html.Div([
-                    dbc.Alert("未启用多算法模式", color="warning")
-                ])
-            
-            # 获取分析结果
-            analysis_result = backend.get_same_algorithm_relative_delay_analysis()
-            if analysis_result.get('status') != 'success':
-                return html.Div([
-                    dbc.Alert(analysis_result.get('message', '分析失败'), color="danger")
-                ])
-            
+            # 验证多算法模式和获取分析结果
+            analysis_result, error_div = _validate_multi_algorithm_analysis(backend)
+            if error_div:
+                return error_div
+
             algorithm_groups = analysis_result.get('algorithm_groups', {})
-            if not algorithm_groups:
-                return html.Div([
-                    dbc.Alert("没有算法组数据", color="warning")
-                ])
-            
-            import numpy as np
-            from scipy import stats
-            
+
             # 收集所有需要绘制的曲子信息
-            all_songs = []
-            for display_name, group_data in algorithm_groups.items():
-                song_data = group_data.get('song_data', [])
-                group_relative_delays = group_data.get('relative_delays', [])
-                
-                if not group_relative_delays:
-                    continue
-                
-                # 添加每个曲子
-                for song_info in song_data:
-                    song_relative_delays = song_info.get('relative_delays', [])
-                    if song_relative_delays:
-                        filename_display = song_info.get('filename_display', song_info.get('filename', '未知文件'))
-                        all_songs.append((display_name, filename_display, song_relative_delays, None, song_info))
-                
-                # 添加汇总
-                all_songs.append((display_name, '汇总', None, group_relative_delays, None))
-            
+            all_songs = _collect_songs_data(algorithm_groups)
+
             if not all_songs:
                 return html.Div([
                     dbc.Alert("没有有效的相对延时数据", color="warning")
                 ])
+
             
-            # 颜色方案
-            colors = [
-                '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728',
-                '#9467bd', '#8c564b', '#e377c2', '#7f7f7f'
-            ]
+            from scipy import stats
             
-            # 生成整体锤速对比图（显示在最上方）
-            overall_velocity_plot = None
-            try:
-                # 收集所有算法组的锤速数据
-                all_velocity_data = []
-                for display_name, group_data in algorithm_groups.items():
-                    song_data = group_data.get('song_data', [])
-                    for song_info in song_data:
-                        hammer_velocity_diffs = song_info.get('hammer_velocity_diffs', [])
-                        if hammer_velocity_diffs:
-                            for item in hammer_velocity_diffs:
-                                all_velocity_data.append({
-                                    'algorithm': display_name,
-                                    'key_id': item['key_id'],
-                                    'velocity_diff': item['velocity_diff'],
-                                    'record_velocity': item['record_velocity'],
-                                    'replay_velocity': item['replay_velocity']
-                                })
+            # 生成整体锤速对比图
+            overall_velocity_plot = _create_overall_velocity_plot(algorithm_groups)
 
-                if all_velocity_data:
-                    # 按按键ID和算法分组计算平均锤速差值
-                    from collections import defaultdict
-                    key_algorithm_stats = defaultdict(lambda: defaultdict(list))
-
-                    for item in all_velocity_data:
-                        key_id = item['key_id']
-                        algorithm = item['algorithm']
-                        key_algorithm_stats[key_id][algorithm].append(item['velocity_diff'])
-
-                    # 计算每个按键在每个算法下的平均锤速差值
-                    plot_data = []
-                    all_key_ids = sorted(key_algorithm_stats.keys())
-                    all_algorithms = sorted(set(item['algorithm'] for item in all_velocity_data))
-
-                    for algorithm in all_algorithms:
-                        x_keys = []
-                        y_diffs = []
-                        hover_texts = []
-
-                        for key_id in all_key_ids:
-                            if algorithm in key_algorithm_stats[key_id]:
-                                diffs = key_algorithm_stats[key_id][algorithm]
-                                avg_diff = np.mean(diffs)
-                                x_keys.append(str(key_id))
-                                y_diffs.append(avg_diff)
-
-                                # 计算平均播放锤速
-                                record_vel = 100  # 默认录制锤速
-                                replay_vel = record_vel + avg_diff
-                                hover_texts.append(f'按键 {key_id}<br>算法: {algorithm}<br>锤速差值: {avg_diff:.1f}<br>录制锤速: {record_vel}<br>平均播放锤速: {replay_vel:.1f}')
-                            else:
-                                x_keys.append(str(key_id))
-                                y_diffs.append(0)  # 没有数据时显示0
-                                hover_texts.append(f'按键 {key_id}<br>算法: {algorithm}<br>无数据')
-
-                        if y_diffs:  # 只有有数据时才添加
-                            plot_data.append({
-                                'algorithm': algorithm,
-                                'x': x_keys,
-                                'y': y_diffs,
-                                'hovertext': hover_texts
-                            })
-
-                    # 创建整体锤速对比图
-                    if plot_data:
-                        velocity_fig = go.Figure()
-
-                        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
-                        for i, data in enumerate(plot_data):
-                            color = colors[i % len(colors)]
-                            velocity_fig.add_trace(go.Bar(
-                                x=data['x'],
-                                y=data['y'],
-                                name=data['algorithm'],
-                                marker=dict(color=color, opacity=0.8),
-                                hovertext=data['hovertext'],
-                                hovertemplate='%{hovertext}<extra></extra>'
-                            ))
-
-                        # 添加零线
-                        velocity_fig.add_hline(
-                            y=0,
-                            line_dash="dash",
-                            line_color="red",
-                            opacity=0.7
-                        )
-
-                        velocity_fig.update_layout(
-                            title='同种算法不同曲子的锤速对比',
-                            xaxis_title='按键ID',
-                            yaxis_title='锤速差值 (播放锤速 - 录制锤速)',
-                            height=500,
-                            template='plotly_white',
-                            barmode='group',  # 分组柱状图
-                            legend=dict(
-                                orientation="h",
-                                yanchor="bottom",
-                                y=1.02,
-                                xanchor="right",
-                                x=1
-                            )
-                        )
-
-                        overall_velocity_plot = dcc.Graph(
-                            id='overall-hammer-velocity-comparison-plot',
-                            figure=velocity_fig,
-                            style={'height': '500px', 'marginBottom': '30px'}
-                        )
-
-            except Exception as e:
-                logger.warning(f"生成整体锤速对比图失败: {e}")
-            
             # 为每个子图创建独立的图表和表格区域
             children = []
             algorithm_color_map = {}
             color_idx = 0
-            
+
             # 在最上方添加整体锤速对比图
             if overall_velocity_plot:
                 children.append(
@@ -2659,282 +2896,45 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                     ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'})
                 )
 
+            # 颜色方案
+            colors = [
+                '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728',
+                '#9467bd', '#8c564b', '#e377c2', '#7f7f7f'
+            ]
+
             for subplot_idx, (display_name, filename_display, song_relative_delays, group_relative_delays, song_info) in enumerate(all_songs, 1):
                 # 确定使用的数据
                 if filename_display == '汇总':
                     delays_array = np.array(group_relative_delays)
                 else:
                     delays_array = np.array(song_relative_delays)
-                
+
                 if len(delays_array) == 0:
                     continue
-                
+
                 # 获取或分配颜色
                 if display_name not in algorithm_color_map:
                     algorithm_color_map[display_name] = colors[color_idx % len(colors)]
                     color_idx += 1
                 base_color = algorithm_color_map[display_name]
-                r = int(base_color[1:3], 16)
-                g = int(base_color[3:5], 16)
-                b = int(base_color[5:7], 16)
-                
+
                 # 生成子图标题
                 if filename_display == '汇总':
                     subplot_title = f'{display_name} (汇总)'
                 else:
                     subplot_title = f'{display_name} - {filename_display}'
-                
-                # 计算直方图数据
-                hist, bin_edges = np.histogram(delays_array, bins=50, density=False)
-                bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-                
-                # 为每个bin创建customdata
-                customdata_list = []
-                for i, bin_center in enumerate(bin_centers):
-                    bin_left = bin_edges[i]
-                    bin_right = bin_edges[i + 1]
-                    customdata_list.append([
-                        subplot_idx,
-                        display_name,
-                        filename_display,
-                        bin_center,
-                        bin_left,
-                        bin_right
-                    ])
-                
-                # 计算密度曲线
-                try:
-                    kde = stats.gaussian_kde(delays_array)
-                    x_density = np.linspace(delays_array.min(), delays_array.max(), 200)
-                    y_density = kde(x_density) * len(delays_array)
-                except:
-                    mean = np.mean(delays_array)
-                    std = np.std(delays_array)
-                    x_density = np.linspace(delays_array.min(), delays_array.max(), 200)
-                    y_density = stats.norm.pdf(x_density, mean, std) * len(delays_array) * (bin_edges[1] - bin_edges[0])
-                
-                # 创建独立的图表
-                fig = go.Figure()
-                
-                # 添加直方图
-                fig.add_trace(
-                    go.Bar(
-                        x=bin_centers,
-                        y=hist,
-                        name='相对延时分布',
-                        marker=dict(
-                            color=f'rgba({r}, {g}, {b}, 0.6)',
-                            line=dict(color=base_color, width=1.5 if filename_display == '汇总' else 1)
-                        ),
-                        opacity=0.7,
-                        showlegend=False,
-                        hovertemplate=f'相对延时: %{{x:.2f}} ms<br>频数: %{{y}}<extra></extra>',
-                        customdata=customdata_list
-                    )
-                )
-                
-                # 添加密度曲线
-                fig.add_trace(
-                    go.Scatter(
-                        x=x_density,
-                        y=y_density,
-                        mode='lines',
-                        name='密度曲线',
-                        line=dict(
-                            color=base_color,
-                            width=3 if filename_display == '汇总' else 2,
-                            dash='dash' if filename_display == '汇总' else 'solid'
-                        ),
-                        showlegend=False,
-                        hovertemplate=f'相对延时: %{{x:.2f}} ms<br>密度: %{{y:.2f}}<extra></extra>'
-                    )
-                )
-                
-                # 计算统计量
-                mean = np.mean(delays_array)
-                std = np.std(delays_array)
-                median = np.median(delays_array)
-                
-                # 添加±1σ、±2σ、±3σ区间
-                for sigma, color in [(1, 'rgba(255, 0, 0, 0.08)'), (2, 'rgba(255, 0, 0, 0.12)'), (3, 'rgba(255, 0, 0, 0.15)')]:
-                    fig.add_vrect(
-                        x0=mean - sigma * std,
-                        x1=mean + sigma * std,
-                        fillcolor=color,
-                        layer="below",
-                        line_width=0
-                    )
-                
-                # 添加均值线
-                fig.add_vline(
-                    x=mean,
-                    line_dash="dash",
-                    line_color="green",
-                    line_width=1.5
-                )
-                
-                # 添加中位数线
-                fig.add_vline(
-                    x=median,
-                    line_dash="dot",
-                    line_color="orange",
-                    line_width=1.5
-                )
-                
-                # 更新布局
-                fig.update_layout(
-                    title=subplot_title,
-                    xaxis_title='相对延时 (ms)',
-                    yaxis_title='频数',
-                    height=500,
-                    template='plotly_white',
-                    showlegend=False
-                )
-                
+
+                # 创建子图图表
+                fig = _create_subplot_figure(subplot_idx, display_name, filename_display, delays_array, base_color)
+
                 # 生成锤速对比图（仅对非汇总的曲子）
                 velocity_plot = None
-                if filename_display != '汇总' and song_info and 'hammer_velocity_diffs' in song_info:
-                    hammer_velocity_diffs = song_info['hammer_velocity_diffs']
-                    if hammer_velocity_diffs:
-                        # 按按键ID分组计算平均锤速差值
-                        from collections import defaultdict
-                        key_velocity_stats = defaultdict(list)
+                if filename_display != '汇总':
+                    velocity_plot = _create_subplot_velocity_plot(subplot_title, song_info, subplot_idx)
 
-                        for item in hammer_velocity_diffs:
-                            key_id = item['key_id']
-                            key_velocity_stats[key_id].append(item['velocity_diff'])
-
-                        # 计算每个按键的平均锤速差值
-                        key_avg_diffs = {}
-                        for key_id, diffs in key_velocity_stats.items():
-                            key_avg_diffs[key_id] = np.mean(diffs)
-
-                        if key_avg_diffs:
-                            # 排序按键ID
-                            sorted_keys = sorted(key_avg_diffs.keys())
-                            x_keys = [str(k) for k in sorted_keys]
-                            y_diffs = [key_avg_diffs[k] for k in sorted_keys]
-
-                            # 创建锤速对比图
-                            velocity_fig = go.Figure()
-                            velocity_fig.add_trace(go.Bar(
-                                x=x_keys,
-                                y=y_diffs,
-                                name='锤速差值',
-                                marker=dict(
-                                    color='#ff9800',
-                                    opacity=0.8,
-                                    line=dict(color='#e65100', width=1)
-                                ),
-                                hovertemplate='<b>按键 %{x}</b><br>' +
-                                             '平均锤速差值: %{y:.1f}<br>' +
-                                             '<b>录制锤速: 100</b><br>' +
-                                             '<b>平均播放锤速: %{customdata:.1f}</b><extra></extra>',
-                                customdata=[100 + diff for diff in y_diffs]  # 播放锤速 = 录制锤速 + 差值
-                            ))
-
-                            # 添加零线
-                            velocity_fig.add_hline(
-                                y=0,
-                                line_dash="dash",
-                                line_color="red",
-                                opacity=0.7
-                            )
-
-                            velocity_fig.update_layout(
-                                title=f'{subplot_title} - 锤速对比',
-                                xaxis_title='按键ID',
-                                yaxis_title='锤速差值 (播放锤速 - 录制锤速)',
-                                height=400,
-                                template='plotly_white',
-                                showlegend=False
-                            )
-
-                            velocity_plot = dcc.Graph(
-                                id={'type': 'hammer-velocity-comparison-plot', 'index': subplot_idx},
-                                figure=velocity_fig,
-                                style={'height': '400px', 'marginTop': '20px'}
-                )
-                
-                # 创建图表和表格容器（使用字典形式的ID以支持Pattern Matching Callbacks）
-                plot_id = {'type': 'relative-delay-distribution-plot', 'index': subplot_idx}
-                table_id = {'type': 'relative-delay-distribution-table', 'index': subplot_idx}
-                title_id = {'type': 'relative-delay-distribution-title', 'index': subplot_idx}
-                info_id = {'type': 'relative-delay-distribution-info', 'index': subplot_idx}
-                container_id = {'type': 'relative-delay-distribution-container', 'index': subplot_idx}
-                
-                # 添加相对延时分布图
-                plot_elements = [
-                        dcc.Graph(
-                            id=plot_id,
-                            figure=fig,
-                            style={'height': '500px'}
-                    )
-                ]
-
-                # 如果有锤速对比图，也添加进去
-                if velocity_plot:
-                    plot_elements.append(velocity_plot)
-
-                children.append(
-                    html.Div([
-                        *plot_elements,
-                        html.P("💡 提示：点击直方图中的柱状图区域，可查看该相对延时范围内的数据点详情", 
-                               className="text-muted", 
-                               style={'fontSize': '12px', 'marginTop': '10px', 'marginBottom': '10px'}),
-                        html.Div([
-                            html.Div(id=title_id, 
-                                    style={'marginTop': '15px', 'marginBottom': '10px', 
-                                           'fontSize': '16px', 'fontWeight': 'bold', 
-                                           'color': '#9c27b0', 'padding': '8px 12px',
-                                           'backgroundColor': '#f3e5f5', 'borderRadius': '4px',
-                                           'borderLeft': '4px solid #9c27b0', 'display': 'none'}),
-                            html.Div(id=info_id, 
-                                    style={'marginBottom': '10px', 'fontSize': '14px', 'fontWeight': 'bold', 'color': '#2c3e50', 'display': 'none'}),
-                            dash_table.DataTable(
-                                id=table_id,
-                                columns=[
-                                    {"name": "算法名称", "id": "algorithm_name"},
-                                    {"name": "按键ID", "id": "key_id"},
-                                    {"name": "相对延时(ms)", "id": "relative_delay_ms", "type": "numeric", "format": {"specifier": ".2f"}},
-                                    {"name": "绝对延时(ms)", "id": "absolute_delay_ms", "type": "numeric", "format": {"specifier": ".2f"}},
-                                    {"name": "录制索引", "id": "record_index"},
-                                    {"name": "播放索引", "id": "replay_index"},
-                                    {"name": "录制开始(0.1ms)", "id": "record_keyon"},
-                                    {"name": "播放开始(0.1ms)", "id": "replay_keyon"},
-                                    {"name": "持续时间差(0.1ms)", "id": "duration_offset"},
-                                ],
-                                data=[],
-                                page_action='none',
-                                style_cell={
-                                    'textAlign': 'center',
-                                    'fontSize': '12px',
-                                    'fontFamily': 'Arial, sans-serif',
-                                    'padding': '8px',
-                                    'overflow': 'hidden',
-                                    'textOverflow': 'ellipsis',
-                                },
-                                style_header={
-                                    'backgroundColor': '#f8f9fa',
-                                    'fontWeight': 'bold',
-                                    'border': '1px solid #dee2e6',
-                                    'position': 'sticky',
-                                    'top': 0,
-                                    'zIndex': 1
-                                },
-                                style_data={
-                                    'whiteSpace': 'normal',
-                                    'height': 'auto',
-                                },
-                                style_table={
-                                    'overflowX': 'auto',
-                                    'overflowY': 'auto',
-                                    'maxHeight': '600px',
-                                }
-                            )
-                        ], style={'display': 'none'}, id=container_id)
-                    ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'})
-                )
+                # 创建完整的子图容器
+                subplot_container = _create_subplot_container(subplot_idx, fig, velocity_plot, display_name, filename_display)
+                children.append(subplot_container)
             
             logger.info("[OK] 同种算法相对延时分布图生成成功")
             return children
@@ -2961,8 +2961,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
     )
     def handle_relative_delay_distribution_click(click_data, session_id, plot_id):
         """处理同种算法相对延时分布图点击事件，显示该相对延时范围内的数据点详情"""
-        import math
-        import numpy as np
+
         
         logger.info(f"🔍 相对延时分布图点击回调被触发，click_data: {click_data}")
         print(f"🔍 相对延时分布图点击回调被触发，click_data: {click_data}")
@@ -3118,6 +3117,96 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             logger.error(traceback.format_exc())
             return [], {'overflowX': 'auto', 'overflowY': 'auto', 'maxHeight': '600px'}, f"处理失败: {str(e)}", {'display': 'none'}, ""
     
+    def _find_target_algorithm_instance(backend, algorithm_name, record_index, replay_index):
+        """[Helper] 在多算法模式下查找目标算法实例"""
+        if not backend.multi_algorithm_mode or not backend.multi_algorithm_manager:
+            return None
+            
+        all_algorithms = backend.multi_algorithm_manager.get_all_algorithms()
+        target_algorithm = None
+        
+        # 1. 首先尝试精确匹配算法名称
+        candidate_algorithms = [alg for alg in all_algorithms if alg.metadata.algorithm_name == algorithm_name]
+        logger.info(f"🔍 找到 {len(candidate_algorithms)} 个匹配算法名称的算法实例: {algorithm_name}")
+        
+        # 2. 如果有多个或只有一个候选算法，通过匹配对进一步验证
+        if candidate_algorithms:
+            for alg in candidate_algorithms:
+                if alg.analyzer and hasattr(alg.analyzer, 'matched_pairs'):
+                    for r_idx, p_idx, _, _ in alg.analyzer.matched_pairs:
+                        if r_idx == record_index and p_idx == replay_index:
+                            logger.info(f"[OK] 通过匹配对找到正确的算法实例: {alg.metadata.algorithm_name}")
+                            return alg
+                            
+            # 如果没有找到匹配对，但只有一个候选，且没有匹配对数据（可能未初始化），则勉强使用
+            if len(candidate_algorithms) == 1:
+                logger.warning(f"[WARNING] 只有一个候选算法但未找到明确匹配对，尝试使用: {algorithm_name}")
+                return candidate_algorithms[0]
+
+        # 3. 如果精确匹配失败，尝试全局查找（用于汇总图等情况）
+        logger.info(f"[WARNING] 算法名称匹配失败，尝试在所有算法中通过索引查找")
+        for alg in all_algorithms:
+            if alg.analyzer and hasattr(alg.analyzer, 'matched_pairs'):
+                for r_idx, p_idx, _, _ in alg.analyzer.matched_pairs:
+                    if r_idx == record_index and p_idx == replay_index:
+                        logger.info(f"[OK] 通过匹配对全局找到算法实例: {alg.metadata.algorithm_name}")
+                        return alg
+                        
+        return None
+
+    def _get_notes_and_center_time(target_algorithm, record_index, replay_index, key_id):
+        """[Helper] 获取录制/播放音符对象及中心时间"""
+        record_note = None
+        replay_note = None
+        center_time_ms = None
+        
+        if not target_algorithm or not target_algorithm.analyzer:
+            return None, None, None
+
+        # 1. 尝试从 matched_pairs 获取
+        matched_pairs = getattr(target_algorithm.analyzer, 'matched_pairs', [])
+        found_pair = False
+        
+        if matched_pairs:
+            for r_idx, p_idx, r_note, p_note in matched_pairs:
+                if r_idx == record_index and p_idx == replay_index:
+                    if key_id is not None and r_note.id != key_id:
+                        continue
+                        
+                    record_note = r_note
+                    replay_note = p_note
+                    found_pair = True
+                    
+                    # 计算keyon时间
+                    r_offset = r_note.after_touch.index[0] + r_note.offset if hasattr(r_note, 'after_touch') and not r_note.after_touch.empty else r_note.offset
+                    p_offset = p_note.after_touch.index[0] + p_note.offset if hasattr(p_note, 'after_touch') and not p_note.after_touch.empty else p_note.offset
+                    center_time_ms = ((r_offset + p_offset) / 2.0) / 10.0
+                    break
+        
+        # 2. 如果 matched_pairs 失败，尝试从 offset_data 获取（备用）
+        if not found_pair and target_algorithm.analyzer.note_matcher:
+            try:
+                offset_data = target_algorithm.analyzer.note_matcher.get_offset_alignment_data()
+                for item in offset_data or []:
+                    if item.get('record_index') == record_index and item.get('replay_index') == replay_index:
+                        r_keyon = item.get('record_keyon', 0)
+                        p_keyon = item.get('replay_keyon', 0)
+                        if r_keyon and p_keyon:
+                            center_time_ms = ((r_keyon + p_keyon) / 2.0) / 10.0
+                            logger.info(f"[OK] 从offset_data获取时间信息: {center_time_ms:.1f}ms")
+                            
+                            # 再次尝试在 matched_pairs 中找音符对象（可能之前key_id过滤太严？）
+                            for r_idx, p_idx, r_note, p_note in matched_pairs:
+                                if r_idx == record_index and p_idx == replay_index:
+                                    record_note, replay_note = r_note, p_note
+                                    found_pair = True
+                                    break
+                            break
+            except Exception as e:
+                logger.warning(f"[WARNING] 从offset_data获取信息失败: {e}")
+
+        return record_note, replay_note, center_time_ms
+
     # 同种算法相对延时分布图详情表格点击回调 - 显示录制与播放对比曲线
     @app.callback(
         [Output('key-curves-modal', 'style', allow_duplicate=True),
@@ -3134,316 +3223,105 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
     )
     def handle_relative_delay_distribution_table_click(active_cells, close_modal_clicks, close_btn_clicks, table_data_list, session_id, current_style):
         """处理同种算法相对延时分布图详情表格点击，显示录制与播放对比曲线（悬浮窗）并支持跳转到瀑布图"""
-        # 检测触发源
+        # 1. 检测触发源与关闭操作
         ctx = callback_context
         if not ctx.triggered:
             return current_style, [], no_update
         
         trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
-        logger.info(f"[PROCESS] 相对延时分布图表格点击回调触发：trigger_id={trigger_id}")
-        
-        # 如果点击了关闭按钮，隐藏模态框
         if trigger_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
-            logger.info("[OK] 关闭按键曲线对比模态框")
-            modal_style = {
-                'display': 'none',
-                'position': 'fixed',
-                'zIndex': '9999',
-                'left': '0',
-                'top': '0',
-                'width': '100%',
-                'height': '100%',
-                'backgroundColor': 'rgba(0,0,0,0.6)',
-                'backdropFilter': 'blur(5px)'
-            }
-            return modal_style, [], no_update
-        
-        # 如果是表格点击（Pattern Matching Callbacks返回的是列表）
+            return {'display': 'none'}, [], no_update
+            
+        # 2. 获取 Backend
         backend = session_manager.get_backend(session_id)
         if not backend:
-            logger.warning("[WARNING] 没有找到backend")
             return current_style, [], no_update
-        
-        # 找到被触发的表格（active_cells是一个列表，找到非None的项）
-        triggered_table_idx = None
-        for idx, active_cell in enumerate(active_cells):
-            if active_cell is not None:
-                triggered_table_idx = idx
-                break
-        
-        if triggered_table_idx is None:
-            logger.warning("[WARNING] 没有找到被触发的表格")
-            return current_style, [], no_update
-        
-        # 获取对应的表格数据
-        if triggered_table_idx >= len(table_data_list) or not table_data_list[triggered_table_idx]:
-            logger.warning(f"[WARNING] 表格数据为空: triggered_table_idx={triggered_table_idx}")
-            return current_style, [], no_update
-        
-        active_cell = active_cells[triggered_table_idx]
-        table_data = table_data_list[triggered_table_idx]
-        
-        if not active_cell or not table_data:
-            logger.warning("[WARNING] active_cell或table_data为空")
-            return current_style, [], no_update
-        
+
+        # 3. 获取触发的表格行数据
         try:
-            # 获取点击的行数据
-            row_idx = active_cell.get('row')
-            if row_idx is None or row_idx >= len(table_data):
-                logger.warning(f"[WARNING] 行索引超出范围: row_idx={row_idx}, table_data长度={len(table_data)}")
+            triggered_table_idx = next((i for i, cell in enumerate(active_cells) if cell), None)
+            if triggered_table_idx is None or triggered_table_idx >= len(table_data_list):
                 return current_style, [], no_update
+                
+            table_data = table_data_list[triggered_table_idx]
+            active_cell = active_cells[triggered_table_idx]
             
-            row_data = table_data[row_idx]
-            record_index = row_data.get('record_index')
-            replay_index = row_data.get('replay_index')
-            key_id = row_data.get('key_id')
+            if not active_cell or not table_data:
+                return current_style, [], no_update
+                
+            row_data = table_data[active_cell.get('row')]
+            record_index = int(row_data.get('record_index'))
+            replay_index = int(row_data.get('replay_index'))
+            key_id = int(row_data.get('key_id')) if row_data.get('key_id') != 'N/A' else None
             algorithm_name = row_data.get('algorithm_name')
             
-            logger.info(f"[STATS] 点击的行数据: record_index={record_index}, replay_index={replay_index}, key_id={key_id}, algorithm_name={algorithm_name}")
-            print(f"[STATS] 点击的行数据: record_index={record_index}, replay_index={replay_index}, key_id={key_id}, algorithm_name={algorithm_name}")
-            
-            # 检查索引是否有效
-            if record_index == 'N/A' or replay_index == 'N/A' or record_index is None or replay_index is None:
-                logger.warning("[WARNING] 索引无效")
-                return current_style, [], no_update
-            
-            try:
-                record_index = int(record_index)
-                replay_index = int(replay_index)
-                if key_id and key_id != 'N/A':
-                    key_id = int(key_id)
-                else:
-                    key_id = None
-            except (ValueError, TypeError) as e:
-                logger.warning(f"[WARNING] 无法转换索引或key_id: {e}")
-                return current_style, [], no_update
-            
-            # 获取对应的音符数据
-            record_note = None
-            replay_note = None
-            center_time_ms = None
-            
-            # 在多算法模式下查找算法
-            if backend.multi_algorithm_mode and backend.multi_algorithm_manager and algorithm_name and algorithm_name != 'N/A':
-                all_algorithms = backend.multi_algorithm_manager.get_all_algorithms()
-                target_algorithm = None
-                
-                # 首先尝试精确匹配算法名称
-                candidate_algorithms = []
-                for alg in all_algorithms:
-                    if alg.metadata.algorithm_name == algorithm_name:
-                        candidate_algorithms.append(alg)
-                
-                logger.info(f"🔍 找到 {len(candidate_algorithms)} 个匹配算法名称的算法实例: {algorithm_name}")
-                
-                # 如果有多个候选算法（同种算法的不同曲子），通过record_index和replay_index来筛选
-                if len(candidate_algorithms) > 1:
-                    logger.info(f"[WARNING] 有多个算法实例，通过record_index={record_index}, replay_index={replay_index}进一步筛选")
-                    for alg in candidate_algorithms:
-                        if alg.analyzer and hasattr(alg.analyzer, 'matched_pairs'):
-                            matched_pairs = alg.analyzer.matched_pairs
-                            for r_idx, p_idx, r_note, p_note in matched_pairs:
-                                if r_idx == record_index and p_idx == replay_index:
-                                    target_algorithm = alg
-                                    logger.info(f"[OK] 通过匹配对找到正确的算法实例: {alg.metadata.algorithm_name}")
-                                    break
-                            if target_algorithm:
-                                break
-                elif len(candidate_algorithms) == 1:
-                    # 只有一个候选算法，但还需要验证record_index和replay_index是否匹配
-                    candidate_alg = candidate_algorithms[0]
-                    if candidate_alg.analyzer and hasattr(candidate_alg.analyzer, 'matched_pairs'):
-                        matched_pairs = candidate_alg.analyzer.matched_pairs
-                        # 验证匹配对是否存在
-                        found_match = False
-                        for r_idx, p_idx, r_note, p_note in matched_pairs:
-                            if r_idx == record_index and p_idx == replay_index:
-                                found_match = True
-                                break
-                        if found_match:
-                            target_algorithm = candidate_alg
-                            logger.info(f"[OK] 找到唯一的算法实例并验证匹配对: {algorithm_name}")
-                        else:
-                            logger.warning(f"[WARNING] 算法实例存在但匹配对不匹配，尝试查找其他算法实例")
-                            # 如果匹配对不匹配，尝试在所有算法中查找
-                            for alg in all_algorithms:
-                                if alg.analyzer and hasattr(alg.analyzer, 'matched_pairs'):
-                                    matched_pairs = alg.analyzer.matched_pairs
-                                    for r_idx, p_idx, r_note, p_note in matched_pairs:
-                                        if r_idx == record_index and p_idx == replay_index:
-                                            target_algorithm = alg
-                                            logger.info(f"[OK] 通过匹配对找到正确的算法实例: {alg.metadata.algorithm_name}")
-                                            break
-                                    if target_algorithm:
-                                        break
-                    else:
-                        # 没有matched_pairs，直接使用
-                        target_algorithm = candidate_alg
-                        logger.info(f"[OK] 找到唯一的算法实例（无matched_pairs验证）: {algorithm_name}")
-                else:
-                    # 精确匹配失败，尝试通过record_index和replay_index在所有算法中查找（用于汇总图的情况）
-                    logger.info(f"[WARNING] 精确匹配失败，尝试通过record_index和replay_index在所有算法中查找")
-                    for alg in all_algorithms:
-                        if alg.analyzer and hasattr(alg.analyzer, 'matched_pairs'):
-                            matched_pairs = alg.analyzer.matched_pairs
-                            for r_idx, p_idx, r_note, p_note in matched_pairs:
-                                if r_idx == record_index and p_idx == replay_index:
-                                    target_algorithm = alg
-                                    logger.info(f"[OK] 通过匹配对找到算法实例: {alg.metadata.algorithm_name}")
-                                    break
-                            if target_algorithm:
-                                break
-                
-                if not target_algorithm or not target_algorithm.analyzer:
-                    logger.warning(f"[WARNING] 未找到算法: {algorithm_name}, 可用算法: {[alg.metadata.algorithm_name for alg in all_algorithms]}")
+            logger.info(f"[STATS] 点击行: rec={record_index}, rep={replay_index}, key={key_id}, alg={algorithm_name}")
+
+            # 4. 查找目标算法实例
+            if backend.multi_algorithm_mode:
+                target_algorithm = _find_target_algorithm_instance(backend, algorithm_name, record_index, replay_index)
+                if not target_algorithm:
+                    logger.warning(f"[WARNING] 未找到匹配算法: {algorithm_name}")
                     return current_style, [], no_update
-                
-                # 从matched_pairs中查找匹配对
-                matched_pairs = target_algorithm.analyzer.matched_pairs if hasattr(target_algorithm.analyzer, 'matched_pairs') else []
-                if not matched_pairs:
-                    logger.warning(f"[WARNING] 算法没有匹配对数据: {target_algorithm.metadata.algorithm_name}")
-                    # 备用方案：尝试从offset_data获取
-                    if target_algorithm.analyzer.note_matcher:
-                        try:
-                            offset_data = target_algorithm.analyzer.note_matcher.get_offset_alignment_data()
-                            if offset_data:
-                                for item in offset_data:
-                                    if item.get('record_index') == record_index and item.get('replay_index') == replay_index:
-                                        # 从offset_data中获取时间信息
-                                        record_keyon = item.get('record_keyon', 0)
-                                        replay_keyon = item.get('replay_keyon', 0)
-                                        if record_keyon and replay_keyon:
-                                            center_time_ms = ((record_keyon + replay_keyon) / 2.0) / 10.0
-                                            logger.info(f"[OK] 从offset_data获取时间信息: center_time_ms={center_time_ms:.1f}ms")
-                                            # 尝试从matched_pairs获取音符对象
-                                            if matched_pairs:
-                                                for r_idx, p_idx, r_note, p_note in matched_pairs:
-                                                    if r_idx == record_index and p_idx == replay_index:
-                                                        record_note = r_note
-                                                        replay_note = p_note
-                                                        break
-                                            # 如果找不到音符对象，仍然可以继续（center_time_ms已设置）
-                                            final_algorithm_name = target_algorithm.metadata.algorithm_name
-                                            logger.info(f"[OK] 从offset_data成功获取信息，继续生成曲线")
-                                            break
-                        except Exception as e:
-                            logger.warning(f"[WARNING] 从offset_data获取信息失败: {e}")
-                    
-                    if center_time_ms is None:
-                        logger.error("[ERROR] 无法获取时间信息，无法继续")
-                        return current_style, [], no_update
-                else:
-                    # 查找匹配对
-                    found_pair = False
-                    for r_idx, p_idx, r_note, p_note in matched_pairs:
-                        if r_idx == record_index and p_idx == replay_index:
-                            if key_id is not None and r_note.id != key_id:
-                                continue
-                            record_note = r_note
-                            replay_note = p_note
-                            found_pair = True
-                            
-                            # 计算keyon时间
-                            record_keyon = r_note.after_touch.index[0] + r_note.offset if hasattr(r_note, 'after_touch') and not r_note.after_touch.empty else r_note.offset
-                            replay_keyon = p_note.after_touch.index[0] + p_note.offset if hasattr(p_note, 'after_touch') and not p_note.after_touch.empty else p_note.offset
-                            center_time_ms = ((record_keyon + replay_keyon) / 2.0) / 10.0
-                            logger.info(f"[OK] 从matched_pairs计算时间信息: center_time_ms={center_time_ms:.1f}ms")
-
-                            break
-
-                    if not found_pair:
-                        logger.error(f"[ERROR] 未找到匹配对: record_index={record_index}, replay_index={replay_index}, 算法={target_algorithm.metadata.algorithm_name}")
-                        return current_style, [], no_update
-                
                 final_algorithm_name = target_algorithm.metadata.algorithm_name
             else:
-                logger.warning("[WARNING] 不在多算法模式或算法名称无效")
-                return current_style, [], no_update
-            
-            # 检查是否成功获取了音符对象
-            if record_note is None or replay_note is None:
-                logger.error("[ERROR] 无法获取音符对象，无法生成曲线图")
-                return current_style, [], no_update
-            
-            # 对于同种算法不同曲子的相对延时分布图，只显示一条录制和一条播放曲线
-            # 不包含其他算法的曲线（因为这是同一个算法的不同曲子）
-            other_algorithm_notes = []
-            
-            # 计算平均延时
-            mean_delays = {}
-            if target_algorithm and target_algorithm.analyzer:
-                mean_error_0_1ms = target_algorithm.analyzer.get_mean_error()
-                mean_delays[final_algorithm_name] = mean_error_0_1ms / 10.0  # 转换为毫秒
-            else:
-                logger.error(f"[ERROR] 无法获取算法 '{final_algorithm_name}' 的平均延时")
+                logger.warning("[WARNING] 非多算法模式或无效调用")
                 return current_style, [], no_update
 
-            # 生成对比曲线图
+            # 5. 获取音符数据与时间
+            record_note, replay_note, center_time_ms = _get_notes_and_center_time(target_algorithm, record_index, replay_index, key_id)
+            
+            if not record_note or not replay_note:
+                logger.error("[ERROR] 无法获取音符对象")
+                # 如果有center_time_ms但没音符，也可以继续吗？目前逻辑似乎需要音符来画图
+                if center_time_ms is None:
+                    return current_style, [], no_update
+
+            # 6. 生成对比曲线图
+            mean_delay = 0.0
+            if target_algorithm.analyzer:
+                mean_delay = target_algorithm.analyzer.get_mean_error() / 10.0
+
             import spmid
-            detail_figure_combined = spmid.plot_note_comparison_plotly(
+            detail_figure = spmid.plot_note_comparison_plotly(
                 record_note, 
                 replay_note, 
                 algorithm_name=final_algorithm_name,
-                other_algorithm_notes=other_algorithm_notes,  # 空列表，不显示其他算法的曲线
-                mean_delays=mean_delays
+                other_algorithm_notes=[],
+                mean_delays={final_algorithm_name: mean_delay}
             )
             
-            if not detail_figure_combined:
-                logger.error("[ERROR] 曲线生成失败")
+            if not detail_figure:
                 return current_style, [], no_update
-            
-            logger.info(f"[OK] 成功生成对比曲线: record_index={record_index}, replay_index={replay_index}")
-            
-            # 获取子图索引（从triggered_table_idx对应的plot_id获取）
-            # 需要从table_data_list中找到对应的子图索引
-            source_subplot_idx = None
-            if triggered_table_idx is not None:
-                # 尝试从plot_id获取子图索引
-                # 由于使用的是Pattern Matching Callbacks，我们需要通过其他方式获取
-                # 可以通过查找对应的图表容器来获取索引
-                try:
-                    # 从session中获取当前显示的子图信息
-                    # 或者通过查找table_data中的信息来推断
-                    # 暂时使用一个通用的方法：保存triggered_table_idx作为子图索引
-                    source_subplot_idx = triggered_table_idx + 1  # 索引从1开始
-                except:
-                    pass
-            
-            # 存储当前点击的数据点信息，用于跳转按钮
+
+            # 7. 构建返回数据
+            source_subplot_idx = triggered_table_idx + 1 # 假设索引+1
             point_info = {
                 'algorithm_name': final_algorithm_name,
                 'record_idx': record_index,
                 'replay_idx': replay_index,
                 'key_id': key_id,
                 'source_plot_id': 'relative-delay-distribution-plot',
-                'source_subplot_idx': source_subplot_idx,  # 保存子图索引
+                'source_subplot_idx': source_subplot_idx,
                 'center_time_ms': center_time_ms
             }
             
-            # 显示模态框
             modal_style = {
                 'display': 'block',
                 'position': 'fixed',
                 'zIndex': '9999',
-                'left': '0',
-                'top': '0',
-                'width': '100%',
-                'height': '100%',
+                'left': '0', 'top': '0',
+                'width': '100%', 'height': '100%',
                 'backgroundColor': 'rgba(0,0,0,0.6)',
                 'backdropFilter': 'blur(5px)'
             }
             
-            rendered_row = dcc.Graph(figure=detail_figure_combined, style={'height': '600px'})
-            
-            return modal_style, [rendered_row], point_info
-            
+            return modal_style, [dcc.Graph(figure=detail_figure, style={'height': '600px'})], point_info
+
         except Exception as e:
-            logger.error(f"[ERROR] 处理相对延时分布图表格点击失败: {e}")
+            logger.error(f"[ERROR] 处理表格点击失败: {e}")
             logger.error(traceback.format_exc())
             return current_style, [], no_update
-        
-        return current_style, [], no_update
 
     # 延时时间序列图回调 - 报告内容加载时自动生成
     @app.callback(
@@ -3471,7 +3349,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             return fig
         except Exception as e:
             logger.error(f"[ERROR] 生成延时时间序列图失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return backend.plot_generator._create_empty_plot(f"生成时间序列图失败: {str(e)}")
     
@@ -3734,7 +3612,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 
             except Exception as e:
                 logger.error(f"[ERROR] 处理延时时间序列图点击失败: {e}")
-                import traceback
+                
                 logger.error(traceback.format_exc())
                 return current_style, [], no_update
         
@@ -3889,7 +3767,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                                     break
         except Exception as e:
             logger.warning(f"[WARNING] 解析触发ID失败: {e}, trigger_id={trigger_id}")
-            import traceback
+            
             logger.error(traceback.format_exc())
         
         if not delay_type or not algorithm_name:
@@ -3967,7 +3845,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             
         except Exception as e:
             logger.error(f"[ERROR] 处理{delay_type}延迟字段点击失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
         return current_style, []
     
@@ -4011,7 +3889,6 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
     )
     def handle_delay_histogram_click(click_data, session_id):
         """处理延时直方图点击事件，显示该延时范围内的数据点详情"""
-        import math
         
         logger.info(f"🔍 延时直方图点击回调被触发，click_data: {click_data}")
         print(f"🔍 延时直方图点击回调被触发，click_data: {click_data}")
@@ -4554,7 +4431,6 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                         # key-hammer-velocity-scatter-plot 已删除（功能与按键-力度交互效应图重复）
                         dcc.Graph(id='key-force-interaction-plot', figure=empty_fig, style={'display': 'none'}),
                         dcc.Store(id='key-force-interaction-selected-algorithms', data=[]),
-                        dcc.Store(id='key-force-interaction-selected-keys', data=[]),
                         dcc.Graph(id='relative-delay-distribution-plot', figure=empty_fig, style={'display': 'none'}),
                         dcc.Graph(id='offset-alignment-plot', figure=empty_fig, style={'display': 'none'}),
                         dcc.Graph(id='delay-time-series-plot', figure=empty_fig, style={'display': 'none'}),
@@ -5662,13 +5538,13 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
     
     # 瀑布图点击回调 - 显示曲线对比（悬浮窗）
     @app.callback(
-        [Output('key-curves-modal', 'style', allow_duplicate=True),
-         Output('key-curves-comparison-container', 'children', allow_duplicate=True)],
+        [Output('waterfall-curves-modal', 'style'),
+         Output('waterfall-curves-comparison-container', 'children')],
         [Input('main-plot', 'clickData'),
-         Input('close-key-curves-modal', 'n_clicks'),
-         Input('close-key-curves-modal-btn', 'n_clicks')],
+         Input('close-waterfall-curves-modal', 'n_clicks'),
+         Input('close-waterfall-curves-modal-btn', 'n_clicks')],
         [State('session-id', 'data'),
-         State('key-curves-modal', 'style')],
+         State('waterfall-curves-modal', 'style')],
         prevent_initial_call=True,
         prevent_duplicate=True
     )
@@ -5690,8 +5566,8 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         print(f"🔍 触发ID: {trigger_id}")
         
         # 如果点击了关闭按钮，隐藏模态框
-        if trigger_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
-            print("[OK] 关闭模态框")
+        if trigger_id in ['close-waterfall-curves-modal', 'close-waterfall-curves-modal-btn']:
+            print("[OK] 关闭瀑布图曲线模态框")
             modal_style = {
                 'display': 'none',
                 'position': 'fixed',
@@ -6042,14 +5918,49 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                     'backdropFilter': 'blur(5px)'
                 }
                 
-                import dash.dcc as dcc
-                rendered_row = dcc.Graph(figure=detail_figure_combined, style={'height': '600px'})
+
+                
+                # 生成全过程处理图
+                processing_stages_figure = None
+                if backend.force_curve_analyzer and record_note and replay_note:
+                    try:
+                        comparison_result = backend.force_curve_analyzer.compare_curves(record_note, replay_note)
+                        if comparison_result:
+                            processing_stages_figure = backend.force_curve_analyzer.visualize_all_processing_stages(comparison_result)
+                    except Exception as e:
+                        print(f"[ERROR] 生成全过程处理图失败: {e}")
+
+                # 构建模态框内容：使用Tabs展示对比图和全过程图
+                modal_content = [
+                    dcc.Tabs([
+                        dcc.Tab(label='曲线对比', children=[
+                            dcc.Graph(
+                                figure=detail_figure_combined, 
+                                style={'height': '700px'},
+                                config={'scrollZoom': True, 'displayModeBar': True}
+                            )
+                        ]),
+                        dcc.Tab(label='处理全过程', children=[
+                            html.Div(
+                                style={'height': '85vh', 'overflowY': 'auto', 'padding': '10px'},
+                                children=[
+                            dcc.Graph(
+                                figure=processing_stages_figure if processing_stages_figure else go.Figure(),
+                                        style={'height': f"{processing_stages_figure.layout.height}px"} if processing_stages_figure and processing_stages_figure.layout.height else {'height': '2000px'},
+                                        config={'scrollZoom': True, 'displayModeBar': True, 'responsive': True}
+                            ) if processing_stages_figure else html.Div("无法生成处理全过程图（可能只有单侧数据）", className="text-center p-3 text-muted")
+                                ]
+                            )
+                        ])
+                    ])
+                ]
+                
+                rendered_row = html.Div(modal_content)
                 
                 print("[OK] 显示模态框")
                 return modal_style, [rendered_row]
                 
             except Exception as e:
-                print(f"[ERROR] 瀑布图点击处理失败: {e}")
                 logger.error(f"[ERROR] 瀑布图点击处理失败: {e}")
                 logger.error(traceback.format_exc())
                 print(traceback.format_exc())
@@ -6300,7 +6211,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                                         # 检查record_index和replay_index是否存在
                                         found_pair = False
                                         for r_idx, p_idx, r_note, p_note in matched_pairs:
-                                            if r_idx == record_idx and p_idx == replay_index:
+                                            if r_idx == record_idx and p_idx == replay_idx:
                                                 found_pair = True
                                                 break
                                         logger.error(f"❌ 找到匹配对: {found_pair}")
@@ -6377,7 +6288,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 
             except Exception as e:
                 logger.error(f"[ERROR] 生成曲线对比失败: {e}")
-                import traceback
+                
                 logger.error(traceback.format_exc())
                 modal_style = {
                     'display': 'block',
@@ -6529,7 +6440,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                                                     break
                 except Exception as e:
                     logger.warning(f"[WARNING] 计算时间信息失败: {e}")
-                    import traceback
+                    
                     logger.error(traceback.format_exc())
             else:
                 logger.info(f"[OK] 使用预先计算的时间信息: center_time_ms={center_time_ms:.1f}ms")
@@ -6615,7 +6526,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             
         except Exception as e:
             logger.error(f"[ERROR] 跳转到瀑布图失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return no_update, no_update, no_update, no_update
     
@@ -7103,7 +7014,13 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         prevent_initial_call=True,
         prevent_duplicate=True
     )
-    def handle_hammer_velocity_comparison_click(click_data, close_modal_clicks, close_btn_clicks, session_id, current_style):
+    def handle_hammer_velocity_comparison_click(
+        click_data: Optional[Dict[str, Any]],
+        close_modal_clicks: Optional[int],
+        close_btn_clicks: Optional[int],
+        session_id: str,
+        current_style: Dict[str, Any]
+    ) -> Tuple[Dict[str, Any], List[Union[html.Div, dcc.Graph]], Union[Figure, NoUpdate], Dict[str, Any]]:
         """处理锤速对比图点击，显示对应按键的曲线对比（悬浮窗）"""
         from dash import callback_context
 
@@ -7156,9 +7073,11 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
 
                     # 生成曲线对比图
                     if backend.multi_algorithm_mode:
-                        # 多算法模式：生成多算法详细图表
-                        detail_figure1, detail_figure2, detail_figure_combined = backend.generate_multi_algorithm_detail_plot_by_index(
-                            algorithm_name, record_index, True  # 使用record_index而不是key_id
+                        # 多算法模式：使用与Z-Score散点图相同的方法
+                        detail_figure1, detail_figure2, detail_figure_combined = backend.generate_multi_algorithm_scatter_detail_plot_by_indices(
+                            algorithm_name=algorithm_name,
+                            record_index=record_index,
+                            replay_index=replay_index
                         )
                     else:
                         # 单算法模式：使用record_index和replay_index
@@ -7210,7 +7129,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                         }
 
                         return modal_style, [dcc.Graph(
-                            figure=detail_figure_combined,
+                                        figure=detail_figure_combined,
                             style={'height': '800px'}
                         )], waterfall_fig, point_info
 
@@ -7291,21 +7210,42 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             
             result = test_result['result']
             comparison_fig = test_result.get('comparison_figure')  # 对齐前后对比图（向后兼容）
-            all_stages_fig = test_result.get('all_stages_figure')  # 所有处理阶段的对比图
+            all_stages_fig = test_result.get('all_stages_figure')  # 所有处理阶段的对比图 (兼容旧版)
+            individual_stage_figures = test_result.get('individual_stage_figures', []) # 新版独立图表列表
             
             # 构建结果显示
             children = []
             
-            # 所有处理阶段的对比图（主要显示）
-            if all_stages_fig is not None:
-                # 根据子图数量动态调整高度（每个子图约450px，加上间距）
-                # 通常有6个子图（阶段1-4，阶段5a，阶段5b），所以总高度约2700px
+            # 渲染所有处理阶段的图表
+            # 优先使用新的独立图表列表
+            if individual_stage_figures:
+                children.append(html.H6("各处理阶段曲线对比（播放曲线对齐到录制曲线）", 
+                           className="mb-3",
+                           style={'color': '#2c3e50', 'fontWeight': 'bold'}))
+                
+                for stage_info in individual_stage_figures:
+                    title = stage_info.get('title', '未知阶段')
+                    fig = stage_info.get('figure')
+                    
+                    if fig:
+                        children.append(html.Div([
+                            html.H6(title, className="mt-4 mb-2", style={'fontSize': '14px', 'fontWeight': 'bold', 'color': '#555'}),
+                            dcc.Graph(
+                                figure=fig, 
+                                config={'displayModeBar': True}
+                            )
+                        ], className="mb-2"))
+            
+            # 如果没有新版图表，回退到旧版大图
+            elif all_stages_fig is not None:
                 children.append(html.Div([
                     html.H6("各处理阶段曲线对比（播放曲线对齐到录制曲线）", 
                            className="mb-3",
                            style={'color': '#2c3e50', 'fontWeight': 'bold'}),
                     dcc.Graph(figure=all_stages_fig, style={'height': '2800px', 'minHeight': '2000px'})
                 ], className="mb-4"))
+            
+            # 相似度信息
             
             # 相似度信息
             children.append(
@@ -7341,6 +7281,93 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                             ], color="success", outline=True)
                         ], width=4)
                     ], className="mb-3"),
+                ], className="mb-4")
+            )
+
+            # 特征量化分析表格
+            record_feat = result.get('record_features', {})
+            replay_feat = result.get('replay_features', {})
+            feat_diff = result.get('feature_comparison', {})
+            
+            if record_feat and replay_feat:
+                import pandas as pd
+                
+                # 准备表格数据
+                table_data = [
+                    {
+                        "指标": "峰值力度 (Peak)", 
+                        "录制值": f"{record_feat.get('peak_value', 0):.1f}", 
+                        "播放值": f"{replay_feat.get('peak_value', 0):.1f}", 
+                        "差异": f"{feat_diff.get('peak_diff', 0):.1f}",
+                        "说明": "Max Value"
+                    },
+                    {
+                        "指标": "峰值时间 (Time)", 
+                        "录制值": f"{record_feat.get('peak_time', 0):.1f}ms", 
+                        "播放值": f"{replay_feat.get('peak_time', 0):.1f}ms", 
+                        "差异": f"{feat_diff.get('peak_time_lag', 0):.1f}ms",
+                        "说明": "Time Lag"
+                    },
+                    {
+                        "指标": "上升时间 (Rise Time)", 
+                        "录制值": f"{record_feat.get('rise_time_ms', 0):.1f}ms", 
+                        "播放值": f"{replay_feat.get('rise_time_ms', 0):.1f}ms", 
+                        "差异": f"{feat_diff.get('rise_time_diff', 0):.1f}ms",
+                        "说明": "10% -> 90%"
+                    },
+                    {
+                        "指标": "上升斜率 (Rise Slope)", 
+                        "录制值": f"{record_feat.get('rise_slope', 0):.2f}", 
+                        "播放值": f"{replay_feat.get('rise_slope', 0):.2f}", 
+                        "差异": f"{replay_feat.get('rise_slope', 0) - record_feat.get('rise_slope', 0):.2f}",
+                        "说明": "Value / ms"
+                    },
+                    {
+                        "指标": "下降时间 (Fall Time)", 
+                        "录制值": f"{record_feat.get('fall_time_ms', 0):.1f}ms", 
+                        "播放值": f"{replay_feat.get('fall_time_ms', 0):.1f}ms", 
+                        "差异": f"{feat_diff.get('fall_time_diff', 0):.1f}ms",
+                        "说明": "90% -> 10%"
+                    },
+                    {
+                        "指标": "下降斜率 (Fall Slope)", 
+                        "录制值": f"{record_feat.get('fall_slope', 0):.2f}", 
+                        "播放值": f"{replay_feat.get('fall_slope', 0):.2f}", 
+                        "差异": f"{replay_feat.get('fall_slope', 0) - record_feat.get('fall_slope', 0):.2f}",
+                        "说明": "Value / ms"
+                    },
+                    {
+                        "指标": "抖动度 (Jitter RMSE)", 
+                        "录制值": f"{record_feat.get('jitter', 0):.2f}", 
+                        "播放值": f"{replay_feat.get('jitter', 0):.2f}", 
+                        "差异": f"x{feat_diff.get('jitter_ratio', 0):.2f}",
+                        "说明": "Raw - Smooth"
+                    }
+                ]
+                
+                table_header = [
+                    html.Thead(html.Tr([html.Th(col) for col in ["指标", "录制值", "播放值", "差异", "说明"]]))
+                ]
+                table_body = [
+                    html.Tbody([
+                        html.Tr([
+                            html.Td(row["指标"], style={'fontWeight': 'bold'}),
+                            html.Td(row["录制值"]),
+                            html.Td(row["播放值"]),
+                            html.Td(row["差异"], style={'color': 'red' if 'x' in row['差异'] and float(row['差异'][1:]) > 2 else 'black'}),
+                            html.Td(row["说明"], style={'fontSize': '0.85em', 'color': '#666'})
+                        ]) for row in table_data
+                    ])
+                ]
+                
+                children.append(html.Div([
+                    html.H6("物理特征量化分析", className="mb-3", style={'color': '#2c3e50', 'fontWeight': 'bold'}),
+                    dbc.Table(table_header + table_body, bordered=True, hover=True, striped=True, className="mb-4")
+                ]))
+
+            
+            # 其他信息
+            children.append(html.Div([
                     dbc.Row([
                         dbc.Col([
                             html.Small(f"DTW距离: {result.get('dtw_distance', 0):.3f}", 
@@ -7377,7 +7404,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             
         except Exception as e:
             logger.error(f"[ERROR] 曲线对齐测试失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return html.Div([
                 dbc.Alert([
@@ -7435,7 +7462,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             
         except Exception as e:
             logger.error(f"[ERROR] 跳转到瀑布图失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return no_update, no_update
 

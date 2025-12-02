@@ -698,13 +698,3 @@ def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None, oth
     )
     
     return fig
-
-# 使用示例：
-# fig = plot_note_comparison_plotly(record, play, note_index=0)
-# fig.show()
-
-
-
-
-if __name__=="__main__":
-    pass

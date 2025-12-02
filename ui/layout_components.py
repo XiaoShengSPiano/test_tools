@@ -171,26 +171,6 @@ def create_main_layout():
                                 )
                             ]),
 
-                            # 键ID筛选组件
-                            html.Div([
-                                html.Label("🔍 键位筛选", style={
-                                    'fontWeight': 'bold',
-                                    'color': '#2c3e50',
-                                    'marginBottom': '10px',
-                                    'fontSize': '16px'
-                                }),
-                                dcc.Dropdown(
-                                    id='key-filter-dropdown',
-                                    placeholder='选择要显示的键位ID（留空显示全部）',
-                                    multi=True,
-                                    style={'width': '100%', 'marginBottom': '10px'}
-                                ),
-                                html.Button('显示全部键位', id='btn-show-all-keys', n_clicks=0, 
-                                          style={'marginBottom': '10px', 'width': '100%'}, 
-                                          className='btn btn-outline-secondary btn-sm'),
-                                html.Div(id='key-filter-status', 
-                                        style={'fontSize': '12px', 'color': '#28a745', 'fontWeight': 'bold'})
-                            ], style={'marginBottom': '20px'}),
 
                             # 时间轴筛选组件
                             html.Div([
@@ -671,6 +651,90 @@ def create_main_layout():
                         'overflow': 'hidden'
                     })
                 ], id="key-curves-modal", className="modal", style={
+                    'display': 'none',
+                    'position': 'fixed',
+                    'zIndex': '9999',
+                    'left': '0',
+                    'top': '0',
+                    'width': '100%',
+                    'height': '100%',
+                    'backgroundColor': 'rgba(0,0,0,0.6)',
+                    'backdropFilter': 'blur(5px)'
+                })
+            ]),
+            # 瀑布图专用曲线对比模态框（避免与其他功能冲突）
+            html.Div([
+                html.Div([
+                    html.Div([
+                        html.Div([
+                            html.H4("按键曲线对比 (瀑布图)", style={'margin': '0', 'padding': '10px 20px', 'borderBottom': '1px solid #dee2e6'}),
+                            html.Button("×", id="close-waterfall-curves-modal", className="close", style={
+                                'position': 'absolute',
+                                'right': '15px',
+                                'top': '15px',
+                                'fontSize': '28px',
+                                'fontWeight': 'bold',
+                                'background': 'none',
+                                'border': 'none',
+                                'cursor': 'pointer',
+                                'color': '#aaa'
+                            })
+                        ], style={'position': 'relative', 'borderBottom': '1px solid #dee2e6'}),
+                        html.Div([
+                            html.Div(id='waterfall-curves-comparison-container', children=[])
+                        ], id='waterfall-curves-modal-content', className="modal-body", style={
+                            'padding': '10px 20px 20px 20px',
+                            'maxHeight': '90vh',
+                            'overflowY': 'auto'
+                        }),
+                        html.Div([
+                            html.Button(
+                                "跳转到瀑布图",
+                                id="jump-to-waterfall-btn-from-modal",
+                                className="btn btn-success",
+                                style={
+                                    'backgroundColor': '#28a745',
+                                    'borderColor': '#28a745',
+                                    'padding': '8px 20px',
+                                    'borderRadius': '5px',
+                                    'border': 'none',
+                                    'color': 'white',
+                                    'cursor': 'pointer',
+                                    'marginRight': '10px'
+                                }
+                            ),
+                            html.Button(
+                                "关闭",
+                                id="close-waterfall-curves-modal-btn",
+                                className="btn btn-primary",
+                                style={
+                                    'backgroundColor': '#007bff',
+                                    'borderColor': '#007bff',
+                                    'padding': '8px 20px',
+                                    'borderRadius': '5px',
+                                    'border': 'none',
+                                    'color': 'white',
+                                    'cursor': 'pointer'
+                                }
+                            )
+                        ], className="modal-footer", style={
+                            'borderTop': '1px solid #dee2e6',
+                            'padding': '15px 20px',
+                            'textAlign': 'right'
+                        })
+                    ], className="modal-content", style={
+                        'backgroundColor': 'white',
+                        'margin': '0.5% auto',
+                        'padding': '0',
+                        'border': 'none',
+                        'width': '95%',
+                        'maxWidth': '1600px',
+                        'borderRadius': '10px',
+                        'boxShadow': '0 4px 20px rgba(0,0,0,0.3)',
+                        'maxHeight': '98vh',
+                        'overflow': 'hidden'
+                    })
+                ], id="waterfall-curves-modal", className="modal", style={
                     'display': 'none',
                     'position': 'fixed',
                     'zIndex': '9999',
@@ -1455,7 +1519,15 @@ def create_report_layout(backend):
                         dbc.Col([
                             html.H6("按键-力度交互效应图", className="mb-2",
                                    style={'color': '#c2185b', 'fontWeight': 'bold', 'borderBottom': '2px solid #c2185b', 'paddingBottom': '5px'}),
-                        ], width=12)
+                        ], width=8),
+                        dbc.Col([
+                            dcc.Dropdown(
+                                id='key-force-interaction-key-selector',
+                                placeholder='选择按键（留空显示全部）',
+                                clearable=True,
+                                style={'fontSize': '12px'}
+                            )
+                        ], width=4)
                     ]),
                     dcc.Graph(
                         id='key-force-interaction-plot',

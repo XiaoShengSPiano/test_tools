@@ -688,28 +688,206 @@ class PlotGenerator:
             return self._create_empty_plot(f"生成分析图失败: {str(e)}")
     
     
+    def _handle_multi_algorithm_plot(self, fig, algorithm_results, algorithm_colors):
+        """处理多算法模式的图表绘制"""
+        # 获取算法名称和显示名称
+        algo_info = self._prepare_algorithm_info(algorithm_results)
+        
+        # 收集按键统计信息
+        key_stats = self._collect_key_statistics(algorithm_results, algo_info['display_names'])
+        
+        # 生成按键颜色
+        key_colors = self._generate_key_colors(len(key_stats['all_keys']))
+        
+        # 创建算法控制图注（按键用下拉菜单选择）
+        self._create_algorithm_control_legends(fig, algo_info['display_names'], algorithm_colors)
+        # 不再需要按键控制图注，改用UI中的下拉菜单
+        
+        # 添加数据散点
+        self._add_multi_algorithm_data_traces(fig, algorithm_results, algo_info, key_stats, algorithm_colors, key_colors)
+    
+    def _prepare_algorithm_info(self, algorithm_results):
+        """准备算法信息（内部名称和显示名称）"""
+        internal_names = sorted(algorithm_results.keys())
+        display_names = []
+        display_name_count = {}
+        
+        for alg_name in internal_names:
+            alg_result = algorithm_results[alg_name]
+            display_name = alg_result.get('display_name', alg_name)
+            
+            # 统计重名情况
+            if display_name not in display_name_count:
+                display_name_count[display_name] = 0
+            display_name_count[display_name] += 1
+            
+            # 如果重名，添加文件名后缀
+            if display_name_count[display_name] > 1:
+                parts = alg_name.rsplit('_', 1)
+                if len(parts) == 2:
+                    display_name = f"{display_name} ({parts[1]})"
+            
+            display_names.append(display_name)
+        
+        return {
+            'internal_names': internal_names,
+            'display_names': display_names
+        }
+    
+    def _collect_key_statistics(self, algorithm_results, display_names):
+        """收集所有按键ID和每个按键在每个曲子中的出现次数"""
+        all_key_ids = set()
+        key_piece_stats = {}  # {key_id: {piece_name: count}}
+        
+        for idx, (alg_name, alg_result) in enumerate(algorithm_results.items()):
+            piece_name = display_names[idx]
+            interaction_data = alg_result.get('interaction_plot_data', {})
+            key_data = interaction_data.get('key_data', {})
+            
+            for key_id, data in key_data.items():
+                all_key_ids.add(key_id)
+                if key_id not in key_piece_stats:
+                    key_piece_stats[key_id] = {}
+                # 统计该按键在该曲子中的出现次数
+                sample_count = len(data.get('forces', []))
+                if sample_count > 0:
+                    key_piece_stats[key_id][piece_name] = sample_count
+        
+        return {
+            'all_keys': sorted(all_key_ids),
+            'piece_stats': key_piece_stats
+        }
+    
+    def _generate_key_colors(self, n_keys):
+        """为按键生成颜色"""
+        import matplotlib.cm as cm
+        import matplotlib.colors as mcolors
+        
+        if n_keys <= 20:
+            colors = cm.get_cmap('tab20')(np.linspace(0, 1, n_keys))
+        else:
+            colors = cm.get_cmap('viridis')(np.linspace(0, 1, n_keys))
+        
+        return [mcolors.rgb2hex(c[:3]) for c in colors]
+    
+    def _handle_single_algorithm_plot(self, fig, analysis_result):
+        """处理单算法模式的图表绘制"""
+        interaction_plot_data = analysis_result.get('interaction_plot_data', {})
+        key_data = interaction_plot_data.get('key_data', {})
+        
+        if not key_data:
+            return
+        
+        # 生成按键颜色
+        key_colors = self._generate_key_colors(len(key_data))
+        
+        # 添加数据散点
+        self._add_single_algorithm_data_traces(fig, key_data, key_colors)
+    
+    def _configure_plot_layout(self, fig, analysis_result, is_multi_algorithm, algorithm_results):
+        """配置图表布局（横轴、纵轴、图注等）"""
+        # 收集所有播放锤速用于生成横轴刻度
+        all_velocities = self._collect_all_velocities(analysis_result, is_multi_algorithm, algorithm_results)
+        
+        # 生成横轴刻度
+        tick_positions, tick_texts = self._generate_log_ticks(all_velocities)
+        
+        fig.update_layout(
+            xaxis_title='log₁₀(播放锤速)',
+            yaxis_title='相对延时 (ms)',
+            xaxis=dict(
+                type='linear',  # 线性轴显示log10值
+                showgrid=True,
+                gridcolor='lightgray',
+                tickmode='array' if tick_positions else 'auto',
+                tickvals=tick_positions if tick_positions else None,
+                ticktext=tick_texts if tick_texts else None
+            ),
+            yaxis=dict(
+                showgrid=True,
+                gridcolor='lightgray',
+                zeroline=True,  # 显示y=0的参考线
+                zerolinecolor='red',
+                zerolinewidth=1.5
+            ),
+            showlegend=True,
+            template='plotly_white',
+            height=600,
+            hovermode='closest',
+            legend=dict(
+                orientation='v',
+                yanchor='top',
+                y=1,
+                xanchor='left',
+                x=1.02,
+                font=dict(size=11, color='rgba(0,0,0,1.0)')
+            ),
+            uirevision='key-force-interaction'
+        )
+    
+    def _collect_all_velocities(self, analysis_result, is_multi_algorithm, algorithm_results):
+        """收集所有播放锤速"""
+        all_velocities = []
+        
+        if is_multi_algorithm and algorithm_results:
+            for alg_result in algorithm_results.values():
+                interaction_data = alg_result.get('interaction_plot_data', {})
+                key_data = interaction_data.get('key_data', {})
+                for data in key_data.values():
+                    velocities = data.get('forces', [])  # 这里的forces实际是播放锤速
+                    all_velocities.extend([v for v in velocities if v > 0])
+        else:
+            interaction_data = analysis_result.get('interaction_plot_data', {})
+            key_data = interaction_data.get('key_data', {})
+            for data in key_data.values():
+                velocities = data.get('forces', [])
+                all_velocities.extend([v for v in velocities if v > 0])
+        
+        return all_velocities
+    
+    def _generate_log_ticks(self, velocities):
+        """生成对数刻度的刻度点"""
+        if not velocities:
+            return [], []
+        
+        min_vel = min(velocities)
+        max_vel = max(velocities)
+        
+        if min_vel <= 0 or max_vel <= 0:
+            return [], []
+        
+        min_log = math.floor(math.log10(min_vel))
+        max_log = math.ceil(math.log10(max_vel))
+        
+        # 刻度位置是log10整数值
+        tick_positions = list(range(min_log, max_log + 1))
+        # 刻度标签显示实际锤速值
+        tick_texts = [f"{10**i:.0f}" for i in tick_positions]
+        
+        return tick_positions, tick_texts
+    
     def _create_algorithm_control_legends(self, fig, algorithm_names, algorithm_colors):
         """创建算法控制图注（独立的图例组）"""
         
         for alg_idx, algorithm_name in enumerate(algorithm_names):
             algorithm_color = algorithm_colors[alg_idx % len(algorithm_colors)]
             
+            # 控制图注：空数据，只在图例中显示
             fig.add_trace(go.Scatter(
-                x=[None],  # 使用None，不显示在图表上
-                y=[None],
+                x=[],  # 空数组，不绘制任何点
+                y=[],
                 mode='markers',
                 name=algorithm_name,  # 算法名称
                 marker=dict(
-                    size=12,  # 未选中状态的默认大小
+                    size=12,
                     color=algorithm_color,
-                    symbol='circle',  # 算法用圆形
-                    line=dict(width=1, color='rgba(0,0,0,0.3)'),
-                    opacity=0.4  # 默认较透明（未选中状态）
+                    symbol='circle',
+                    opacity=0.6
                 ),
-                legendgroup='algorithm_control',  # 算法控制图例组（独立）
-                visible=True,  # 图例始终可见
+                legendgroup='algorithm_control',
+                visible=True,
                 showlegend=True,
-                hovertemplate=f'<b>{algorithm_name}</b><br>点击选择/取消选择此算法<extra></extra>'
+                hoverinfo='skip'
             ))
     
     def _create_key_control_legends(self, fig, all_key_ids, key_color_hex, key_piece_stats=None):
@@ -745,174 +923,148 @@ class PlotGenerator:
                 key_name = f'按键 {key_id}'
                 hover_text = f'<b>按键 {key_id}</b><br>点击选择/取消选择此按键<extra></extra>'
             
+            # 控制图注：空数据，只在图例中显示
             fig.add_trace(go.Scatter(
-                x=[None],  # 使用None，不显示在图表上
-                y=[None],
+                x=[],  # 空数组，不绘制任何点
+                y=[],
                 mode='markers',
                 name=key_name,
                 marker=dict(
-                    size=14,  # 未选中状态的默认大小
+                    size=14,
                     color=key_color,
-                    symbol='square',  # 按键用方形
-                    line=dict(width=1, color='rgba(0,0,0,0.3)'),
-                    opacity=0.4  # 默认较透明（未选中状态）
+                    symbol='square',
+                    opacity=0.6
                 ),
-                legendgroup='key_control',  # 按键控制图例组（独立）
-                visible=True,  # 图例始终可见
+                legendgroup='key_control',
+                visible=True,
                 showlegend=True,
-                hovertemplate=hover_text,
-                # 在customdata中存储统计信息，用于后续显示
-                customdata=[key_piece_stats.get(key_id, {}) if key_piece_stats else {}]
+                hoverinfo='skip'
             ))
     
-    def _add_data_traces_multi_algorithm(self, fig, all_key_ids, algorithm_internal_names, algorithm_display_names, algorithm_results, algorithm_colors):
-        """
-        为多算法模式添加数据traces
+    def _add_multi_algorithm_data_traces(self, fig, algorithm_results, algo_info, key_stats, algorithm_colors, key_colors):
+        """为多算法模式添加数据散点
         
-        Args:
-            fig: Plotly图表对象
-            all_key_ids: 所有按键ID列表
-            algorithm_internal_names: 算法内部名称列表（用于查找数据）
-            algorithm_display_names: 算法显示名称列表（用于UI显示）
-            algorithm_results: 算法结果字典（key为内部名称）
-            algorithm_colors: 算法颜色列表
+        数据源：已配对的按键数据
+        横轴：log₁₀(播放锤速)
+        纵轴：锤速差值（播放锤速 - 录制锤速）
         """
+        internal_names = algo_info['internal_names']
+        display_names = algo_info['display_names']
+        all_keys = key_stats['all_keys']
         
-        # 为每个算法的每个按键生成数据trace（只显示散点）
-        for key_idx, key_id in enumerate(all_key_ids):
-            for alg_idx, algorithm_internal_name in enumerate(algorithm_internal_names):
-                # 使用内部名称查找数据
-                alg_result = algorithm_results[algorithm_internal_name]
-                interaction_plot_data = alg_result.get('interaction_plot_data', {})
-                key_data = interaction_plot_data.get('key_data', {})
-                
+        # 为每个算法的每个按键创建散点trace
+        for alg_idx, alg_internal_name in enumerate(internal_names):
+            alg_result = algorithm_results[alg_internal_name]
+            alg_display_name = display_names[alg_idx]
+            alg_color = algorithm_colors[alg_idx % len(algorithm_colors)]
+            
+            interaction_data = alg_result.get('interaction_plot_data', {})
+            key_data = interaction_data.get('key_data', {})
+            
+            for key_idx, key_id in enumerate(all_keys):
                 if key_id not in key_data:
-                    continue  # 如果该算法没有这个按键的数据，跳过
+                    continue
                 
-                # 使用显示名称用于UI显示
-                algorithm_display_name = algorithm_display_names[alg_idx]
-                
-                # 使用算法颜色，而不是按键颜色，便于区分不同算法
-                algorithm_color = algorithm_colors[alg_idx % len(algorithm_colors)]
-                
-                data = key_data[key_id]
-                forces = data.get('forces', [])
-                delays = data.get('delays', [])  # 相对延时
-                absolute_delays = data.get('absolute_delays', delays)  # 原始延时
-                mean_delay = data.get('mean_delay', 0)  # 整体平均延时
-                record_indices = data.get('record_indices', [])
-                replay_indices = data.get('replay_indices', [])
-                
-                if forces and delays:
-                    # 过滤掉非正值
-                    valid_data = [(f, d, ad) for f, d, ad in zip(forces, delays, absolute_delays) if f > 0]
-                    if not valid_data:
-                        continue
-                    
-                    forces_clean = [f for f, d, ad in valid_data]
-                    delays_clean = [d for f, d, ad in valid_data]
-                    absolute_delays_clean = [ad for f, d, ad in valid_data]
-                    
-                    # 构建customdata，包含索引信息用于点击事件
-                    # 格式: [key_id, algorithm_display_name, orig_force, abs_delay, rel_delay, log10_force, record_idx, replay_idx]
-                    customdata_list = []
-                    for i, (orig_force, abs_delay, rel_delay) in enumerate(zip(forces_clean, absolute_delays_clean, delays_clean)):
-                        record_idx = record_indices[i] if i < len(record_indices) else None
-                        replay_idx = replay_indices[i] if i < len(replay_indices) else None
-                        log10_force = math.log10(orig_force) if orig_force > 0 else 0
-                        customdata_list.append([
-                            key_id, algorithm_display_name, orig_force, abs_delay, rel_delay,
-                            log10_force, record_idx, replay_idx
-                        ])
-                    
-                    fig.add_trace(go.Scatter(
-                        x=forces_clean,  # 使用原始力度值，Plotly的log轴会自动处理
-                        y=delays_clean,
-                        mode='markers',
-                        name=None,
-                        marker=dict(
-                            size=8,
-                            color=algorithm_color,
-                            opacity=0.9,
-                            line=dict(width=1, color='white')
-                        ),
-                        # legendgroup使用显示名称，用于匹配算法控制图注
-                        legendgroup=f'data_{algorithm_display_name}_key_{key_id}',
-                        showlegend=False,
-                        # customdata中存储显示名称、原始力度和索引，用于匹配、显示和点击事件
-                        customdata=customdata_list,
-                        visible=False,  # 默认不显示，需要选择后才显示
-                        hovertemplate=f'<b>{algorithm_display_name}</b><br>' +
-                                     f'<b>按键 {key_id}</b><br>' +
-                                     '<b>力度</b>: %{x:.0f} (log₁₀: %{customdata[5]:.2f})<br>' +
-                                     '<b>相对延时</b>: %{y:.2f}ms<br>' +
-                                     '<b>原始延时</b>: %{customdata[3]:.2f}ms<br>' +
-                                     f'<i>平均延时: {mean_delay:.2f}ms</i><extra></extra>'
-                    ))
+                # 提取数据并添加trace
+                self._add_single_trace(
+                    fig, key_data[key_id], key_id,
+                    alg_display_name, alg_color,
+                    key_idx, key_colors
+                )
     
-    def _add_data_traces_single_algorithm(self, fig, key_data, color_hex):
-        """为单算法模式添加数据traces"""
-        
+    def _add_single_algorithm_data_traces(self, fig, key_data, key_colors):
+        """为单算法模式添加数据散点"""
         key_ids = sorted(key_data.keys())
         
         for idx, key_id in enumerate(key_ids):
             data = key_data[key_id]
-            color = color_hex[idx % len(color_hex)]
+            color = key_colors[idx % len(key_colors)]
             
-            forces = data.get('forces', [])
-            delays = data.get('delays', [])  # 相对延时
-            absolute_delays = data.get('absolute_delays', delays)  # 原始延时
-            mean_delay = data.get('mean_delay', 0)  # 整体平均延时
-            record_indices = data.get('record_indices', [])
-            replay_indices = data.get('replay_indices', [])
-            
-            if forces and delays:
-                # 过滤掉非正值
-                valid_data = [(f, d, ad) for f, d, ad in zip(forces, delays, absolute_delays) if f > 0]
-                if not valid_data:
-                    continue
-                
-                forces_clean = [f for f, d, ad in valid_data]
-                delays_clean = [d for f, d, ad in valid_data]
-                absolute_delays_clean = [ad for f, d, ad in valid_data]
-                
-                # 构建customdata，包含索引信息用于点击事件
-                # 格式: [key_id, orig_force, abs_delay, rel_delay, log10_force, record_idx, replay_idx]
-                customdata_list = []
-                for i, (orig_force, abs_delay, rel_delay) in enumerate(zip(forces_clean, absolute_delays_clean, delays_clean)):
-                    record_idx = record_indices[i] if i < len(record_indices) else None
-                    replay_idx = replay_indices[i] if i < len(replay_indices) else None
-                    log10_force = math.log10(orig_force) if orig_force > 0 else 0
-                    customdata_list.append([
-                        key_id, orig_force, abs_delay, rel_delay,
-                        log10_force, record_idx, replay_idx
-                    ])
-                
-                fig.add_trace(go.Scatter(
-                    x=forces_clean,  # 使用原始力度值，Plotly的log轴会自动处理
-                    y=delays_clean,
-                    mode='markers',
-                    name=f'按键 {key_id}',
-                    marker=dict(
-                        size=10,
-                        color=color,
-                        opacity=0.9,
-                        line=dict(width=1, color='white')
-                    ),
-                    legendgroup=f'key_{key_id}',
-                    showlegend=True,
-                    customdata=customdata_list,
-                    visible='legendonly',  # 默认隐藏，点击图例可显示
-                    hovertemplate=f'<b>按键 {key_id}</b><br>' +
-                                 '<b>力度</b>: %{x:.0f} (log₁₀: %{customdata[4]:.2f})<br>' +
-                                 '<b>相对延时</b>: %{y:.2f}ms<br>' +
-                                 '<b>原始延时</b>: %{customdata[2]:.2f}ms<br>' +
-                                 f'<i>平均延时: {mean_delay:.2f}ms</i><extra></extra>'
-                ))
+            # 使用统一的trace添加函数
+            self._add_single_trace(
+                fig, data, key_id,
+                algorithm_name=None,  # 单算法模式无需算法名
+                algorithm_color=None,
+                key_idx=idx,
+                key_colors=key_colors
+            )
+    
+    def _add_single_trace(self, fig, data, key_id, algorithm_name, algorithm_color, key_idx, key_colors):
+        """添加单个散点trace
+        
+        Args:
+            fig: Plotly图表对象
+            data: 按键数据字典（forces=播放锤速, delays=锤速差值）
+            key_id: 按键ID
+            algorithm_name: 算法名称（多算法模式）
+            algorithm_color: 算法颜色（多算法模式）
+            key_idx: 按键索引
+            key_colors: 按键颜色列表
+        """
+        # 提取数据
+        replay_velocities = data.get('forces', [])  # 播放锤速
+        relative_delays = data.get('delays', [])  # 相对延时
+        absolute_delays = data.get('absolute_delays', relative_delays)  # 原始延时
+        mean_delay = data.get('mean_delay', 0)  # 整体平均延时
+        
+        if not replay_velocities or not relative_delays:
+            return
+        
+        # 过滤有效数据
+        valid_data = [(rv, rd, ad) for rv, rd, ad in zip(replay_velocities, relative_delays, absolute_delays) if rv > 0]
+        if not valid_data:
+            return
+        
+        replay_vels, rel_delays, abs_delays = zip(*valid_data)
+        
+        # 计算log10锤速
+        log10_vels = [math.log10(v) for v in replay_vels]
+        
+        # 构建customdata: [key_id, replay_velocity, relative_delay, absolute_delay, algorithm_name, mean_delay]
+        customdata = [[key_id, rv, rd, ad, algorithm_name if algorithm_name else '', mean_delay] 
+                     for rv, rd, ad in zip(replay_vels, rel_delays, abs_delays)]
+        
+        # 确定颜色和图例
+        if algorithm_name:  # 多算法模式
+            color = algorithm_color
+            showlegend = False
+            legendgroup = f'data_{algorithm_name}_key_{key_id}'
+            hover_prefix = f'<b>{algorithm_name}</b><br>'
+        else:  # 单算法模式
+            color = key_colors[key_idx % len(key_colors)]
+            showlegend = True
+            legendgroup = f'key_{key_id}'
+            hover_prefix = ''
+        
+        fig.add_trace(go.Scatter(
+            x=log10_vels,
+            y=rel_delays,
+            mode='markers',
+            name=f'按键 {key_id}' if not algorithm_name else None,
+            marker=dict(
+                size=8 if algorithm_name else 10,
+                color=color,
+                opacity=0.8,
+                line=dict(width=1, color='white')
+            ),
+            legendgroup=legendgroup,
+            showlegend=showlegend,
+            customdata=customdata,
+            visible=True if algorithm_name else 'legendonly',
+            hovertemplate=hover_prefix +
+                         f'<b>按键 {key_id}</b><br>' +
+                         '<b>log₁₀(播放锤速)</b>: %{x:.2f}<br>' +
+                         '<b>播放锤速</b>: %{customdata[1]:.0f}<br>' +
+                         '<b>相对延时</b>: %{y:.2f}ms<br>' +
+                         '<b>原始延时</b>: %{customdata[3]:.2f}ms<br>' +
+                         f'<i>平均延时: {mean_delay:.2f}ms</i><extra></extra>'
+        ))
     
     def generate_key_force_interaction_plot(self, analysis_result: Dict[str, Any]) -> Any:
         """
         生成按键-力度交互效应图
+        横轴：log₁₀(播放锤速)
+        纵轴：锤速差值（播放锤速 - 录制锤速）
         
         Args:
             analysis_result: analyze_key_force_interaction()的返回结果
@@ -933,171 +1085,20 @@ class PlotGenerator:
             
             fig = go.Figure()
             
-            # 为算法分配颜色
-            algorithm_colors = [
-                '#1f77b4',  # 蓝色
-                '#ff7f0e',  # 橙色
-                '#2ca02c',  # 绿色
-                '#d62728',  # 红色
-                '#9467bd',  # 紫色
-                '#8c564b',  # 棕色
-                '#e377c2',  # 粉色
-                '#7f7f7f'   # 灰色
-            ]
+            # 定义算法颜色
+            algorithm_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', 
+                              '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
             
             if is_multi_algorithm and algorithm_results:
                 # 多算法模式
-                # algorithm_results的key是内部的algorithm_name（唯一标识）
-                # 但我们需要提取display_name用于显示
-                algorithm_internal_names = sorted(algorithm_results.keys())
-                
-                # 构建显示名称列表（如果display_name相同，则添加文件名后缀以区分）
-                algorithm_display_names = []
-                display_name_count = {}  # 统计每个display_name出现的次数
-                
-                for alg_name in algorithm_internal_names:
-                    alg_result = algorithm_results[alg_name]
-                    display_name = alg_result.get('display_name', alg_name)
-                    
-                    # 统计display_name出现次数
-                    if display_name not in display_name_count:
-                        display_name_count[display_name] = 0
-                    display_name_count[display_name] += 1
-                    
-                    # 如果display_name重复，添加文件名后缀以区分
-                    if display_name_count[display_name] > 1:
-                        # 从algorithm_name中提取文件名（去掉算法名前缀）
-                        # algorithm_name格式：算法名_文件名（无扩展名）
-                        parts = alg_name.rsplit('_', 1)
-                        if len(parts) == 2:
-                            filename_part = parts[1]
-                            display_name = f"{display_name} ({filename_part})"
-                    
-                    algorithm_display_names.append(display_name)
-                
-                # 收集所有按键ID，并统计每个按键在每个曲子中的出现次数
-                all_key_ids = set()
-                key_piece_stats = {}  # 统计每个按键在每个曲子中的出现次数: {key_id: {piece_name: count}}
-                for alg_idx, algorithm_internal_name in enumerate(algorithm_internal_names):
-                    alg_result = algorithm_results[algorithm_internal_name]
-                    algorithm_display_name = algorithm_display_names[alg_idx]
-                    interaction_plot_data = alg_result.get('interaction_plot_data', {})
-                    key_data = interaction_plot_data.get('key_data', {})
-                    for key_id, data in key_data.items():
-                        all_key_ids.add(key_id)
-                        if key_id not in key_piece_stats:
-                            key_piece_stats[key_id] = {}
-                        # 获取该按键在这个曲子中的出现次数
-                        sample_count = data.get('sample_count', len(data.get('forces', [])))
-                        key_piece_stats[key_id][algorithm_display_name] = sample_count
-                
-                all_key_ids = sorted(all_key_ids)
-                n_keys = len(all_key_ids)
-                
-                # 为按键分配颜色
-                if n_keys <= 20:
-                    key_colors = cm.get_cmap('tab20')(np.linspace(0, 1, n_keys))
-                else:
-                    key_colors = cm.get_cmap('viridis')(np.linspace(0, 1, n_keys))
-                key_color_hex = [mcolors.rgb2hex(c[:3]) for c in key_colors]
-                
-                # 创建控制图注（使用显示名称）
-                self._create_algorithm_control_legends(fig, algorithm_display_names, algorithm_colors)
-                self._create_key_control_legends(fig, all_key_ids, key_color_hex, key_piece_stats)
-                
-                # 添加数据traces
-                # 传入内部名称列表和显示名称列表的映射
-                self._add_data_traces_multi_algorithm(
-                    fig, all_key_ids, 
-                    algorithm_internal_names, algorithm_display_names,
-                    algorithm_results, algorithm_colors
-                )
+                self._handle_multi_algorithm_plot(fig, algorithm_results, algorithm_colors)
             else:
                 # 单算法模式
-                interaction_plot_data = analysis_result.get('interaction_plot_data', {})
-                key_data = interaction_plot_data.get('key_data', {})
-                
-                if not key_data:
-                    return self._create_empty_plot("没有交互效应图数据")
-                
-                n_keys = len(key_data)
-                
-                # 为按键分配颜色
-                if n_keys <= 20:
-                    colors = cm.get_cmap('tab20')(np.linspace(0, 1, n_keys))
-                else:
-                    colors = cm.get_cmap('viridis')(np.linspace(0, 1, n_keys))
-                
-                color_hex = [mcolors.rgb2hex(c[:3]) for c in colors]
-                
-                # 添加数据traces
-                self._add_data_traces_single_algorithm(fig, key_data, color_hex)
+                self._handle_single_algorithm_plot(fig, analysis_result)
             
-            # 生成对数刻度的刻度（显示原始力度值，但是刻度标签是对数刻度）
-            # 收集所有力度数据用于生成刻度
-            all_forces = []
-            if is_multi_algorithm and algorithm_results:
-                for alg_result in algorithm_results.values():
-                    interaction_plot_data = alg_result.get('interaction_plot_data', {})
-                    key_data = interaction_plot_data.get('key_data', {})
-                    for data in key_data.values():
-                        forces = data.get('forces', [])
-                        all_forces.extend([f for f in forces if f > 0])
-            else:
-                interaction_plot_data = analysis_result.get('interaction_plot_data', {})
-                key_data = interaction_plot_data.get('key_data', {})
-                for data in key_data.values():
-                    forces = data.get('forces', [])
-                    all_forces.extend([f for f in forces if f > 0])
-
-            # 生成合理的刻度点（10的倍数）
-            tick_vals = []
-            tick_texts = []
-            tick_positions = []
-            if all_forces:
-                min_force = min(all_forces)
-                max_force = max(all_forces)
-                min_log = math.floor(math.log10(min_force))
-                max_log = math.ceil(math.log10(max_force))
-                tick_vals = [10**i for i in range(min_log, max_log + 1) if 10**i >= min_force and 10**i <= max_force]
-                tick_texts = [f"{int(v)}" for v in tick_vals]
-                tick_positions = [math.log10(v) for v in tick_vals]
+            # 配置图表布局
+            self._configure_plot_layout(fig, analysis_result, is_multi_algorithm, algorithm_results)
             
-            # 删除title，因为UI区域已有标题
-            fig.update_layout(
-                xaxis_title='锤速 (log₁₀)',
-                yaxis_title='相对延时 (ms)',  # 使用相对延时
-                xaxis=dict(
-                    type='log',  # 使用对数轴
-                    showgrid=True,
-                    gridcolor='lightgray',
-                    gridwidth=1,
-                    tickmode='array' if tick_positions else 'auto',
-                    tickvals=tick_positions if tick_positions else None,
-                    ticktext=tick_texts if tick_texts else None
-                ),
-                showlegend=True,
-                template='plotly_white',
-                height=600,
-                hovermode='closest',
-                legend=dict(
-                    orientation='v',
-                    yanchor='top',
-                    y=1,
-                    xanchor='left',
-                    x=1.02,
-                    groupclick='toggleitem',  # 点击按键图例时，切换该按键的所有算法数据
-                    itemclick='toggle',  # 点击图例项时切换显示/隐藏
-                    # 注意：Plotly的legend文字颜色是全局的，无法单独为每个图例项设置不同的透明度
-                    # 我们通过marker的opacity和size来区分选中/未选中状态
-                    # 文字保持不透明，通过marker的变化来指示选中状态
-                    font=dict(
-                        size=11,
-                        color='rgba(0, 0, 0, 1.0)'  # 图例文字颜色（黑色，不透明）
-                    )
-                ),
-                uirevision='key-force-interaction'
-            )
             return fig
             
         except Exception as e:
