@@ -7,6 +7,7 @@
 负责生成支持多算法对比的图表，使用面向对象设计。
 """
 
+import traceback
 from typing import List, Optional, Any, Dict, Tuple
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -36,6 +37,19 @@ class MultiAlgorithmPlotGenerator:
             data_filter: 数据过滤器实例（可选）
         """
         self.data_filter = data_filter
+        
+        # 定义标准颜色列表，用于区分不同算法
+        self.COLORS = [
+            '#1f77b4',  # 蓝色
+            '#ff7f0e',  # 橙色
+            '#2ca02c',  # 绿色
+            '#d62728',  # 红色
+            '#9467bd',  # 紫色
+            '#8c564b',  # 棕色
+            '#e377c2',  # 粉色
+            '#7f7f7f'   # 灰色
+        ]
+        
         logger.info("✅ MultiAlgorithmPlotGenerator初始化完成")
     
     def generate_multi_algorithm_waterfall_plot(
@@ -312,7 +326,7 @@ class MultiAlgorithmPlotGenerator:
             
         except Exception as e:
             logger.error(f"❌ 生成多算法瀑布图失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return self._create_empty_plot(f"生成失败: {str(e)}")
     
@@ -597,13 +611,302 @@ class MultiAlgorithmPlotGenerator:
             
         except Exception as e:
             logger.error(f"❌ 生成多算法偏移对齐分析图失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             empty_fig = self._create_empty_plot(f"生成失败: {str(e)}")
             return [
                 {'title': '生成失败', 'figure': empty_fig}
             ]
     
+    def export_multi_algorithm_delay_histogram_data_to_csv(self, algorithms: List[AlgorithmDataset], filename: str = None) -> Optional[List[str]]:
+        """
+        将多算法延时分布直方图的数据导出为CSV文件，按文件名分组分别存储
+
+        Args:
+            algorithms: 激活的算法数据集列表
+            filename: 自定义文件名前缀，如果为None则自动生成
+
+        Returns:
+            List[str]: CSV文件路径列表，如果导出失败则返回None
+        """
+        try:
+            import csv
+            import os
+            from datetime import datetime
+
+            if not algorithms:
+                logger.warning("⚠️ 没有激活的算法，无法导出")
+                return None
+
+            # 过滤出就绪的算法
+            ready_algorithms = [alg for alg in algorithms if alg.is_ready()]
+            if not ready_algorithms:
+                logger.warning("⚠️ 没有就绪的算法，无法导出")
+                return None
+
+            # 按文件名分组收集数据
+            csv_data_by_filename = {}
+
+            for algorithm in ready_algorithms:
+                algorithm_name = algorithm.metadata.algorithm_name
+                display_name = algorithm.metadata.display_name
+                filename_display = algorithm.metadata.filename
+
+                if not algorithm.analyzer or not algorithm.analyzer.note_matcher:
+                    logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有分析器，跳过")
+                    continue
+
+                try:
+                    # 从analyzer获取偏移数据
+                    offset_data = algorithm.analyzer.get_offset_alignment_data()
+
+                    if not offset_data:
+                        logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有匹配数据，跳过")
+                        continue
+
+                    # 获取matched_pairs以便查找按键ID
+                    matched_pairs = algorithm.analyzer.note_matcher.get_matched_pairs() if hasattr(algorithm.analyzer, 'note_matcher') and algorithm.analyzer.note_matcher else []
+                    record_note_dict = {r_idx: r_note for r_idx, _, r_note, _ in matched_pairs} if matched_pairs else {}
+                    replay_note_dict = {p_idx: p_note for _, p_idx, _, p_note in matched_pairs} if matched_pairs else {}
+
+                    # 步骤1：提取原始延时数据（带符号的keyon_offset）
+                    absolute_delays_ms = [item.get('keyon_offset', 0.0) / 10.0 for item in offset_data]
+
+                    if not absolute_delays_ms:
+                        logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有有效延时数据，跳过")
+                        continue
+
+                    # 步骤2：计算该算法的平均延时（用于计算相对延时）
+                    n = len(absolute_delays_ms)
+                    mean_delay_ms = sum(absolute_delays_ms) / n
+
+                    # 初始化该文件名的列表（如果不存在）
+                    if filename_display not in csv_data_by_filename:
+                        csv_data_by_filename[filename_display] = []
+
+                    # 为每个数据点创建记录
+                    for i, item in enumerate(offset_data):
+                        absolute_delay = absolute_delays_ms[i]
+                        relative_delay = absolute_delay - mean_delay_ms
+
+                        # 获取录制和播放按键ID
+                        record_index = item.get('record_index', -1)
+                        replay_index = item.get('replay_index', -1)
+                        record_key_id = record_note_dict.get(record_index, None)
+                        replay_key_id = replay_note_dict.get(replay_index, None)
+
+                        record_key_id_value = record_key_id.id if record_key_id and hasattr(record_key_id, 'id') else item.get('key_id', 'N/A')
+                        replay_key_id_value = replay_key_id.id if replay_key_id and hasattr(replay_key_id, 'id') else item.get('key_id', 'N/A')
+
+                        csv_data_by_filename[filename_display].append({
+                            '算法名称': algorithm_name,
+                            '显示名称': display_name,
+                            '录制索引': record_index,
+                            '回放索引': replay_index,
+                            '录制按键ID': record_key_id_value,
+                            '回放按键ID': replay_key_id_value,
+                            '录制按键时间(ms)': item.get('record_keyon', 0) / 10.0,
+                            '回放按键时间(ms)': item.get('replay_keyon', 0) / 10.0,
+                            '绝对延时(ms)': absolute_delay,
+                            '算法平均延时(ms)': mean_delay_ms,
+                            '相对延时(ms)': relative_delay
+                        })
+
+                except Exception as e:
+                    logger.warning(f"⚠️ 处理算法 '{algorithm_name}' 时出错: {e}")
+                    continue
+
+            if not csv_data_by_filename:
+                logger.warning("⚠️ 没有有效数据，无法导出")
+                return None
+
+            # 生成文件名前缀
+            if filename is None:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename_prefix = f"delay_histogram_data_{timestamp}"
+            else:
+                # 如果提供了自定义文件名，去掉扩展名作为前缀
+                filename_prefix = filename.replace('.csv', '')
+
+            # 创建输出目录
+            output_dir = "exports"
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+
+            # 写入多个CSV文件
+            fieldnames = ['算法名称', '显示名称', '录制索引', '回放索引',
+                         '录制按键ID', '回放按键ID',
+                         '录制按键时间(ms)', '回放按键时间(ms)',
+                         '绝对延时(ms)', '算法平均延时(ms)', '相对延时(ms)']
+
+            exported_files = []
+            total_records = 0
+
+            for filename_key, csv_data in csv_data_by_filename.items():
+                # 为每个文件名生成单独的CSV文件
+                safe_filename = "".join(c for c in filename_key if c.isalnum() or c in (' ', '-', '_')).rstrip()
+                csv_filename = f"{filename_prefix}_{safe_filename}.csv"
+                filepath = os.path.join(output_dir, csv_filename)
+
+                with open(filepath, 'w', newline='', encoding='utf-8') as csvfile:
+                    writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                    writer.writeheader()
+                    writer.writerows(csv_data)
+
+                exported_files.append(filepath)
+                total_records += len(csv_data)
+                logger.info(f"✅ 文件 '{filename_key}' 的延时分布数据已导出到: {filepath}")
+                logger.info(f"📊 导出 {len(csv_data)} 条记录")
+
+            logger.info(f"✅ 共导出 {len(exported_files)} 个CSV文件，总计 {total_records} 条记录")
+            return exported_files
+
+        except Exception as e:
+            logger.error(f"❌ 导出多算法延时分布数据失败: {e}")
+            return None
+
+    def export_multi_algorithm_pre_match_data_to_csv(self, algorithms: List[AlgorithmDataset], filename: str = None) -> Optional[List[str]]:
+        """
+        导出多算法匹配前的数据到CSV文件（测试功能）
+
+        在按键匹配之前进行编号，为每个算法的录制和播放音符分别分配索引并导出CSV。
+
+        Args:
+            algorithms: 激活的算法数据集列表
+            filename: 自定义文件名前缀，如果为None则自动生成
+
+        Returns:
+            List[str]: CSV文件路径列表，如果导出失败则返回None
+        """
+        try:
+            import csv
+            import os
+            from datetime import datetime
+
+            if not algorithms:
+                logger.warning("⚠️ 没有激活的算法，无法导出")
+                return None
+
+            # 过滤出就绪的算法
+            ready_algorithms = [alg for alg in algorithms if alg.is_ready()]
+            if not ready_algorithms:
+                logger.warning("⚠️ 没有就绪的算法，无法导出")
+                return None
+
+            # 生成文件名前缀
+            if filename is None:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename_prefix = f"pre_match_data_{timestamp}"
+            else:
+                # 如果提供了自定义文件名，去掉扩展名作为前缀
+                filename_prefix = filename.replace('.csv', '')
+
+            # 创建输出目录
+            output_dir = "exports"
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+
+            # 写入多个CSV文件
+            fieldnames = ['算法名称', '显示名称', '录制索引', '回放索引',
+                         '录制按键ID', '回放按键ID',
+                         '录制按键时间(ms)', '回放按键时间(ms)']
+
+            exported_files = []
+            total_records = 0
+
+            for algorithm in ready_algorithms:
+                algorithm_name = algorithm.metadata.algorithm_name
+                display_name = algorithm.metadata.display_name
+                filename_display = algorithm.metadata.filename
+
+                # 获取匹配前的数据（空数据过滤之后，按键匹配之前）
+                initial_valid_record = algorithm.analyzer.get_initial_valid_record_data() if hasattr(algorithm.analyzer, 'get_initial_valid_record_data') else None
+                initial_valid_replay = algorithm.analyzer.get_initial_valid_replay_data() if hasattr(algorithm.analyzer, 'get_initial_valid_replay_data') else None
+
+                if not initial_valid_record or not initial_valid_replay:
+                    logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有匹配前的数据，跳过")
+                    continue
+
+                # 为每个文件名生成单独的CSV文件
+                safe_filename = "".join(c for c in filename_display if c.isalnum() or c in (' ', '-', '_')).rstrip()
+                csv_filename = f"{filename_prefix}_{safe_filename}.csv"
+                filepath = os.path.join(output_dir, csv_filename)
+
+                csv_data = []
+
+                # 获取录制和播放数据的数量
+                record_count = len(initial_valid_record)
+                replay_count = len(initial_valid_replay)
+
+                # 使用较大的数量作为行数
+                max_count = max(record_count, replay_count)
+
+                # 并排编号录制和播放索引
+                for i in range(max_count):
+                    # 录制数据
+                    if i < record_count:
+                        record_note = initial_valid_record[i]
+                        record_index = i  # 录制索引
+                        record_key_id = getattr(record_note, 'id', 'N/A')
+
+                        # 获取录制音符的时间信息
+                        record_keyon_time = 0
+                        if hasattr(record_note, 'after_touch') and record_note.after_touch is not None and not record_note.after_touch.empty:
+                            record_keyon_time = record_note.after_touch.index[0] + record_note.offset
+                        elif hasattr(record_note, 'hammers') and record_note.hammers is not None and not record_note.hammers.empty:
+                            record_keyon_time = record_note.hammers.index[0] + record_note.offset
+                    else:
+                        record_index = -1  # 没有录制数据
+                        record_key_id = 'N/A'
+                        record_keyon_time = 0
+
+                    # 播放数据
+                    if i < replay_count:
+                        replay_note = initial_valid_replay[i]
+                        replay_index = i  # 播放索引
+                        replay_key_id = getattr(replay_note, 'id', 'N/A')
+
+                        # 获取播放音符的时间信息
+                        replay_keyon_time = 0
+                        if hasattr(replay_note, 'after_touch') and replay_note.after_touch is not None and not replay_note.after_touch.empty:
+                            replay_keyon_time = replay_note.after_touch.index[0] + replay_note.offset
+                        elif hasattr(replay_note, 'hammers') and replay_note.hammers is not None and not replay_note.hammers.empty:
+                            replay_keyon_time = replay_note.hammers.index[0] + replay_note.offset
+                    else:
+                        replay_index = -1  # 没有播放数据
+                        replay_key_id = 'N/A'
+                        replay_keyon_time = 0
+
+                    csv_data.append({
+                        '算法名称': algorithm_name,
+                        '显示名称': display_name,
+                        '录制索引': record_index,
+                        '回放索引': replay_index,
+                        '录制按键ID': record_key_id,
+                        '回放按键ID': replay_key_id,
+                        '录制按键时间(ms)': record_keyon_time / 10.0 if record_keyon_time else 0,
+                        '回放按键时间(ms)': replay_keyon_time / 10.0 if replay_keyon_time else 0
+                    })
+
+                # 写入CSV文件
+                with open(filepath, 'w', newline='', encoding='utf-8') as csvfile:
+                    writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                    writer.writeheader()
+                    writer.writerows(csv_data)
+
+                exported_files.append(filepath)
+                total_records += len(csv_data)
+                logger.info(f"✅ 算法 '{algorithm_name}' 的匹配前数据已导出到: {filepath}")
+                logger.info(f"📊 录制音符: {len(initial_valid_record)} 个, 播放音符: {len(initial_valid_replay)} 个")
+                logger.info(f"📊 导出记录数: {len(csv_data)} 条")
+
+            logger.info(f"✅ 共导出 {len(exported_files)} 个CSV文件，总计 {total_records} 条记录")
+            return exported_files
+
+        except Exception as e:
+            logger.error(f"❌ 导出多算法匹配前数据失败: {e}")
+            return None
+
     def generate_multi_algorithm_delay_histogram_plot(
         self,
         algorithms: List[AlgorithmDataset]
@@ -654,12 +957,17 @@ class MultiAlgorithmPlotGenerator:
             
             # 收集所有算法的数据
             all_delays = []  # 用于确定全局范围
-            
+
             for alg_idx, algorithm in enumerate(ready_algorithms):
                 algorithm_name = algorithm.metadata.algorithm_name
-                
+                display_name = algorithm.metadata.display_name
+                filename = algorithm.metadata.filename
+
+                # 创建更具描述性的图注名称：算法名 (文件名)
+                descriptive_name = f"{display_name} ({filename})"
+
                 if not algorithm.analyzer or not algorithm.analyzer.note_matcher:
-                    logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有分析器或匹配器，跳过")
+                    logger.warning(f"⚠️ 算法 '{descriptive_name}' 没有分析器或匹配器，跳过")
                     continue
                 
                 try:
@@ -704,12 +1012,12 @@ class MultiAlgorithmPlotGenerator:
                     fig.add_trace(go.Histogram(
                         x=delays_ms,
                         histnorm='probability density',
-                        name=f'{algorithm_name} - 延时分布',
+                        name=f'{descriptive_name} - 延时分布',
                         marker_color=color,
                         opacity=0.85,  # 增加不透明度，使颜色更明显
                         marker_line_color=color,  # 添加边框颜色，使用相同颜色但更深的边框
                         marker_line_width=0.5,
-                        legendgroup=algorithm_name,
+                        legendgroup=descriptive_name,
                         showlegend=True
                     ))
                     
@@ -733,9 +1041,9 @@ class MultiAlgorithmPlotGenerator:
                             x=xs,
                             y=ys,
                             mode='lines',
-                            name=f'{algorithm_name} - 正态拟合 (μ={mean_val:.2f}ms, σ={std_val:.2f}ms)',
+                            name=f'{descriptive_name} - 正态拟合 (μ={mean_val:.2f}ms, σ={std_val:.2f}ms)',
                             line=dict(color=color, width=2),
-                            legendgroup=algorithm_name,
+                            legendgroup=descriptive_name,
                             showlegend=True
                         ))
                     
@@ -775,20 +1083,24 @@ class MultiAlgorithmPlotGenerator:
             
         except Exception as e:
             logger.error(f"❌ 生成多算法延时分布直方图失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return self._create_empty_plot(f"生成失败: {str(e)}")
     
     def generate_multi_algorithm_key_delay_scatter_plot(
         self,
-        algorithms: List[AlgorithmDataset]
+        algorithms: List[AlgorithmDataset],
+        only_common_keys: bool = False,
+        selected_algorithm_names: List[str] = None
     ) -> Any:
         """
         生成多算法按键与延时散点图（叠加显示，不同颜色，图例控制）
-        
+
         Args:
             algorithms: 激活的算法数据集列表
-            
+            only_common_keys: 是否只显示公共按键
+            selected_algorithm_names: 指定参与对比的算法名称列表，如果为None则使用所有激活算法
+
         Returns:
             go.Figure: Plotly图表对象
         """
@@ -797,17 +1109,43 @@ class MultiAlgorithmPlotGenerator:
             return self._create_empty_plot("没有激活的算法")
         
         try:
+            # 首先根据 selected_algorithm_names 筛选算法（如果指定了的话）
+            if selected_algorithm_names:
+                filtered_algorithms = [alg for alg in algorithms if alg.metadata.algorithm_name in selected_algorithm_names]
+                logger.info(f"🎯 根据用户选择筛选算法: {selected_algorithm_names} -> 找到 {len(filtered_algorithms)} 个匹配算法")
+            else:
+                filtered_algorithms = algorithms
+                logger.info("🎯 未指定算法筛选，使用所有传入算法")
+
             # 过滤出激活且就绪的算法（确保只显示用户选择的算法）
             # 记录传入的算法状态，用于调试
-            for alg in algorithms:
+            for alg in filtered_algorithms:
                 logger.debug(f"🔍 算法 '{alg.metadata.algorithm_name}': is_active={alg.is_active}, is_ready={alg.is_ready()}")
-            
-            ready_algorithms = [alg for alg in algorithms if alg.is_active and alg.is_ready()]
+
+            ready_algorithms = [alg for alg in filtered_algorithms if alg.is_active and alg.is_ready()]
             if not ready_algorithms:
                 logger.warning("⚠️ 没有激活且就绪的算法，无法生成多算法按键与延时散点图")
                 return self._create_empty_plot("没有激活的算法")
             
             logger.info(f"📊 开始生成多算法按键与延时散点图，共 {len(ready_algorithms)} 个激活算法: {[alg.metadata.algorithm_name for alg in ready_algorithms]}")
+            
+            # 如果需要只显示公共按键，先计算交集
+            common_keys = None
+            if only_common_keys:
+                key_sets = []
+                for alg in ready_algorithms:
+                    if alg.analyzer and alg.analyzer.note_matcher:
+                        offset_data = alg.analyzer.note_matcher.get_offset_alignment_data()
+                        if offset_data:
+                            keys = set(item.get('key_id') for item in offset_data if item.get('key_id') is not None)
+                            key_sets.append(keys)
+                
+                if key_sets:
+                    common_keys = set.intersection(*key_sets)
+                    logger.info(f"🔒 只显示公共按键: 共 {len(common_keys)} 个")
+                else:
+                    common_keys = set()
+                    logger.warning("⚠️ 没有找到任何公共按键")
             
             # 为每个算法分配颜色
             colors = [
@@ -830,16 +1168,21 @@ class MultiAlgorithmPlotGenerator:
             
             for alg_idx, algorithm in enumerate(ready_algorithms):
                 algorithm_name = algorithm.metadata.algorithm_name
-                
+                display_name = algorithm.metadata.display_name
+                filename = algorithm.metadata.filename
+
+                # 创建更具描述性的图注名称：算法名 (文件名)
+                descriptive_name = f"{display_name} ({filename})"
+
                 if not algorithm.analyzer or not algorithm.analyzer.note_matcher:
-                    logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有分析器或匹配器，跳过")
+                    logger.warning(f"⚠️ 算法 '{descriptive_name}' 没有分析器或匹配器，跳过")
                     continue
-                
+
                 try:
                     offset_data = algorithm.analyzer.note_matcher.get_offset_alignment_data()
-                    
+
                     if not offset_data:
-                        logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有匹配数据，跳过")
+                        logger.warning(f"⚠️ 算法 '{descriptive_name}' 没有匹配数据，跳过")
                         continue
                     
                     # 提取按键ID和延时数据（带符号值）
@@ -855,6 +1198,11 @@ class MultiAlgorithmPlotGenerator:
                         
                         if key_id is None or key_id == 'N/A':
                             continue
+                            
+                        # 过滤非公共按键
+                        if only_common_keys and common_keys is not None:
+                            if key_id not in common_keys:
+                                continue
                         
                         try:
                             key_id_int = int(key_id)
@@ -863,14 +1211,14 @@ class MultiAlgorithmPlotGenerator:
                             key_ids.append(key_id_int)
                             delays_ms.append(delay_ms)
                             # 添加customdata：包含record_index、replay_index、算法名称，用于点击时查找匹配对
-                            customdata_list.append([record_index, replay_index, key_id_int, delay_ms, algorithm_name])
+                            customdata_list.append([record_index, replay_index, key_id_int, delay_ms, descriptive_name])
                         except (ValueError, TypeError):
                             continue
                     
                     if not key_ids:
-                        logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有有效的散点图数据，跳过")
+                        logger.warning(f"⚠️ 算法 '{descriptive_name}' 没有有效的散点图数据，跳过")
                         continue
-                    
+
                     color = colors[alg_idx % len(colors)]
                     
                     # 直接使用数据概览页面的数据，不重新计算
@@ -882,46 +1230,65 @@ class MultiAlgorithmPlotGenerator:
                     mu = me_0_1ms / 10.0  # 总体均值（ms，带符号）
                     sigma = std_0_1ms / 10.0  # 总体标准差（ms，带符号）
                     
-                    # 计算该算法的阈值
-                    upper_threshold = mu + 3 * sigma  # 上阈值：μ + 3σ
-                    lower_threshold = mu - 3 * sigma  # 下阈值：μ - 3σ
-                    
+                    # 计算相对延时：绝对延时减去平均延时
+                    delays_array = np.array(delays_ms)
+                    relative_delays_array = delays_array - mu  # 相对延时
+                    relative_delays_ms = relative_delays_array.tolist()
+
+                    # 计算相对延时的统计值（用于阈值）
+                    if len(relative_delays_ms) > 1:
+                        relative_mu = np.mean(relative_delays_array)  # 应该接近0
+                        relative_sigma = np.std(relative_delays_array, ddof=1)  # 样本标准差
+                        upper_threshold = relative_mu + 3 * relative_sigma
+                        lower_threshold = relative_mu - 3 * relative_sigma
+                    else:
+                        relative_mu = 0.0
+                        relative_sigma = 0.0
+                        upper_threshold = 0.0
+                        lower_threshold = 0.0
+
                     # 保存算法数据，用于后续添加散点图和阈值线
                     algorithm_data_list.append({
-                        'name': algorithm_name,
+                        'name': descriptive_name,  # 使用描述性名称
+                        'display_name': display_name,
+                        'filename': filename,
+                        'descriptive_name': descriptive_name,
                         'key_ids': key_ids,
-                        'delays_ms': delays_ms,
+                        'delays_ms': delays_ms,  # 绝对延时，用于customdata
+                        'relative_delays_ms': relative_delays_ms,  # 相对延时，用于绘图
                         'customdata': customdata_list,  # 保存customdata
                         'color': color,
                         'mu': mu,
                         'sigma': sigma,
+                        'relative_mu': relative_mu,
+                        'relative_sigma': relative_sigma,
                         'upper_threshold': upper_threshold,
                         'lower_threshold': lower_threshold
                     })
                     
                 except Exception as e:
-                    logger.warning(f"⚠️ 获取算法 '{algorithm_name}' 的按键与延时数据失败: {e}")
+                    logger.warning(f"⚠️ 获取算法 '{descriptive_name}' 的按键与延时数据失败: {e}")
                     continue
             
             # 添加散点图数据
             for alg_data in algorithm_data_list:
-                # 为超过阈值的点使用不同颜色和大小
+                # 为超过阈值的点使用不同颜色和大小（基于相对延时）
                 marker_colors = []
                 marker_sizes = []
-                for delay in alg_data['delays_ms']:
-                    if delay > alg_data['upper_threshold'] or delay < alg_data['lower_threshold']:
+                for relative_delay in alg_data['relative_delays_ms']:
+                    if relative_delay > alg_data['upper_threshold'] or relative_delay < alg_data['lower_threshold']:
                         # 超过阈值的点使用更深的颜色，更大尺寸
                         marker_colors.append(alg_data['color'])
                         marker_sizes.append(12)
                     else:
                         marker_colors.append(alg_data['color'])
                         marker_sizes.append(8)
-                
+
                 fig.add_trace(go.Scatter(
                     x=alg_data['key_ids'],
-                    y=alg_data['delays_ms'],
+                    y=alg_data['relative_delays_ms'],  # 使用相对延时
                     mode='markers',
-                    name=f"{alg_data['name']} - 匹配对",
+                    name=f"{alg_data['descriptive_name']} - 匹配对",
                     marker=dict(
                         size=marker_sizes,
                         color=marker_colors,
@@ -929,9 +1296,9 @@ class MultiAlgorithmPlotGenerator:
                         line=dict(width=1, color=alg_data['color'])
                     ),
                     customdata=alg_data['customdata'],  # 添加customdata，包含record_index、replay_index和算法名称
-                    legendgroup=alg_data['name'],
+                    legendgroup=alg_data['descriptive_name'],
                     showlegend=True,
-                    hovertemplate=f"算法: {alg_data['name']}<br>键位: %{{x}}<br>延时: %{{y:.2f}}ms<extra></extra>"
+                    hovertemplate=f"算法: {alg_data['descriptive_name']}<br>键位: %{{x}}<br>相对延时: %{{y:.2f}}ms<br>绝对延时: %{{customdata[3]:.2f}}ms<extra></extra>"
                 ))
             
             # 获取x轴范围，用于确定标注位置
@@ -944,13 +1311,13 @@ class MultiAlgorithmPlotGenerator:
             # 为每个激活的算法添加阈值线（只显示激活算法的阈值）
             # 使用go.Scatter创建水平线，使其能够响应图例点击
             for alg_data in algorithm_data_list:
-                # 添加该算法的总体均值参考线（使用算法颜色，虚线）
+                # 添加相对延时的平均值参考线（0线，因为相对延时的平均值是0）
                 # 使用Scatter创建水平线，设置相同的legendgroup，使其与散点图一起响应图例点击
                 fig.add_trace(go.Scatter(
                     x=[x_min, x_max],
-                    y=[alg_data['mu'], alg_data['mu']],
+                    y=[0, 0],  # 相对延时的平均值是0
                     mode='lines',
-                    name=f"{alg_data['name']} - μ",
+                    name=f"{alg_data['name']} - 平均值",
                     line=dict(
                         color=alg_data['color'],
                         width=1.5,
@@ -958,16 +1325,16 @@ class MultiAlgorithmPlotGenerator:
                     ),
                     legendgroup=alg_data['name'],  # 与散点图使用相同的图例组
                     showlegend=True,
-                    hovertemplate=f"算法: {alg_data['name']}<br>μ = {alg_data['mu']:.2f}ms<extra></extra>"
+                    hovertemplate=f"算法: {alg_data['name']}<br>相对延时平均值 = 0ms<extra></extra>"
                 ))
                 # 注意：已移除标注，信息通过悬停（hover）显示
                 
-                # 添加该算法的上阈值线（μ + 3σ，使用算法颜色）
+                # 添加相对延时的上阈值线（相对均值 + 3倍相对标准差）
                 fig.add_trace(go.Scatter(
                     x=[x_min, x_max],
                     y=[alg_data['upper_threshold'], alg_data['upper_threshold']],
                     mode='lines',
-                    name=f"{alg_data['name']} - μ+3σ",
+                    name=f"{alg_data['name']} - 上阈值",
                     line=dict(
                         color=alg_data['color'],
                         width=2,
@@ -975,15 +1342,15 @@ class MultiAlgorithmPlotGenerator:
                     ),
                     legendgroup=alg_data['name'],  # 与散点图使用相同的图例组
                     showlegend=True,
-                    hovertemplate=f"算法: {alg_data['name']}<br>μ+3σ = {alg_data['upper_threshold']:.2f}ms<extra></extra>"
+                    hovertemplate=f"算法: {alg_data['name']}<br>相对延时上阈值 = {alg_data['upper_threshold']:.2f}ms<extra></extra>"
                 ))
-                
-                # 添加该算法的下阈值线（μ - 3σ，使用算法颜色）
+
+                # 添加相对延时的下阈值线（相对均值 - 3倍相对标准差）
                 fig.add_trace(go.Scatter(
                     x=[x_min, x_max],
                     y=[alg_data['lower_threshold'], alg_data['lower_threshold']],
                     mode='lines',
-                    name=f"{alg_data['name']} - μ-3σ",
+                    name=f"{alg_data['name']} - 下阈值",
                     line=dict(
                         color=alg_data['color'],
                         width=2,
@@ -991,14 +1358,14 @@ class MultiAlgorithmPlotGenerator:
                     ),
                     legendgroup=alg_data['name'],  # 与散点图使用相同的图例组
                     showlegend=True,
-                    hovertemplate=f"算法: {alg_data['name']}<br>μ-3σ = {alg_data['lower_threshold']:.2f}ms<extra></extra>"
+                    hovertemplate=f"算法: {alg_data['name']}<br>相对延时下阈值 = {alg_data['lower_threshold']:.2f}ms<extra></extra>"
                 ))
             
             # 设置布局
             fig.update_layout(
                 # 删除title，因为UI区域已有标题
                 xaxis_title='按键ID',
-                yaxis_title='延时 (ms)',
+                yaxis_title='相对延时 (ms)',
                 xaxis=dict(
                     showgrid=True,
                     gridcolor='lightgray',
@@ -1034,7 +1401,7 @@ class MultiAlgorithmPlotGenerator:
             
         except Exception as e:
             logger.error(f"❌ 生成多算法按键与延时散点图失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return self._create_empty_plot(f"生成失败: {str(e)}")
     
@@ -1092,9 +1459,14 @@ class MultiAlgorithmPlotGenerator:
             # 收集所有激活算法的数据
             for alg_idx, algorithm in enumerate(ready_algorithms):
                 algorithm_name = algorithm.metadata.algorithm_name
-                
+                display_name = algorithm.metadata.display_name
+                filename = algorithm.metadata.filename
+
+                # 创建更具描述性的图注名称：算法名 (文件名)
+                descriptive_name = f"{display_name} ({filename})"
+
                 if not algorithm.analyzer or not algorithm.analyzer.note_matcher:
-                    logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有分析器或匹配器，跳过")
+                    logger.warning(f"⚠️ 算法 '{descriptive_name}' 没有分析器或匹配器，跳过")
                     continue
                 
                 try:
@@ -1144,12 +1516,13 @@ class MultiAlgorithmPlotGenerator:
                                     replay_hammer_time_ms = (replay_note.hammers.index[0] + replay_note.offset) / 10.0
 
                             key_ids.append(key_id_int)
-                            delays_ms.append(delay_ms)
+                            delays_ms.append(delay_ms)  # 保持绝对延时用于其他计算
+                            # 注意：customdata_list 仍然使用绝对延时，因为hover显示需要同时显示绝对和相对延时
                             customdata_list.append([
                                 record_index,
                                 replay_index,
                                 key_id_int,
-                                delay_ms,
+                                delay_ms,  # 绝对延时
                                 algorithm_name,
                                 record_hammer_time_ms,
                                 replay_hammer_time_ms
@@ -1161,21 +1534,25 @@ class MultiAlgorithmPlotGenerator:
                         logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有有效的散点图数据，跳过")
                         continue
                     
-                    # 获取该算法的总体均值和标准差（用于Z-Score标准化）
+                    # 获取该算法的总体均值和标准差（用于Z-Score标准化和相对延时计算）
                     me_0_1ms = algorithm.analyzer.get_mean_error()  # 总体均值（0.1ms单位，带符号）
                     std_0_1ms = algorithm.analyzer.get_standard_deviation()  # 总体标准差（0.1ms单位，带符号）
-                    
+
                     # 转换为ms单位
                     mu = me_0_1ms / 10.0  # 总体均值（ms，带符号）
                     sigma = std_0_1ms / 10.0  # 总体标准差（ms，带符号）
-                    
-                    # 计算Z-Score：z = (x_i - μ) / σ
+
+                    # 计算相对延时：绝对延时减去平均延时
                     delays_array = np.array(delays_ms)
+                    relative_delays_array = delays_array - mu  # 相对延时
+                    relative_delays_ms = relative_delays_array.tolist()
+
+                    # 计算Z-Score：z = (x_i - μ) / σ
                     if sigma > 0:
                         z_scores_array = (delays_array - mu) / sigma
                         # 转换为列表，确保Plotly正确处理
                         z_scores = z_scores_array.tolist()
-                        logger.info(f"🔍 算法 '{algorithm_name}': μ={mu:.2f}ms, σ={sigma:.2f}ms, 原始延时范围=[{delays_array.min():.2f}, {delays_array.max():.2f}]ms, Z-Score范围=[{z_scores_array.min():.2f}, {z_scores_array.max():.2f}]")
+                        logger.info(f"🔍 算法 '{algorithm_name}': μ={mu:.2f}ms, σ={sigma:.2f}ms, 原始延时范围=[{delays_array.min():.2f}, {delays_array.max():.2f}]ms, 相对延时范围=[{relative_delays_array.min():.2f}, {relative_delays_array.max():.2f}]ms, Z-Score范围=[{z_scores_array.min():.2f}, {z_scores_array.max():.2f}]")
                     else:
                         z_scores = [0.0] * len(delays_ms)
                         logger.warning(f"⚠️ 算法 '{algorithm_name}' 的标准差为0，无法进行Z-Score标准化")
@@ -1187,7 +1564,7 @@ class MultiAlgorithmPlotGenerator:
                         x=key_ids,
                         y=z_scores,  # 使用Z-Score值，不是原始延时值
                         mode='markers',
-                        name=f"{algorithm_name} - Z-Score",
+                        name=f"{descriptive_name} - Z-Score",
                         marker=dict(
                             size=8,
                             color=color,
@@ -1195,9 +1572,9 @@ class MultiAlgorithmPlotGenerator:
                             line=dict(width=1, color=color)
                         ),
                         customdata=customdata_list,
-                        legendgroup=algorithm_name,
+                        legendgroup=descriptive_name,
                         showlegend=True,
-                        hovertemplate=f"算法: {algorithm_name}<br>键位: %{{x}}<br>延时: %{{customdata[3]:.2f}}ms<br>Z-Score: %{{y:.2f}}<br>录制锤子时间: %{{customdata[5]:.2f}}ms<br>播放锤子时间: %{{customdata[6]:.2f}}ms<extra></extra>"
+                        hovertemplate=f"算法: {descriptive_name}<br>键位: %{{x}}<br>延时: %{{customdata[3]:.2f}}ms<br>Z-Score: %{{y:.2f}}<br>录制锤子时间: %{{customdata[5]:.2f}}ms<br>播放锤子时间: %{{customdata[6]:.2f}}ms<extra></extra>"
                     ))
                     
                     # 收集x轴范围（用于后续添加全局参考线）
@@ -1210,7 +1587,7 @@ class MultiAlgorithmPlotGenerator:
                             all_x_max = max(all_x_max, max(key_ids))
                     
                 except Exception as e:
-                    logger.warning(f"⚠️ 获取算法 '{algorithm_name}' 的Z-Score数据失败: {e}")
+                    logger.warning(f"⚠️ 获取算法 '{descriptive_name}' 的Z-Score数据失败: {e}")
                     continue
             
             # 确定x轴范围
@@ -1222,54 +1599,59 @@ class MultiAlgorithmPlotGenerator:
             # 使其能够响应图例点击，与散点图一起显示/隐藏
             for alg_idx, algorithm in enumerate(ready_algorithms):
                 algorithm_name = algorithm.metadata.algorithm_name
+                display_name = algorithm.metadata.display_name
+                filename = algorithm.metadata.filename
+
+                # 创建更具描述性的图注名称：算法名 (文件名)
+                descriptive_name = f"{display_name} ({filename})"
                 color = colors[alg_idx % len(colors)]
-                
+
                 # 添加该算法的Z-Score = 0参考线（均值线）
                 fig.add_trace(go.Scatter(
                     x=[x_min, x_max],
                     y=[0, 0],
                     mode='lines',
-                    name=f"{algorithm_name} - Z=0",
+                    name=f"{descriptive_name} - Z=0",
                     line=dict(
                         color=color,
                         width=1.5,
                         dash='dot'
                     ),
-                    legendgroup=algorithm_name,  # 与散点图使用相同的图例组
+                    legendgroup=descriptive_name,  # 与散点图使用相同的图例组
                     showlegend=True,
-                    hovertemplate=f"算法: {algorithm_name}<br>Z-Score = 0 (均值线)<extra></extra>"
+                    hovertemplate=f"算法: {descriptive_name}<br>Z-Score = 0 (均值线)<extra></extra>"
                 ))
-                
+
                 # 添加该算法的Z-Score = +3阈值线（上阈值）
                 fig.add_trace(go.Scatter(
                     x=[x_min, x_max],
                     y=[3, 3],
                     mode='lines',
-                    name=f"{algorithm_name} - Z=+3",
+                    name=f"{descriptive_name} - Z=+3",
                     line=dict(
                         color=color,
                         width=2,
                         dash='dash'
                     ),
-                    legendgroup=algorithm_name,  # 与散点图使用相同的图例组
+                    legendgroup=descriptive_name,  # 与散点图使用相同的图例组
                     showlegend=True,
-                    hovertemplate=f"算法: {algorithm_name}<br>Z-Score = +3 (上阈值)<extra></extra>"
+                    hovertemplate=f"算法: {descriptive_name}<br>Z-Score = +3 (上阈值)<extra></extra>"
                 ))
-                
+
                 # 添加该算法的Z-Score = -3阈值线（下阈值）
                 fig.add_trace(go.Scatter(
                     x=[x_min, x_max],
                     y=[-3, -3],
                     mode='lines',
-                    name=f"{algorithm_name} - Z=-3",
+                    name=f"{descriptive_name} - Z=-3",
                     line=dict(
                         color=color,
                         width=2,
                         dash='dash'
                     ),
-                    legendgroup=algorithm_name,  # 与散点图使用相同的图例组
+                    legendgroup=descriptive_name,  # 与散点图使用相同的图例组
                     showlegend=True,
-                    hovertemplate=f"算法: {algorithm_name}<br>Z-Score = -3 (下阈值)<extra></extra>"
+                    hovertemplate=f"算法: {descriptive_name}<br>Z-Score = -3 (下阈值)<extra></extra>"
                 ))
             
             # 设置布局
@@ -1312,10 +1694,143 @@ class MultiAlgorithmPlotGenerator:
             
         except Exception as e:
             logger.error(f"❌ 生成多算法Z-Score标准化散点图失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return self._create_empty_plot(f"生成Z-Score散点图失败: {str(e)}")
-    
+
+    def generate_single_key_delay_comparison_plot(
+        self,
+        algorithms: List[AlgorithmDataset],
+        target_key_id: int
+    ) -> Any:
+        """
+        生成单键多曲延时对比图（散点图+箱线图）
+        
+        Args:
+            algorithms: 算法数据集列表
+            target_key_id: 目标按键ID
+            
+        Returns:
+            Any: Plotly图表对象
+        """
+        if not algorithms:
+            return self._create_empty_plot("没有激活的算法")
+            
+        if target_key_id is None:
+            return self._create_empty_plot("请选择一个按键进行分析")
+            
+        try:
+            import plotly.graph_objects as go
+            fig = go.Figure()
+            
+            # 颜色列表
+            colors = self.COLORS
+            
+            # 过滤出激活且就绪的算法
+            ready_algorithms = [alg for alg in algorithms if alg.is_active and alg.is_ready()]
+            if not ready_algorithms:
+                return self._create_empty_plot("没有激活且就绪的算法")
+            
+            # 收集所有延时数据，用于自动调整Y轴
+            all_delays = []
+            has_data = False
+            
+            # 遍历每个算法
+            for alg_idx, algorithm in enumerate(ready_algorithms):
+                algorithm_name = algorithm.metadata.algorithm_name
+                display_name = algorithm.metadata.display_name
+                color = colors[alg_idx % len(colors)]
+                
+                # 获取该算法的偏移数据
+                if not algorithm.analyzer or not algorithm.analyzer.note_matcher:
+                    continue
+                    
+                offset_data = algorithm.analyzer.note_matcher.get_offset_alignment_data()
+                if not offset_data:
+                    continue
+                
+                # 提取目标按键的延时数据
+                key_delays = []
+                customdata_list = []
+                
+                for item in offset_data:
+                    key_id = item.get('key_id')
+                    if key_id == target_key_id:
+                        keyon_offset = item.get('keyon_offset', 0)
+                        delay_ms = keyon_offset / 10.0  # ms
+                        key_delays.append(delay_ms)
+                        
+                        # 记录详细信息，用于悬停
+                        record_index = item.get('record_index')
+                        replay_index = item.get('replay_index')
+                        # 自定义数据格式: [record_index, replay_index, delay_ms, algorithm_name]
+                        # 这对于交互可能有用，但在此处主要用于hover
+                        customdata_list.append([record_index, replay_index, delay_ms, algorithm_name])
+                
+                if not key_delays:
+                    continue
+                
+                has_data = True    
+                all_delays.extend(key_delays)
+                
+                # 1. 添加箱线图（显示统计分布）
+                fig.add_trace(go.Box(
+                    y=key_delays,
+                    x=[display_name] * len(key_delays), # X轴为算法名称
+                    name=display_name,
+                    boxpoints='all',  # 显示所有点
+                    jitter=0.5,       # 点的抖动范围
+                    pointpos=-1.8,    # 点显示在箱线图左侧
+                    marker=dict(
+                        color=color,
+                        size=6,
+                        opacity=0.7
+                    ),
+                    line=dict(color=color),
+                    fillcolor='rgba(255,255,255,0)',  # 透明填充
+                    showlegend=False,  # 箱线图不显示图例，避免重复
+                    # 更新交互信息
+                    customdata=customdata_list,
+                    hovertemplate=f'算法: {display_name}<br>按键: {target_key_id}<br>延时: %{{y:.2f}}ms<extra></extra>'
+                ))
+
+            # 更新布局
+            fig.update_layout(
+                title=dict(
+                    text=f"按键 {target_key_id} 延时分布对比 (多曲目/算法)",
+                    x=0.5,
+                    xanchor='center'
+                ),
+                xaxis=dict(
+                    title="曲子 / 算法",
+                    showgrid=False
+                ),
+                yaxis=dict(
+                    title="相对延时 (ms)",
+                    showgrid=True,
+                    gridcolor='lightgray',
+                    zeroline=True,
+                    zerolinecolor='gray'
+                ),
+                plot_bgcolor='white',
+                paper_bgcolor='white',
+                hovermode='closest',
+                showlegend=False,  # 不需要图例，X轴标签已说明
+                height=400,
+                margin=dict(l=60, r=40, t=60, b=40)
+            )
+            
+            if not has_data:
+                return self._create_empty_plot(f"按键 {target_key_id} 在选定的算法中没有数据")
+                
+            return fig
+            
+        except Exception as e:
+            logger.error(f"❌ 生成单键对比图失败: {e}")
+            
+            logger.error(traceback.format_exc())
+            return self._create_empty_plot(f"生成失败: {str(e)}")
+
     def generate_multi_algorithm_hammer_velocity_delay_scatter_plot(
         self,
         algorithms: List[AlgorithmDataset]
@@ -1356,23 +1871,28 @@ class MultiAlgorithmPlotGenerator:
             
             import plotly.graph_objects as go
             fig = go.Figure()
-            
+
             for alg_idx, algorithm in enumerate(ready_algorithms):
                 algorithm_name = algorithm.metadata.algorithm_name
-                
+                display_name = algorithm.metadata.display_name
+                filename = algorithm.metadata.filename
+
+                # 创建更具描述性的图注名称：算法名 (文件名)
+                descriptive_name = f"{display_name} ({filename})"
+
                 if not algorithm.analyzer or not algorithm.analyzer.note_matcher:
-                    logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有分析器或匹配器，跳过")
+                    logger.warning(f"⚠️ 算法 '{descriptive_name}' 没有分析器或匹配器，跳过")
                     continue
-                
+
                 try:
                     matched_pairs = algorithm.analyzer.note_matcher.get_matched_pairs()
-                    
+
                     if not matched_pairs:
-                        logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有匹配数据，跳过")
+                        logger.warning(f"⚠️ 算法 '{descriptive_name}' 没有匹配数据，跳过")
                         continue
-                    
+
                     offset_data = algorithm.analyzer.note_matcher.get_offset_alignment_data()
-                    
+
                     # 提取锤速和延时数据，并计算Z-Score（与按键与延时Z-Score散点图相同）
                     hammer_velocities = []
                     delays_ms = []  # 延时（ms单位，带符号，用于计算Z-Score）
@@ -1456,16 +1976,16 @@ class MultiAlgorithmPlotGenerator:
                         x=log_velocities,
                         y=z_scores,
                         mode='markers',
-                        name=f'{algorithm_name} - Z-Score',
+                        name=f'{descriptive_name} - Z-Score',
                         marker=dict(
                             size=8,
                             color=color,
                             opacity=0.6,
                             line=dict(width=1, color=color)
                         ),
-                        legendgroup=algorithm_name,
+                        legendgroup=descriptive_name,
                         showlegend=True,
-                        hovertemplate=f'算法: {algorithm_name}<br>按键: %{{customdata[5]}}<br>锤速: %{{customdata[1]:.0f}} (log: %{{x:.2f}})<br>延时: %{{customdata[0]:.2f}}ms<br>Z-Score: %{{y:.2f}}<extra></extra>',
+                        hovertemplate=f'算法: {descriptive_name}<br>按键: %{{customdata[5]}}<br>锤速: %{{customdata[1]:.0f}} (log: %{{x:.2f}})<br>延时: %{{customdata[0]:.2f}}ms<br>Z-Score: %{{y:.2f}}<extra></extra>',
                         customdata=combined_customdata
                     ))
                     
@@ -1493,47 +2013,47 @@ class MultiAlgorithmPlotGenerator:
                             x=[x_min, x_max],
                             y=[0, 0],
                             mode='lines',
-                            name=f'{algorithm_name} - Z=0',
+                            name=f'{descriptive_name} - Z=0',
                             line=dict(
                                 color=color,
                                 width=1.5,
                                 dash='dot'
                             ),
-                            legendgroup=algorithm_name,
+                            legendgroup=descriptive_name,
                             showlegend=True,
-                            hovertemplate=f'算法: {algorithm_name}<br>Z-Score = 0 (均值线)<extra></extra>'
+                            hovertemplate=f'算法: {descriptive_name}<br>Z-Score = 0 (均值线)<extra></extra>'
                         ))
-                        
+
                         # 添加Z=+3的水平虚线（上阈值）
                         fig.add_trace(go.Scatter(
                             x=[x_min, x_max],
                             y=[3, 3],
                             mode='lines',
-                            name=f'{algorithm_name} - Z=+3',
+                            name=f'{descriptive_name} - Z=+3',
                             line=dict(
                                 color=color,
                                 width=2,
                                 dash='dash'
                             ),
-                            legendgroup=algorithm_name,
+                            legendgroup=descriptive_name,
                             showlegend=True,
-                            hovertemplate=f'算法: {algorithm_name}<br>Z-Score = +3 (上阈值)<extra></extra>'
+                            hovertemplate=f'算法: {descriptive_name}<br>Z-Score = +3 (上阈值)<extra></extra>'
                         ))
-                        
+
                         # 添加Z=-3的水平虚线（下阈值）
                         fig.add_trace(go.Scatter(
                             x=[x_min, x_max],
                             y=[-3, -3],
                             mode='lines',
-                            name=f'{algorithm_name} - Z=-3',
+                            name=f'{descriptive_name} - Z=-3',
                             line=dict(
                                 color=color,
                                 width=2,
                                 dash='dash'
                             ),
-                            legendgroup=algorithm_name,
+                            legendgroup=descriptive_name,
                             showlegend=True,
-                            hovertemplate=f'算法: {algorithm_name}<br>Z-Score = -3 (下阈值)<extra></extra>'
+                            hovertemplate=f'算法: {descriptive_name}<br>Z-Score = -3 (下阈值)<extra></extra>'
                         ))
                     
                 except Exception as e:
@@ -1585,7 +2105,7 @@ class MultiAlgorithmPlotGenerator:
             
         except Exception as e:
             logger.error(f"❌ 生成多算法锤速与延时散点图失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return self._create_empty_plot(f"生成失败: {str(e)}")
     
@@ -1627,16 +2147,21 @@ class MultiAlgorithmPlotGenerator:
             
             for alg_idx, algorithm in enumerate(ready_algorithms):
                 algorithm_name = algorithm.metadata.algorithm_name
-                
+                display_name = algorithm.metadata.display_name
+                filename = algorithm.metadata.filename
+
+                # 创建更具描述性的图注名称：算法名 (文件名)
+                descriptive_name = f"{display_name} ({filename})"
+
                 if not algorithm.analyzer or not algorithm.analyzer.note_matcher:
-                    logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有分析器或匹配器，跳过")
+                    logger.warning(f"⚠️ 算法 '{descriptive_name}' 没有分析器或匹配器，跳过")
                     continue
-                
+
                 try:
                     matched_pairs = algorithm.analyzer.note_matcher.get_matched_pairs()
-                    
+
                     if not matched_pairs:
-                        logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有匹配数据，跳过")
+                        logger.warning(f"⚠️ 算法 '{descriptive_name}' 没有匹配数据，跳过")
                         continue
                     
                     offset_data = algorithm.analyzer.note_matcher.get_offset_alignment_data()
@@ -1696,13 +2221,13 @@ class MultiAlgorithmPlotGenerator:
                         x=key_ids,
                         y=hammer_velocities,
                         mode='markers',
-                        name=f'{algorithm_name}',
+                        name=f'{descriptive_name}',
                         marker=dict(
                             size=8,
                             color=delays_ms,
                             colorscale=colorscale,
                             colorbar=dict(
-                                title=f'{algorithm_name}<br>延时 (ms)',
+                                title=f'{descriptive_name}<br>延时 (ms)',
                                 thickness=15,
                                 len=0.3,
                                 x=1.02 + (alg_idx * 0.08),  # 每个算法的颜色条位置不同
@@ -1766,7 +2291,7 @@ class MultiAlgorithmPlotGenerator:
             
         except Exception as e:
             logger.error(f"❌ 生成多算法按键与锤速散点图失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return self._create_empty_plot(f"生成失败: {str(e)}")
     
@@ -2075,7 +2600,7 @@ class MultiAlgorithmPlotGenerator:
             
         except Exception as e:
             logger.error(f"❌ 生成多算法延时时间序列图失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return self._create_empty_plot(f"生成失败: {str(e)}")
     
@@ -2273,22 +2798,47 @@ class MultiAlgorithmPlotGenerator:
                         col=1
                     )
                 
-                # 添加均值线（简化：只显示线条，不显示文字标注）
-                fig.add_vline(
-                    x=mean,
-                    line_dash="dash",
-                    line_color="green",
-                    line_width=1.5,
+                # 获取子图的Y轴范围，用于绘制参考线
+                y_min, y_max = delays_array.min(), delays_array.max()
+                y_range = y_max - y_min
+                y_line_max = y_max + y_range * 0.1  # 稍微超出数据范围
+
+                # 添加均值线（使用Scatter实现带悬停信息的垂直线）
+                fig.add_trace(
+                    go.Scatter(
+                        x=[mean, mean],
+                        y=[0, y_line_max],
+                        mode='lines',
+                        name=f'均值: {mean:.2f}ms',
+                        line=dict(
+                            color='#2E8B57',  # 深绿色，更明显
+                            width=2.5,       # 增加线宽
+                            dash='dash'
+                        ),
+                        showlegend=False,
+                        hovertemplate=f'均值: {mean:.2f} ms<extra></extra>',
+                        hoverlabel=dict(bgcolor='rgba(46, 139, 87, 0.8)')
+                    ),
                     row=subplot_idx,
                     col=1
                 )
-                
-                # 添加中位数线（简化：只显示线条，不显示文字标注）
-                fig.add_vline(
-                    x=median,
-                    line_dash="dot",
-                    line_color="orange",
-                    line_width=1.5,
+
+                # 添加中位数线（使用Scatter实现带悬停信息的垂直线）
+                fig.add_trace(
+                    go.Scatter(
+                        x=[median, median],
+                        y=[0, y_line_max],
+                        mode='lines',
+                        name=f'中位数: {median:.2f}ms',
+                        line=dict(
+                            color='#FF8C00',  # 深橙色，更明显
+                            width=2.5,       # 增加线宽
+                            dash='dot'
+                        ),
+                        showlegend=False,
+                        hovertemplate=f'中位数: {median:.2f} ms<extra></extra>',
+                        hoverlabel=dict(bgcolor='rgba(255, 140, 0, 0.8)')
+                    ),
                     row=subplot_idx,
                     col=1
                 )
@@ -2341,6 +2891,6 @@ class MultiAlgorithmPlotGenerator:
             
         except Exception as e:
             logger.error(f"❌ 生成相对延时分布图失败: {e}")
-            import traceback
+            
             logger.error(traceback.format_exc())
             return self._create_empty_plot(f"生成失败: {str(e)}")

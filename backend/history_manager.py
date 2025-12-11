@@ -13,22 +13,43 @@ logger = Logger.get_logger()
 class HistoryManager:
     """历史记录管理器 spmid_history表"""
 
-    def __init__(self, db_path=None):
-        # 如果没有指定路径，则在backend目录下创建数据库
-        if db_path is None:
-            backend_dir = os.path.dirname(os.path.abspath(__file__))
-            self.db_path = os.path.join(backend_dir, "history_spmid.db")
-        else:
-            self.db_path = db_path
+    def __init__(self, db_path=None, disable_database=False):
+        """
+        初始化历史记录管理器
 
-        self._lock = threading.RLock()
-        self.init_database()
+        Args:
+            db_path: 数据库路径
+            disable_database: 是否禁用数据库功能（用于测试或特定环境）
+        """
+        self.disable_database = disable_database or os.environ.get('DISABLE_DATABASE', 'false').lower() == 'true'
+
+        if not self.disable_database:
+            # 如果没有指定路径，则在backend目录下创建数据库
+            if db_path is None:
+                backend_dir = os.path.dirname(os.path.abspath(__file__))
+                self.db_path = os.path.join(backend_dir, "history_spmid.db")
+            else:
+                self.db_path = db_path
+
+            self._lock = threading.RLock()
+            self.init_database()
+        else:
+            # 禁用数据库时，使用内存存储作为替代
+            self.db_path = None
+            self._lock = threading.RLock()
+            self._memory_storage = []
+            logger.info("⚠️ 数据库功能已禁用，使用内存存储")
+
         # 只在主进程中记录初始化日志（避免Flask debug模式下的重复日志）
         if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
             logger.info("✅ HistoryManager初始化完成")
 
     def init_database(self):
         """初始化数据库表结构 - 根据实际表结构"""
+        if self.disable_database:
+            logger.info("⚠️ 数据库功能已禁用，跳过数据库初始化")
+            return
+
         with self._lock:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -102,6 +123,11 @@ class HistoryManager:
 
     def save_analysis_result(self, filename, backend, upload_id=None, file_content=None):
         """保存分析结果到数据库 - 修复文件内容保存逻辑"""
+
+        if self.disable_database:
+            logger.info(f"⚠️ 数据库功能已禁用，跳过保存分析结果: {filename}")
+            # 返回一个假的ID用于兼容性
+            return 999999
 
         with self._lock:
             conn = sqlite3.connect(self.db_path)
@@ -181,6 +207,10 @@ class HistoryManager:
 
     def get_record_details(self, record_id):
         """获取特定记录的详细信息 - 修复文件内容获取逻辑"""
+        if self.disable_database:
+            logger.info(f"⚠️ 数据库功能已禁用，无法获取记录详情: {record_id}")
+            return None
+
         with self._lock:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -229,6 +259,10 @@ class HistoryManager:
 
     def get_history_list(self, limit=50):
         """获取历史记录列表 - 根据实际表结构"""
+        if self.disable_database:
+            logger.info(f"⚠️ 数据库功能已禁用，返回空的历史记录列表")
+            return []
+
         with self._lock:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -360,20 +394,24 @@ class HistoryManager:
     def process_history_selection(self, history_id, backend):
         """
         处理历史记录选择 - 从数据库加载历史记录并初始化backend状态
-        
+
         Args:
             history_id: 历史记录ID
             backend: 后端实例
-            
+
         Returns:
             tuple: (success, result_data, error_msg)
                    - success: 是否处理成功
                    - result_data: 成功时的结果数据（包含filename、main_record等）
                    - error_msg: 失败时的错误信息
         """
+        if self.disable_database:
+            logger.info(f"⚠️ 数据库功能已禁用，无法处理历史记录选择: {history_id}")
+            return False, None, "数据库功能已禁用"
+
         try:
             logger.info(f"🔄 处理历史记录选择: {history_id}")
-            
+
             # 获取历史记录详情
             record_details = self.get_record_details(history_id)
             if not record_details:

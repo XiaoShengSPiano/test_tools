@@ -116,8 +116,7 @@ class TableDataGenerator:
                 # 如果reason是None或空字符串，尝试从failure_reasons中获取
                 # 注意：播放数据的失败原因可能不存在，因为匹配是以录制数据为基准的
                 if not analysis_reason:
-                    # 尝试查找对应的录制索引（通过exceeds_threshold_matched_pairs或matched_pairs）
-                    # 但这里没有这些信息，所以保持为空
+                    # 注意：现在所有匹配都在matched_pairs中
                     analysis_reason = ''
                 
                 # 录制行显示"无匹配"
@@ -203,17 +202,32 @@ class TableDataGenerator:
             # 无效音符数 = 被数据过滤器过滤掉的音符总数
             total_invalid_notes = invalid_record_count + invalid_replay_count
             
-            # 有效音符数 = 成功匹配的音符对数量
-            total_valid_notes = matched_pairs_count
-            
-            # 计算准确率（基于配对键数占有效数据总数的比例）
-            # 公式：已配对键数 * 2 / (有效的播放数据 + 有效的录制数据)
-            total_effective_data = total_valid_record + total_valid_replay
-            accuracy = (total_valid_notes * 2 / max(total_effective_data, 1)) * 100 if total_effective_data > 0 else 0
+            # 获取所有已配对的数据（包括宽松匹配）
+            total_matched_pairs = matched_pairs_count
+
+            # 加上宽松匹配对
+            if self.analyzer and hasattr(self.analyzer, 'note_matcher'):
+                note_matcher = self.analyzer.note_matcher
+                loose_matched_pairs = getattr(note_matcher, 'loose_matched_pairs', [])
+                if loose_matched_pairs:
+                    total_matched_pairs += len(loose_matched_pairs)
+
+            # 分子：所有已配对按键数 * 2（因为每个配对包含录制和播放各一个按键）
+            matched_keys_count = total_matched_pairs * 2
+
+            # 分母：所有有效数据的按键总和
+            total_effective_keys = total_valid_record + total_valid_replay
+
+            # 计算准确率
+            accuracy = (matched_keys_count / max(total_effective_keys, 1)) * 100 if total_effective_keys > 0 else 0
+
+            # 调试信息
+            print(f"[DEBUG] 准确率计算: 配对按键数={matched_keys_count}, 总有效按键={total_effective_keys}, 准确率={accuracy:.2f}%")
+            print(f"[DEBUG] 多锤数={multi_hammer_count}, 丢锤数={drop_hammer_count}")
             
             return {
                 'total_notes': total_notes,
-                'valid_notes': total_valid_notes,
+                'valid_notes': total_matched_pairs,  # 所有已配对的音符对数量
                 'invalid_notes': total_invalid_notes,  # 直接返回数字
                 'multi_hammers': multi_hammer_count,
                 'drop_hammers': drop_hammer_count,

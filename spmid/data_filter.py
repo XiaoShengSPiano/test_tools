@@ -126,7 +126,7 @@ class DataFilter:
                                     first_hammer_vel = first_hammer_vel.iloc[0]
                             except:
                                 first_hammer_vel = 'N/A'
-                        logger.info(f"🔇 发现不发声音符: 音符ID={note.id}, 锤速={first_hammer_vel}")
+                        # logger.info(f"🔇 发现不发声音符: 音符ID={note.id}, 锤速={first_hammer_vel}")
                         silent_notes_details.append({
                             'index': i,
                             'note': note,
@@ -179,31 +179,32 @@ class DataFilter:
         try:
             # 基本条件检查
             if len(note.after_touch) == 0 or len(note.hammers) == 0:
-                self._log_invalid_note_details(note, "数据为空", "after_touch或hammers为空")
+                # self._log_invalid_note_details(note, "数据为空", "after_touch或hammers为空")
                 return False, 'empty_data'
             
             # 获取时间上最早的锤速值（第一个锤速）
             # 注意：hammers Series的index是时间戳，需要找到最小时间戳对应的锤速值
             min_timestamp = note.hammers.index.min()
             first_hammer_velocity_raw = note.hammers.loc[min_timestamp]
-            # 如果返回Series（多个相同时间戳），取第一个值
-            if isinstance(first_hammer_velocity_raw, pd.Series):
-                first_hammer_velocity = first_hammer_velocity_raw.iloc[0]
-            else:
-                first_hammer_velocity = first_hammer_velocity_raw
+
+            first_hammer_velocity = first_hammer_velocity_raw
             
             # 检查锤速是否为0
             if first_hammer_velocity == 0:
                 self._log_invalid_note_details(note, "锤速为0", f"锤速={first_hammer_velocity}")
-                logger.info(f"🔇 音符ID={note.id} 被识别为不发声音符: 锤速为0")
+                # logger.info(f"🔇 音符ID={note.id} 被识别为不发声音符: 锤速为0")
                 return False, 'silent_notes'  # 锤速为0视为不发声音符
             
             # 检查音符的基本条件
-            difference_value = note.after_touch.index[-1] - note.after_touch.index[0]
+            try:
+                difference_value = note.after_touch.index[-1] - note.after_touch.index[0]
+            except (IndexError, AttributeError) as e:
+                raise ValueError(f"音符ID {note.id} 的after_touch数据无效: {e}") from e
             
+            # TODO
             # 最短持续时间阈值：30ms（内部单位0.1ms）
             if difference_value < 300:
-                self._log_invalid_note_details(note, "持续时间过短", f"持续时间={difference_value/10:.2f}ms (<30ms)")
+                # self._log_invalid_note_details(note, "持续时间过短", f"持续时间={difference_value/10:.2f}ms (<30ms)")
                 return False, 'duration_too_short'
             
             # ========== 电机阈值检查逻辑已注释（用户反馈逻辑不靠谱） ==========

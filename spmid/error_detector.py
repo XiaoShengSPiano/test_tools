@@ -25,7 +25,7 @@ class ErrorDetector:
     def __init__(self, global_time_offset: float = 0.0):
         """
         初始化异常检测器
-        
+
         Args:
             global_time_offset: 全局时间偏移量（已废弃，固定为0）
         """
@@ -33,132 +33,129 @@ class ErrorDetector:
         self.multi_hammers: List[ErrorNote] = []
         self.drop_hammers: List[ErrorNote] = []
         self.silent_hammers: List[ErrorNote] = []
+        # 用于防止同一个按键ID被重复标记
+        self._processed_drop_keys: set = set()
+        self._processed_multi_keys: set = set()
     
-    def analyze_hammer_issues(self, record_data: List[Note], replay_data: List[Note], 
+    def analyze_hammer_issues(self, record_data: List[Note], replay_data: List[Note],
                             matched_pairs: List[Tuple[int, int, Note, Note]],
                             note_matcher=None) -> Tuple[List[ErrorNote], List[ErrorNote]]:
         """
-        分析多锤和丢锤问题
-        
+        分析丢锤和多锤问题
+
+        直接基于匹配结果分析：
+        - 丢锤：录制数据中未匹配的音符
+        - 多锤：播放数据中未匹配的音符
+
         Args:
             record_data: 录制数据
             replay_data: 播放数据
-            matched_pairs: 匹配对列表（只包含在阈值内的正常匹配对）
-            note_matcher: 音符匹配器（可选），用于获取超过阈值的匹配对
-            
+            matched_pairs: 匹配对列表（格式：(record_idx, replay_idx, record_note, replay_note)）
+            note_matcher: 音符匹配器（可选），用于获取失败原因
+
         Returns:
             Tuple[List[ErrorNote], List[ErrorNote]]: (drop_hammers, multi_hammers)
         """
-        # 获取超过阈值的匹配对（如果有）
-        exceeds_threshold_matched_pairs = []
-        if note_matcher and hasattr(note_matcher, 'exceeds_threshold_matched_pairs'):
-            exceeds_threshold_matched_pairs = note_matcher.exceeds_threshold_matched_pairs
-        
-        # 分析未匹配的音符（没有最佳配对的按键，直接判断为异常）
-        self._analyze_unmatched_notes(record_data, replay_data, matched_pairs, exceeds_threshold_matched_pairs, note_matcher)
-        
-        # 分析超过阈值的匹配对（即使有最佳配对，但超过阈值，仍然标记为异常）
-        if exceeds_threshold_matched_pairs:
-            self._analyze_exceeds_threshold_pairs(record_data, replay_data, exceeds_threshold_matched_pairs, note_matcher)
-        
+        # 简化的逻辑：直接基于匹配结果分析未匹配的音符
+        self._analyze_unmatched_notes_for_hammer_issues(record_data, replay_data, matched_pairs, note_matcher)
+
+        # 打印错误统计信息
+        print(f"[错误统计] 丢锤数: {len(self.drop_hammers)} 个")
+        print(f"[错误统计] 多锤数: {len(self.multi_hammers)} 个")
+        print(f"[错误统计] 总错误数: {len(self.drop_hammers) + len(self.multi_hammers)} 个")
+
         return self.drop_hammers, self.multi_hammers
-    
-    def _analyze_unmatched_notes(self, record_data: List[Note], replay_data: List[Note], 
-                               matched_pairs: List[Tuple[int, int, Note, Note]],
-                               exceeds_threshold_matched_pairs: List[Tuple[int, int, Note, Note]] = None,
-                               note_matcher=None) -> None:
+
+    def _analyze_unmatched_notes_for_hammer_issues(self, record_data: List[Note], replay_data: List[Note],
+                                                  matched_pairs: List[Tuple[int, int, Note, Note]],
+                                                  note_matcher=None) -> None:
         """
-        分析未匹配的音符，识别丢锤和多锤异常
-        这些是没有最佳配对的按键（完全没有候选或所有候选都被占用），直接判断为异常
-        
+        基于匹配结果直接分析丢锤和多锤问题
+
+        匹配算法以录制数据为基准，遍历每个录制音符在播放数据中寻找最佳匹配：
+        - 丢锤：匹配完成后，录制数据中仍未匹配的音符
+        - 多锤：匹配完成后，播放数据中未被任何录制音符匹配的音符
+
         Args:
             record_data: 录制数据
             replay_data: 播放数据
-            matched_pairs: 匹配对列表（只包含在阈值内的正常匹配对）
-            exceeds_threshold_matched_pairs: 超过阈值但有最佳配对的匹配对列表（可选）
+            matched_pairs: 匹配对列表（格式：(record_idx, replay_idx, record_note, replay_note)）
+            note_matcher: 音符匹配器（可选，用于获取详细的失败原因）
         """
-        # 获取已匹配的索引（包括正常匹配和超过阈值的匹配）
-        matched_record_indices = {pair[0] for pair in matched_pairs}
-        matched_replay_indices = {pair[1] for pair in matched_pairs}
-        
-        # 如果提供了超过阈值的匹配对，也要排除这些索引（因为它们会在_analyze_exceeds_threshold_pairs中处理）
-        if exceeds_threshold_matched_pairs:
-            matched_record_indices.update({pair[0] for pair in exceeds_threshold_matched_pairs})
-            matched_replay_indices.update({pair[1] for pair in exceeds_threshold_matched_pairs})
-        
-        # 获取失败原因（从note_matcher中获取，如果有）
-        failure_reasons = {}
-        if note_matcher and hasattr(note_matcher, 'failure_reasons'):
-            failure_reasons = note_matcher.failure_reasons
-        
-        # 分析录制数据中未匹配的音符（丢锤）
-        # 这些是没有最佳配对的按键，直接判断为异常
+        # 1. 获取已匹配的索引集合
+        matched_record_indices = {record_idx for record_idx, _, _, _ in matched_pairs}
+        matched_replay_indices = {replay_idx for _, replay_idx, _, _ in matched_pairs}
+
+        # 2. 分析丢锤：录制数据中未匹配的音符
         for i, record_note in enumerate(record_data):
             if i not in matched_record_indices:
-                # 尝试从failure_reasons中获取原因（如果有）
-                reason = failure_reasons.get(("record", i), None)
+                # 这个录制音符没有找到匹配，是丢锤
+                reason = "录制音符未找到匹配"
+                if note_matcher and hasattr(note_matcher, 'failure_reasons'):
+                    # 如果有详细的失败原因，使用它
+                    failure_key = ('record', i)
+                    if failure_key in note_matcher.failure_reasons:
+                        reason = note_matcher.failure_reasons[failure_key]
+
                 self._handle_drop_hammer_case(record_note, i, reason)
-        
-        # 分析播放数据中未匹配的音符（多锤）
-        # 这些是没有最佳配对的按键，直接判断为异常
+
+        # 3. 分析多锤：播放数据中未匹配的音符
         for i, replay_note in enumerate(replay_data):
             if i not in matched_replay_indices:
-                # 尝试从failure_reasons中获取原因（如果有）
-                # 注意：播放数据的失败原因可能不存在，因为匹配是以录制数据为基准的
-                reason = failure_reasons.get(("replay", i), None)
+                # 这个播放音符没有被任何录制音符匹配，是多锤
+                reason = "播放音符未被匹配"
+                if note_matcher and hasattr(note_matcher, 'failure_reasons'):
+                    # 如果有详细的失败原因，使用它
+                    failure_key = ('replay', i)
+                    if failure_key in note_matcher.failure_reasons:
+                        reason = note_matcher.failure_reasons[failure_key]
+
                 self._handle_multi_hammer_case(replay_note, i, reason)
-    
-    def _analyze_exceeds_threshold_pairs(self, record_data: List[Note], replay_data: List[Note], 
-                                        exceeds_threshold_matched_pairs: List[Tuple[int, int, Note, Note]],
-                                        note_matcher=None) -> None:
-        """
-        分析超过阈值的匹配对，将它们标记为异常
-        
-        Args:
-            record_data: 录制数据
-            replay_data: 播放数据
-            exceeds_threshold_matched_pairs: 超过阈值但有最佳配对的匹配对列表，格式为[(record_index, replay_index, record_note, replay_note), ...]
-            note_matcher: 音符匹配器（可选），用于获取失败原因
-        """
-        for record_index, replay_index, record_note, replay_note in exceeds_threshold_matched_pairs:
-            # 获取失败原因（如果有）
-            # 注意：匹配是以录制数据为基准的，所以原因存储在 ("record", record_index) 中
-            reason = None
-            if note_matcher and hasattr(note_matcher, 'failure_reasons'):
-                reason = note_matcher.failure_reasons.get(("record", record_index), None)
-            
-            # 创建错误音符，标记为"超过阈值"
-            # 对于录制数据，标记为丢锤（超过阈值）
-            self._handle_drop_hammer_case(record_note, record_index, reason)
-            # 对于播放数据，标记为多锤（超过阈值）
-            # 注意：播放数据也使用相同的reason，因为这是同一个匹配对
-            self._handle_multi_hammer_case(replay_note, replay_index, reason)
-    
+
+
     def _handle_drop_hammer_case(self, note: Note, index: int, reason: str = None) -> None:
         """
         处理丢锤情况
-        
+
         Args:
             note: 音符对象
             index: 音符索引
             reason: 失败原因（可选）
         """
+        key_id = getattr(note, 'id', None)
+        if key_id is not None and key_id in self._processed_drop_keys:
+            # 同一个按键ID已经被标记为丢锤，跳过
+            return
+
         note_info = self._extract_note_info(note, index)
         error_note = self._create_error_note_with_stats(note, note_info, "丢锤", reason)
         self.drop_hammers.append(error_note)
+
+        # 记录已处理的按键ID
+        if key_id is not None:
+            self._processed_drop_keys.add(key_id)
     
     def _handle_multi_hammer_case(self, note: Note, index: int, reason: str = None) -> None:
         """
         处理多锤情况
-        
+
         Args:
             note: 音符对象
             index: 音符索引
             reason: 失败原因（可选）
         """
+        key_id = getattr(note, 'id', None)
+        if key_id is not None and key_id in self._processed_multi_keys:
+            # 同一个按键ID已经被标记为多锤，跳过
+            return
+
         note_info = self._extract_note_info(note, index)
         error_note = self._create_error_note_with_stats(note, note_info, "多锤", reason)
         self.multi_hammers.append(error_note)
+
+        # 记录已处理的按键ID
+        if key_id is not None:
+            self._processed_multi_keys.add(key_id)
     
     def _extract_note_info(self, note: Note, index: int) -> Dict:
         """
@@ -172,16 +169,21 @@ class ErrorDetector:
             Dict: 音符信息字典
         """
         # 计算绝对时间戳，考虑全局时间偏移
-        absolute_keyon = note.after_touch.index[0] + note.offset + self.global_time_offset
-        absolute_keyoff = note.after_touch.index[-1] + note.offset + self.global_time_offset
-        
+        try:
+            absolute_keyon = note.after_touch.index[0] + note.offset + self.global_time_offset
+            absolute_keyoff = note.after_touch.index[-1] + note.offset + self.global_time_offset
+            relative_keyon = note.after_touch.index[0] + note.offset
+            relative_keyoff = note.after_touch.index[-1] + note.offset
+        except (IndexError, AttributeError) as e:
+            raise ValueError(f"音符ID {note.id} 的after_touch数据无效: {e}") from e
+
         return {
             'keyon': absolute_keyon,
             'keyoff': absolute_keyoff,
             'key_id': note.id,
             'index': index,
-            'relative_keyon': note.after_touch.index[0] + note.offset,
-            'relative_keyoff': note.after_touch.index[-1] + note.offset
+            'relative_keyon': relative_keyon,
+            'relative_keyoff': relative_keyoff
         }
     
     def _create_error_note_with_stats(self, note: Note, note_info: Dict, error_type: str, reason: str = None) -> ErrorNote:

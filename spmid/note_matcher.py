@@ -8,303 +8,763 @@ SPMID音符匹配器
 - 音符匹配算法
 - 匹配对生成
 - 匹配结果管理
+
+匹配逻辑架构：
+==========================================
+
+【核心策略】
+- 贪心匹配：每个录制音符只匹配一个最佳的播放音符
+- 三阶段搜索：精确搜索(≤50ms) → 近似搜索(≤1000ms) → 严重搜索(>1000ms)
+- 六等级阈值：按误差范围精确分类 (20ms, 30ms, 50ms, 1000ms)
+
+【匹配流程】
+1. find_all_matched_pairs() - 主入口
+   ├── 初始化匹配状态
+   ├── 对每个录制音符调用 _find_match_for_single_note()
+   └── 统计匹配结果
+
+2. _find_match_for_single_note() - 单音符匹配
+   ├── 提取音符信息 (_extract_note_info)
+   ├── 生成候选列表 (_generate_candidates_for_note)
+   ├── 选择最佳候选 (_select_best_candidate)
+   └── 处理匹配结果 (精确匹配/近似匹配/失败)
+
+3. _generate_candidates_for_note() - 候选生成
+   ├── 第一阶段：阈值内候选 (_generate_sorted_candidates_within_threshold)
+   ├── 第二阶段：如无候选则扩展到全局 (_generate_all_candidates_sorted)
+   └── 第三阶段：应用扩展阈值过滤 (≤300ms)
+
+【匹配分类 - 六等级系统】
+- 优秀匹配 (≤20ms)：高质量匹配
+- 良好匹配 (20-30ms)：较高质量匹配
+- 一般匹配 (30-50ms)：可接受匹配
+- 较差匹配 (50-1000ms)：需要改进的匹配
+- 严重匹配 (>1000ms)：质量极差但找到的匹配
+- 失败匹配 (无候选)：完全找不到匹配，标记为丢锤/多锤异常
+
+【搜索策略 - 三阶段分层搜索】
+- 第一阶段：精确搜索 (≤50ms) - 寻找优秀/良好/一般匹配
+- 第二阶段：近似搜索 (50-1000ms) - 寻找较差匹配
+- 第三阶段：严重搜索 (>1000ms) - 寻找严重误差匹配
+
+【阈值体系 - 六等级精确分类】
+- 优秀阈值：≤20ms
+- 良好阈值：20-30ms
+- 一般阈值：30-50ms
+- 较差阈值：50-1000ms
+- 严重阈值：>1000ms
+- 失败阈值：无匹配
+
+【错误检测】
+- 丢锤：录制数据中未匹配的按键
+- 多锤：播放数据中未匹配的按键
+- 基于两阶段匹配后的剩余音符直接判断，无需复杂统计
 """
 
+import numpy as np
 from .spmid_reader import Note
 from typing import List, Tuple, Dict, Union, Optional
 from utils.logger import Logger
+from enum import Enum
 
 logger = Logger.get_logger()
+
+# 匹配阈值常量 (0.1ms单位) - 五等级匹配系统
+# 优秀匹配：≤20ms
+EXCELLENT_THRESHOLD = 200.0
+# 良好匹配：20-30ms
+GOOD_THRESHOLD = 300.0
+# 一般匹配：30-50ms
+FAIR_THRESHOLD = 500.0
+# 较差匹配：50-1000ms
+POOR_THRESHOLD = 10000.0
+# 严重误差：>1000ms
+SEVERE_THRESHOLD = 10000.0
+# 失败匹配：无候选
+
+# 兼容性常量 (向后兼容)
+PRECISION_THRESHOLD = FAIR_THRESHOLD      # 50ms - 精确匹配上限
+APPROXIMATE_THRESHOLD = POOR_THRESHOLD    # 1000ms - 近似匹配上限
+
+# 匹配类型枚举 - 按误差等级细分
+class MatchType(Enum):
+    """匹配结果类型 - 按误差等级分类"""
+    EXCELLENT = "excellent"      # 优秀匹配 (误差 ≤ 20ms)
+    GOOD = "good"               # 良好匹配 (20ms < 误差 ≤ 30ms)
+    FAIR = "fair"               # 一般匹配 (30ms < 误差 ≤ 50ms)
+    POOR = "poor"               # 较差匹配 (50ms < 误差 ≤ 1000ms)
+    SEVERE = "severe"           # 严重误差 (误差 > 1000ms)
+    FAILED = "failed"           # 失败匹配 (无候选)
+
+# 匹配结果类
+class MatchResult:
+    """匹配结果封装类"""
+    def __init__(self, match_type: MatchType, record_index: int,
+                 replay_index: Optional[int] = None, error_ms: float = 0.0,
+                 pair: Optional[Tuple[Note, Note]] = None, reason: str = ""):
+        self.match_type = match_type
+        self.record_index = record_index
+        self.replay_index = replay_index
+        self.error_ms = error_ms  # 误差(毫秒)
+        self.pair = pair  # 匹配对 (record_note, replay_note)
+        self.reason = reason  # 失败原因
+
+    @property
+    def is_success(self) -> bool:
+        """是否匹配成功"""
+        return self.match_type != MatchType.FAILED
+
+# 候选信息类
+class Candidate:
+    """候选匹配信息"""
+    def __init__(self, index: int, total_error: float):
+        self.index = index
+        self.total_error = total_error
+
+    @property
+    def error_ms(self) -> float:
+        """误差转换为毫秒"""
+        return self.total_error / 10.0
+
+# 匹配统计类
+class MatchStatistics:
+    """匹配统计信息 - 六等级系统"""
+
+    def __init__(self):
+        # 六等级匹配统计
+        self.excellent_matches = 0    # 优秀匹配 (≤20ms)
+        self.good_matches = 0         # 良好匹配 (20-30ms)
+        self.fair_matches = 0         # 一般匹配 (30-50ms)
+        self.poor_matches = 0         # 较差匹配 (50-1000ms)
+        self.severe_matches = 0       # 严重误差 (>1000ms)
+        self.failed_matches = 0       # 失败匹配 (无候选)
+
+        # 兼容性字段 - 保持向后兼容
+        self.precision_matches = 0    # 精确匹配总数 (≤50ms)
+        self.approximate_matches = 0  # 近似匹配总数 (50-1000ms)
+        self.large_error_matches = 0  # 大误差匹配总数 (>1000ms)
+
+        self.total_attempts = 0       # 总尝试数
+
+    def add_result(self, result: MatchResult):
+        """添加匹配结果到统计"""
+        self.total_attempts += 1
+
+        if result.match_type == MatchType.EXCELLENT:
+            self.excellent_matches += 1
+            self.precision_matches += 1
+        elif result.match_type == MatchType.GOOD:
+            self.good_matches += 1
+            self.precision_matches += 1
+        elif result.match_type == MatchType.FAIR:
+            self.fair_matches += 1
+            self.precision_matches += 1
+        elif result.match_type == MatchType.POOR:
+            self.poor_matches += 1
+            self.approximate_matches += 1
+        elif result.match_type == MatchType.SEVERE:
+            self.severe_matches += 1
+            self.large_error_matches += 1
+        elif result.match_type == MatchType.FAILED:
+            self.failed_matches += 1
+
+    def __str__(self):
+        return f"优秀:{self.excellent_matches}, 良好:{self.good_matches}, 一般:{self.fair_matches}, 较差:{self.poor_matches}, 严重:{self.severe_matches}, 失败:{self.failed_matches}"
 
 class NoteMatcher:
     """SPMID音符匹配器类"""
     
     def __init__(self, global_time_offset: float = 0.0):
         """
-        初始化音符匹配器
+        初始化音符匹配器 - 五等级匹配系统
 
         Args:
-            global_time_offset: 全局时间偏移量（已废弃，固定为0）
+            global_time_offset: 初始全局时间偏移量（可选，会在匹配过程中重新计算）
         """
-        self.global_time_offset = 0.0  # 固定为0，不再使用全局偏移
-        self.matched_pairs: List[Tuple[int, int, Note, Note]] = []
-        # 记录匹配失败原因：key=(data_type, index)，value=str
-        self.failure_reasons: Dict[Tuple[str, int], str] = {}
-        # 记录超过阈值但有最佳配对的匹配对：List[Tuple[int, int, Note, Note]]，格式与matched_pairs相同
-        # 这些匹配对虽然超过阈值，但仍然有最佳配对，可以用于显示对比曲线图
-        self.exceeds_threshold_matched_pairs: List[Tuple[int, int, Note, Note]] = []
-        # 缓存平均误差，避免重复计算
+        self.global_time_offset = global_time_offset
+
+        # 核心匹配结果存储
+        self.matched_pairs: List[Tuple[int, int, Note, Note]] = []  # 所有成功匹配对 (record_idx, replay_idx, record_note, replay_note)
+        self.match_results: List[MatchResult] = []  # 所有匹配结果详情 (包含匹配类型、误差等)
+
+        # 匹配失败信息
+        self.failure_reasons: Dict[Tuple[str, int], str] = {}  # key=(data_type, index)，value=str
+
+        # 分类存储 - 按搜索阶段分组（用于数据获取优化）
+        self.precision_matched_pairs: List[Tuple[int, int, Note, Note]] = []  # 精确搜索阶段匹配 (≤50ms)
+        self.approximate_matched_pairs: List[Tuple[int, int, Note, Note]] = []  # 近似搜索阶段匹配 (50-1000ms)
+        self.severe_matched_pairs: List[Tuple[int, int, Note, Note]] = []  # 严重误差搜索阶段匹配 (>1000ms)
+
+        # 统计信息
+        self.match_statistics = MatchStatistics()
+
+        # 数据引用缓存
+        self._record_data: Optional[List[Note]] = None
+        self._replay_data: Optional[List[Note]] = None
+
+        # 计算缓存
         self._mean_error_cached: Optional[float] = None
     
     def find_all_matched_pairs(self, record_data: List[Note], replay_data: List[Note]) -> List[Tuple[int, int, Note, Note]]:
         """
-        以录制数据为基准，在播放数据中寻找匹配的音符对
-        
+        查找所有匹配对：将录制数据与播放数据进行匹配
+
+        使用贪心策略：为每个录制音符找到最佳的播放音符匹配，
+        确保每个播放音符最多被使用一次
+
         Args:
             record_data: 录制数据
             replay_data: 播放数据
-            
-        Returns:
-            List[Tuple[int, int, Note, Note]]: 匹配对列表
-        """
-        matched_pairs = []
-        used_replay_indices = set()
-        # 清空上一轮失败原因、超过阈值的匹配对和缓存的平均误差
-        self.failure_reasons.clear()
-        self.exceeds_threshold_matched_pairs.clear()
-        self._clear_mean_error_cache()
-        
-        logger.info(f"🎯 开始音符匹配: 录制数据{len(record_data)}个音符, 回放数据{len(replay_data)}个音符")
-        
-        # 录制数据在播放数据中匹配
-        for i, record_note in enumerate(record_data):
-            note_info = self._extract_note_info(record_note, i)
 
-            # 生成候选列表（按总误差升序），仅保留在动态阈值内的候选
-            candidates, threshold, reason_if_empty = self._generate_sorted_candidates_within_threshold(
-                replay_data,
-                target_keyon=note_info["keyon"],
-                target_keyoff=note_info["keyoff"],
-                target_key_id=note_info["key_id"]
+        Returns:
+            List[Tuple[int, int, Note, Note]]: 匹配对列表 (record_index, replay_index, record_note, replay_note)
+        """
+        matched_pairs: List[Tuple[int, int, Note, Note]] = []
+        used_replay_indices = set()
+        normal_match_count = 0  # 正常候选匹配数量
+        expanded_match_count = 0  # 扩展候选匹配数量
+
+        # 初始化状态
+        self._initialize_matching_state()
+
+        logger.info(f"🎯 开始音符匹配: 录制数据{len(record_data)}个音符, 回放数据{len(replay_data)}个音符")
+
+        # 保存原始数据引用（用于失败匹配详情）
+        self._record_data = record_data
+        self._replay_data = replay_data
+
+        # 1. 计算全局时间偏移
+        # self.global_time_offset = self._calculate_global_time_offset(record_data, replay_data)
+
+        # 2. 为每个录制音符寻找匹配
+        for i, record_note in enumerate(record_data):
+            match_result = self._perform_single_note_matching(
+                record_note, i, replay_data, used_replay_indices
             )
 
-            # 如果没有在阈值内的候选，尝试获取所有候选（包括超过阈值的）以选择最佳匹配
-            all_candidates = None
-            exceeds_threshold = False
-            if not candidates:
-                # 获取所有候选（包括超过阈值的），用于选择最佳匹配
-                all_candidates, threshold, reason_if_empty = self._generate_all_candidates_sorted(
-                    replay_data,
-                    target_keyon=note_info["keyon"],
-                    target_keyoff=note_info["keyoff"],
-                    target_key_id=note_info["key_id"]
-                )
-                
-                if not all_candidates:
-                    # 完全没有候选，判定失败 - 明确说明"录制有，播放无"
-                    reason = f"录制有，播放无（没有找到键ID {note_info['key_id']} 的播放音符）"
-                    logger.info(f"❌ 匹配失败: 键ID={note_info['key_id']}, 录制索引={i}, "
-                               f"录制时间=({note_info['keyon']/10:.2f}ms, {note_info['keyoff']/10:.2f}ms), "
-                               f"原因: {reason}")
-                    self.failure_reasons[("record", i)] = reason
-                    continue
-                
-                # 即使超过阈值，也选择误差最小的候选作为匹配对（标记为异常）
-                best_error_ms = all_candidates[0]['total_error'] / 10.0
-                threshold_ms = threshold / 10.0
-                reason = f"时间误差过大（误差:{best_error_ms:.1f}ms, 阈值:{threshold_ms:.1f}ms），超过阈值但存在最佳匹配对"
-                logger.info(f"⚠️ 所有候选都超过阈值，选择最佳匹配（超过阈值）: 键ID={note_info['key_id']}, 录制索引={i}, "
-                           f"最佳误差={best_error_ms:.2f}ms, 阈值={threshold_ms:.2f}ms")
-                candidates = all_candidates  # 使用所有候选（包括超过阈值的）
-                exceeds_threshold = True  # 标记为超过阈值
-                # 记录超过阈值的原因（用于后续显示）
-                self.failure_reasons[("record", i)] = reason
+            # 更新统计信息
+            self.match_statistics.add_result(match_result)
 
-            # 从候选中选择第一个未被占用的重放索引
-            chosen = None
-            for cand in candidates:
-                cand_index = cand['index']
-                if cand_index not in used_replay_indices:
-                    chosen = cand
-                    break
+            # 保存匹配结果
+            self.match_results.append(match_result)
 
-            if chosen is not None:
-                replay_index = chosen['index']
-                replay_note = replay_data[replay_index]
-                
-                # 检查是否超过阈值
-                if exceeds_threshold or chosen['total_error'] > threshold:
-                    # 超过阈值，加入exceeds_threshold_matched_pairs
-                    self.exceeds_threshold_matched_pairs.append((i, replay_index, record_note, replay_note))
-                    used_replay_indices.add(replay_index)
-                    # 记录超过阈值的原因（如果还没有记录）
-                    if ("record", i) not in self.failure_reasons:
-                        best_error_ms = chosen['total_error'] / 10.0
-                        threshold_ms = threshold / 10.0
-                        self.failure_reasons[("record", i)] = f"时间误差过大（误差:{best_error_ms:.1f}ms, 阈值:{threshold_ms:.1f}ms），超过阈值但存在最佳匹配对"
-                    logger.info(f"⚠️ 超过阈值匹配对已记录: 键ID={note_info['key_id']}, 录制索引={i}, 回放索引={replay_index}, "
-                               f"误差={chosen['total_error']/10:.2f}ms, 阈值={threshold/10:.2f}ms")
-                else:
-                    # 在阈值内，加入正常的matched_pairs
-                    matched_pairs.append((i, replay_index, record_note, replay_note))
-                    used_replay_indices.add(replay_index)
-                
-                # 记录匹配成功的详细信息
-                record_keyon, record_keyoff = self._calculate_note_times(record_note)
-                replay_keyon, replay_keyoff = self._calculate_note_times(replay_note)
-                keyon_offset = replay_keyon - record_keyon
-                keyoff_offset = replay_keyoff - record_keyoff
-                
-                status = "⚠️ 匹配成功（超过阈值）" if (exceeds_threshold or chosen['total_error'] > threshold) else "✅ 匹配成功"
-                logger.info(f"{status}: 键ID={note_info['key_id']}, "
-                           f"录制索引={i}, 回放索引={replay_index}, "
-                           f"录制时间=({record_keyon/10:.2f}ms, {record_keyoff/10:.2f}ms), "
-                           f"回放时间=({replay_keyon/10:.2f}ms, {replay_keyoff/10:.2f}ms), "
-                           f"偏移=({keyon_offset/10:.2f}ms, {keyoff_offset/10:.2f}ms), "
-                           f"总误差={chosen['total_error']/10:.2f}ms, "
-                           f"阈值={threshold/10:.2f}ms")
+            # 处理匹配结果
+            if match_result.is_success:
+                matched_pairs.append((
+                    match_result.record_index,
+                    match_result.replay_index,
+                    match_result.pair[0],  # record_note
+                    match_result.pair[1]   # replay_note
+                ))
+
+                # 记录匹配日志
+                logger.debug(f"匹配成功: 键ID={record_note.id}, 录制索引{i} -> 播放索引{match_result.replay_index}, "
+                           f"误差={match_result.error_ms:.2f}ms, 类型={match_result.match_type.value}")
             else:
-                # 所有候选都被占用 - 明确说明原因
-                if len(candidates) > 0:
-                    # 有候选但都被占用
-                    # 从当前录制音符的角度：录制有，但播放数据中没有可用的匹配（所有候选已被其他录制音符占用）
-                    reason = f"录制有，播放没（所有候选已被占用，候选数:{len(candidates)}, 阈值:{threshold/10:.1f}ms）"
-                else:
-                    # 这种情况理论上不应该发生（因为前面已经处理了没有候选的情况）
-                    reason = f"录制有，播放无（没有可用候选）"
-                logger.info(f"❌ 匹配失败: 键ID={note_info['key_id']}, 录制索引={i}, "
-                           f"录制时间=({note_info['keyon']/10:.2f}ms, {note_info['keyoff']/10:.2f}ms), "
-                           f"原因: {reason}")
-                
-                # 记录被占用的候选详细信息
-                for j, cand in enumerate(candidates[:3]):  # 只记录前3个候选
-                    cand_note = replay_data[cand['index']]
-                    cand_keyon, cand_keyoff = self._calculate_note_times(cand_note)
-                    logger.info(f"   候选{j+1}: 回放索引={cand['index']}, "
-                               f"回放时间=({cand_keyon/10:.2f}ms, {cand_keyoff/10:.2f}ms), "
-                               f"总误差={cand['total_error']/10:.2f}ms")
-                
-                self.failure_reasons[("record", i)] = reason
+                self.failure_reasons[("record", i)] = match_result.reason
+                logger.debug(f"匹配失败: 录制索引{i}, 键ID={record_note.id}, 原因:{match_result.reason}")
         
         self.matched_pairs = matched_pairs
-
-        # 记录匹配结果统计
-        success_count = len(matched_pairs)
-        failure_count = len(record_data) - success_count
-        logger.info(f"🎯 音符匹配完成: 成功匹配{success_count}对, 失败{failure_count}个, "
-                   f"成功率{success_count/len(record_data)*100:.1f}%")
+        self._log_matching_statistics(record_data, replay_data, matched_pairs, used_replay_indices)
 
         # 匹配完成后计算并缓存平均误差
         self._mean_error_cached = self._calculate_mean_error()
 
+        # 打印匹配统计信息
+        print(f"[匹配统计] 精确匹配: {self.match_statistics.precision_matches} 个")
+        print(f"[匹配统计] 近似匹配: {self.match_statistics.approximate_matches} 个")
+        print(f"[匹配统计] 大误差匹配: {self.match_statistics.large_error_matches} 个")
+        print(f"[匹配统计] 失败匹配: {self.match_statistics.failed_matches} 个")
+        print(f"[匹配统计] 总匹配对: {len(matched_pairs)} 个 (准确率分子)")
+
         return matched_pairs
 
-    def _generate_sorted_candidates_within_threshold(self, notes_list: List[Note], target_keyon: float, target_keyoff: float, target_key_id: int) -> Tuple[List[Dict[str, float]], float, str]:
+    def _find_candidates(self, notes_list: List[Note], target_keyon: float, target_keyoff: float,
+                        target_key_id: int, time_offset: float = 0.0, search_mode: str = "precision") -> Tuple[List[Candidate], str]:
         """
-        生成在动态阈值内的候选列表（按总误差升序）。
+        生成候选列表，支持不同的搜索模式。
 
         参数单位：
             - target_keyon/target_keyoff：0.1ms（绝对时间 = after_touch.index + offset）
-            - 误差/阈值：0.1ms（内部统一单位）
+            - 误差：0.1ms（内部统一单位）
+
+        Args:
+            notes_list: 音符列表
+            target_keyon: 目标按键开始时间
+            target_keyoff: 目标按键结束时间
+            target_key_id: 目标按键ID
+            time_offset: 时间偏移
+            search_mode: 搜索模式 ("precision" 或 "approximate")
 
         Returns:
-            (candidates, max_allowed_error, reason_if_empty)
+            (candidates, reason_if_empty)
         """
-        # 1) 过滤同键ID
-        matching = []
+        # 1) 过滤同键ID的音符
+        matching_notes = []
         for idx, note in enumerate(notes_list):
             if getattr(note, 'id', None) == target_key_id:
-                matching.append((idx, note))
+                matching_notes.append((idx, note))
 
-        if not matching:
-            return [], 0.0, f"没有找到键ID {target_key_id} 的音符"
+        if not matching_notes:
+            return [], f"没有找到键ID {target_key_id} 的音符"
 
         # 2) 构建候选并计算误差
-        # 注意：此时所有音符都已通过数据过滤，保证有hammers和after_touch数据
-        candidates: List[Dict[str, float]] = []
-        for idx, note in matching:
-            # 计算按键开始和结束时间
-            current_keyon = note.after_touch.index[0] + note.offset
-            current_keyoff = note.after_touch.index[-1] + note.offset
+        candidates: List[Candidate] = []
+        for idx, note in matching_notes:
+            # 计算按键开始时间（应用时间偏移）
+            try:
+                current_keyon = note.after_touch.index[0] + note.offset + time_offset
+            except (IndexError, AttributeError) as e:
+                raise ValueError(f"音符ID {note.id} 的after_touch数据无效: {e}") from e
 
             # 只使用keyon_offset计算误差
             keyon_offset = current_keyon - target_keyon
-
-            # 评分：只使用 |keyon_offset| （单位：0.1ms）
             total_error = abs(keyon_offset)
 
-            candidates.append({
-                'index': idx,
-                'total_error': total_error,
-                'keyon_error': abs(keyon_offset)
-            })
+            candidates.append(Candidate(idx, total_error))
 
-        # 由于数据已过滤，理论上不会出现空候选列表（除非没有相同键ID）
-        # 但保留此检查以防万一
-        if not candidates:
-            return [], 0.0, f"没有找到键ID {target_key_id} 的候选音符"
+        # 3) 根据搜索模式应用阈值过滤 - 分层搜索策略
+        if search_mode == "precision":
+            # 精确搜索：优先寻找高质量匹配 (≤ FAIR_THRESHOLD = 50ms)
+            # 这个阈值与评级中的fair阈值一致，确保不会影响评级分布
+            filtered = [c for c in candidates if c.total_error <= FAIR_THRESHOLD]
+            if not filtered:
+                # 没有精确候选，返回空列表和原因
+                best_error = min(c.error_ms for c in candidates) if candidates else 0
+                return [], f"无精确候选(最佳误差:{best_error:.1f}ms, 阈值:{FAIR_THRESHOLD/10:.1f}ms)"
+        elif search_mode == "approximate":
+            # 近似搜索：当精确搜索失败时，寻找可接受的匹配
+            # 阈值与评级中的poor阈值一致，确保评级逻辑不受影响
+            filtered = [c for c in candidates if c.total_error <= POOR_THRESHOLD]
+            if not filtered:
+                return [], f"无近似候选(阈值:{POOR_THRESHOLD/10:.1f}ms)"
+        elif search_mode == "severe":
+            # 严重误差搜索：只接受误差很大的匹配 (>1000ms)
+            # 这些匹配会被评为SEVERE类型
+            filtered = [c for c in candidates if c.total_error > POOR_THRESHOLD]
+            if not filtered:
+                return [], f"无严重误差候选(阈值:>{POOR_THRESHOLD/10:.1f}ms)"
+        else:
+            filtered = candidates
 
-        # 3) 动态阈值（单位：0.1ms；base_threshold=500→50ms；范围约30–50ms）
-        base_threshold = 500.0
-        duration = (target_keyoff - target_keyon)
-        # 持续时间必须大于0，否则视为异常音符（索引或数据异常）
-        # TODO
-        if duration <= 0:
-            return [], 0.0, "无效持续时间(≤0)，疑似异常音符"
-        duration_factor = min(1.0, max(0.6, duration / 500.0))
-        max_allowed_error = base_threshold * duration_factor
+        # 按误差升序排序
+        filtered.sort(key=lambda x: x.total_error)
+        return filtered, ""
 
-        # 4) 过滤出在阈值内的候选并排序
-        within = [c for c in candidates if c['total_error'] <= max_allowed_error]
-        within.sort(key=lambda x: x['total_error'])
+    def _evaluate_match_quality(self, error_ms: float) -> MatchType:
+        """
+        根据误差评估匹配质量 - 六等级标准
 
-        if not within:
-            # 即使有候选，但全部超阈值
-            # 选出最小误差用于提示
-            best_total = min(c['total_error'] for c in candidates)
-            # 日志/原因字符串以ms显示（内部0.1ms需/10）
-            return [], max_allowed_error, (
-                f"时间误差过大(误差:{best_total/10:.1f}ms, 阈值:{max_allowed_error/10:.1f}ms)"
+        Args:
+            error_ms: 误差(毫秒)
+
+        Returns:
+            MatchType: 匹配类型
+        """
+        error_units = error_ms * 10.0  # 转换为内部单位
+
+        if error_units <= EXCELLENT_THRESHOLD:
+            return MatchType.EXCELLENT
+        elif error_units <= GOOD_THRESHOLD:
+            return MatchType.GOOD
+        elif error_units <= FAIR_THRESHOLD:
+            return MatchType.FAIR
+        elif error_units <= POOR_THRESHOLD:
+            return MatchType.POOR
+        else:
+            return MatchType.SEVERE
+
+    def _create_match_result(self, match_type: MatchType, record_index: int,
+                           replay_index: Optional[int] = None, candidate: Optional[Candidate] = None,
+                           record_note: Optional[Note] = None, replay_note: Optional[Note] = None,
+                           reason: str = "") -> MatchResult:
+        """
+        创建匹配结果对象
+
+        Args:
+            match_type: 匹配类型
+            record_index: 录制音符索引
+            replay_index: 播放音符索引
+            candidate: 候选对象
+            record_note: 录制音符
+            replay_note: 播放音符
+            reason: 失败原因
+
+        Returns:
+            MatchResult: 匹配结果对象
+        """
+        error_ms = candidate.error_ms if candidate else 0.0
+        pair = (record_note, replay_note) if record_note and replay_note else None
+
+        return MatchResult(
+            match_type=match_type,
+            record_index=record_index,
+            replay_index=replay_index,
+            error_ms=error_ms,
+            pair=pair,
+            reason=reason
+        )
+
+    def _calculate_global_time_offset(self, record_data: List[Note], replay_data: List[Note]) -> float:
+        """
+        计算全局时间偏移量（系统固定延时）
+
+        目前：暂时禁用DTW算法，直接返回0
+        之前的策略（已注释）：
+        1. 提取录制和播放的按键时间序列
+        2. 使用DTW算法计算序列间的对应关系
+        3. 从DTW路径中推导出全局时间偏移
+
+        DTW优点：可以处理复杂的时序对齐，不仅仅是固定偏移
+        虽然DTW会产生一对多的情况，但这里只是估算全局偏移，后续匹配会重新处理
+
+        Returns:
+            float: 全局时间偏移量（0.1ms单位），目前固定返回0
+        """
+
+        # 暂时禁用DTW算法，直接返回0
+        logger.info("ℹ️ 全局时间偏移计算已禁用，返回0（DTW算法已注释）")
+        return 0.0
+
+        # ==================== DTW算法代码已注释 ====================
+        #
+        # # 1. 提取时间序列（按键开始时间）
+        # record_times = []
+        # replay_times = []
+        #
+        # # 按时间排序录制音符
+        # sorted_record = sorted(record_data, key=lambda n: n.after_touch.index[0] + n.offset)
+        # for note in sorted_record:
+        #     start_time, _ = self._calculate_note_times(note)
+        #     record_times.append(start_time)
+        #
+        # # 按时间排序播放音符
+        # sorted_replay = sorted(replay_data, key=lambda n: n.after_touch.index[0] + n.offset)
+        # for note in sorted_replay:
+        #     start_time, _ = self._calculate_note_times(note)
+        #     replay_times.append(start_time)
+        #
+        #
+        # # 2. 计算DTW距离矩阵
+        # record_array = np.array(record_times)
+        # replay_array = np.array(replay_times)
+        #
+        # # 归一化时间序列（减去各自的起始时间）
+        # record_norm = record_array - record_array[0]
+        # replay_norm = replay_array - replay_array[0]
+        #
+        # # 计算距离矩阵
+        # distances = np.abs(record_norm[:, np.newaxis] - replay_norm[np.newaxis, :])
+        #
+        # # 3. DTW动态规划
+        # n, m = len(record_norm), len(replay_norm)
+        # dtw_matrix = np.full((n, m), np.inf)
+        # dtw_matrix[0, 0] = distances[0, 0]
+        #
+        # # 填充第一行和第一列
+        # for i in range(1, n):
+        #     dtw_matrix[i, 0] = dtw_matrix[i-1, 0] + distances[i, 0]
+        # for j in range(1, m):
+        #     dtw_matrix[0, j] = dtw_matrix[0, j-1] + distances[0, j]
+        #
+        # # 填充其余部分
+        # for i in range(1, n):
+        #     for j in range(1, m):
+        #         cost = distances[i, j]
+        #         dtw_matrix[i, j] = cost + min(
+        #             dtw_matrix[i-1, j],    # 上方
+        #             dtw_matrix[i, j-1],    # 左方
+        #             dtw_matrix[i-1, j-1]   # 对角线
+        #         )
+        #
+        # # 4. 回溯找到最优路径
+        # path = []
+        # i, j = n-1, m-1
+        # path.append((i, j))
+        #
+        # while i > 0 or j > 0:
+        #     if i == 0:
+        #         j -= 1
+        #     elif j == 0:
+        #         i -= 1
+        #     else:
+        #         min_prev = min(
+        #             dtw_matrix[i-1, j],    # 上方
+        #             dtw_matrix[i, j-1],    # 左方
+        #             dtw_matrix[i-1, j-1]   # 对角线
+        #         )
+        #         if dtw_matrix[i-1, j-1] == min_prev:
+        #             i, j = i-1, j-1
+        #         elif dtw_matrix[i-1, j] == min_prev:
+        #             i -= 1
+        #         else:
+        #             j -= 1
+        #     path.append((i, j))
+        #
+        # path.reverse()
+        #
+        # # 5. 从DTW路径计算时间偏移
+        # time_diffs = []
+        # for rec_idx, rep_idx in path:
+        #     if rec_idx < len(record_times) and rep_idx < len(replay_times):
+        #         diff = replay_times[rep_idx] - record_times[rec_idx]
+        #         time_diffs.append(diff)
+        #
+        # if not time_diffs:
+        #     logger.warning("⚠️ DTW路径为空，回退到简单方法")
+        #     return self._calculate_global_time_offset_simple(record_data, replay_data)
+        #
+        # # 6. 检查路径质量
+        # # 6.2 检查时间差方差是否太大（方差过大表示对齐质量差）
+        # # 将时间差转换为ms单位进行方差计算
+        # # time_diffs_ms = np.array(time_diffs) / 10.0
+        # # variance_ms = float(np.var(time_diffs_ms))
+        #
+        # # # 方差阈值：如果时间差的标准差超过50ms，认为对齐质量太差
+        # # # (50ms)^2 = 2500 ms²
+        # # max_variance_threshold = 2500.0
+        # # if variance_ms > max_variance_threshold:
+        # #     logger.warning(f"⚠️ DTW路径方差太大({variance_ms:.1f} > {max_variance_threshold} ms²)，质量不足，回退到简单方法")
+        # #     return self._calculate_global_time_offset_simple(record_data, replay_data)
+        #
+        # # 6.3 计算加权平均偏移（考虑DTW路径的局部差异）
+        # # 使用中位数避免异常值影响
+        # median_offset = float(np.median(time_diffs))
+        #
+        # # 6.4 合理性检查：全局偏移不应超过合理范围
+        # # 如果偏移过大，说明DTW对齐可能有问题，回退到简单方法
+        # max_reasonable_offset = 5000.0  # 500ms (0.1ms单位)
+        # if abs(median_offset) > max_reasonable_offset:
+        #     logger.warning(f"⚠️ DTW计算的全局偏移过大({median_offset/10:.2f}ms > {max_reasonable_offset/10:.0f}ms)，"
+        #                  f"可能对齐有问题，回退到简单方法")
+        #     return self._calculate_global_time_offset_simple(record_data, replay_data)
+        #
+        # logger.info(f"🎯 DTW计算得到全局时间偏移(Median): {median_offset/10:.2f}ms (基于 {len(time_diffs)} 个路径点)")
+        #
+        # return median_offset
+        #
+        # ==================== DTW算法代码已注释结束 ====================
+
+    # def _calculate_global_time_offset_simple(self, record_data: List[Note], replay_data: List[Note]) -> float:
+    #     """
+    #     简单的全局时间偏移计算方法（当DTW不可用时的回退方案）
+
+    #     策略：
+    #     1. 遍历录制音符
+    #     2. 在播放数据中寻找相同KeyID且时间最近的音符
+    #     3. 收集时间差
+    #     4. 取中位数作为全局偏移
+
+    #     Returns:
+    #         float: 全局时间偏移量（0.1ms单位）
+    #     """
+    #     time_diffs = []
+
+    #     # 建立播放数据的快速查找索引：KeyID -> List[Note]
+    #     replay_map = {}
+    #     for r_note in replay_data:
+    #         if r_note.id not in replay_map:
+    #             replay_map[r_note.id] = []
+    #         replay_map[r_note.id].append(r_note)
+
+    #     for record_note in record_data:
+    #         # 寻找相同KeyID的播放音符
+    #         if record_note.id not in replay_map:
+    #             continue
+
+    #         candidates = replay_map[record_note.id]
+    #         if not candidates:
+    #             continue
+
+    #         # 计算录制时间
+    #         rec_start, _ = self._calculate_note_times(record_note)
+
+    #         # 寻找最近的候选
+    #         best_diff = None
+    #         min_abs_diff = float('inf')
+
+    #         for replay_note in candidates:
+    #             rep_start, _ = self._calculate_note_times(replay_note)
+    #             diff = rep_start - rec_start
+    #             abs_diff = abs(diff)
+
+    #             # 使用一个较宽的窗口（例如2秒），避免匹配到完全不相关的音符
+    #             # 20000 = 2000ms = 2s
+    #             if abs_diff < 20000:
+    #                 if abs_diff < min_abs_diff:
+    #                     min_abs_diff = abs_diff
+    #                     best_diff = diff
+
+    #         if best_diff is not None:
+    #             time_diffs.append(best_diff)
+
+    #     if not time_diffs:
+    #         logger.warning("⚠️ 无法计算全局偏移：没有找到任何匹配的按键对")
+    #         return 0.0
+
+    #     # 使用numpy计算中位数（对异常值不敏感）
+    #     median_offset = float(np.median(time_diffs))
+
+    #     # 合理性检查：全局偏移不应超过合理范围
+    #     max_reasonable_offset = 5000.0  # 500ms (0.1ms单位)
+    #     if abs(median_offset) > max_reasonable_offset:
+    #         logger.warning(f"⚠️ 简单方法计算的全局偏移过大({median_offset/10:.2f}ms > {max_reasonable_offset/10:.0f}ms)，"
+    #                      f"限制为合理范围")
+    #         median_offset = max(-max_reasonable_offset, min(max_reasonable_offset, median_offset))
+
+    #     logger.info(f"📊 简单方法计算得到全局时间偏移(Median): {median_offset/10:.2f}ms (基于 {len(time_diffs)} 个样本)")
+
+    #     return median_offset
+
+    def _initialize_matching_state(self) -> None:
+        """初始化匹配状态"""
+        self.failure_reasons.clear()
+        self._clear_mean_error_cache()
+
+    def _perform_single_note_matching(self, record_note: Note, record_index: int,
+                                     replay_data: List[Note], used_replay_indices: set) -> MatchResult:
+        """
+        执行单个音符的匹配过程
+
+        按优先级顺序尝试不同类型的匹配：
+        1. 精确匹配 (≤50ms)
+        2. 近似匹配 (50ms-300ms)
+        3. 大误差匹配 (>300ms)
+        4. 失败
+
+        Args:
+            record_note: 录制音符
+            record_index: 录制音符索引
+            replay_data: 播放数据
+            used_replay_indices: 已使用的播放音符索引集合
+
+        Returns:
+            MatchResult: 匹配结果
+        """
+        note_info = self._extract_note_info(record_note, record_index)
+
+        # 定义匹配策略：分层搜索，确保找到最佳匹配
+        # 搜索策略与评级逻辑解耦，避免阈值影响评级分布
+        match_strategies = [
+            ("precision", self.precision_matched_pairs),     # 第一优先级: 精确搜索 (≤50ms)
+            ("approximate", self.approximate_matched_pairs), # 第二优先级: 扩展搜索 (≤1000ms)
+            ("severe", self.severe_matched_pairs),          # 第三优先级: 严重误差搜索 (>1000ms)
+        ]
+
+        # 按顺序尝试每种匹配策略
+        for search_mode, record_list in match_strategies:
+            candidates, reason = self._find_candidates(
+                replay_data, note_info["keyon"], note_info["keyoff"],
+                note_info["key_id"], time_offset=0, search_mode=search_mode
             )
 
-        return within, max_allowed_error, ""
-    
-    def _generate_all_candidates_sorted(self, notes_list: List[Note], target_keyon: float, target_keyoff: float, target_key_id: int) -> Tuple[List[Dict[str, float]], float, str]:
+            if candidates:
+                chosen = self._select_best_candidate_from_list(candidates, used_replay_indices)
+                if chosen:
+                    # 匹配成功
+                    replay_index = chosen.index
+                    replay_note = replay_data[replay_index]
+
+                    # 如果需要记录到特殊列表（如近似匹配或大误差匹配）
+                    if record_list is not None:
+                        match_pair = (record_index, replay_index, record_note, replay_note)
+                        record_list.append(match_pair)
+
+                    used_replay_indices.add(replay_index)
+
+                    # 根据实际误差确定匹配类型
+                    actual_match_type = self._evaluate_match_quality(chosen.error_ms)
+
+                    return self._create_match_result(
+                        actual_match_type, record_index, replay_index, chosen,
+                        record_note, replay_note
+                    )
+
+        # 所有搜索都失败
+        failure_reason = reason if reason else f"录制有，播放无（键ID {note_info['key_id']} 无可用候选）"
+        return self._create_match_result(
+            MatchType.FAILED, record_index, reason=failure_reason
+        )
+
+    def _select_best_candidate_from_list(self, candidates: List[Candidate], used_indices: set) -> Optional[Candidate]:
         """
-        生成所有候选列表（包括超过阈值的），按总误差升序排序
-        
-        用于在没有任何候选在阈值内时，选择最佳匹配（即使超过阈值）
-        
-        参数单位：
-            - target_keyon/target_keyoff：0.1ms（绝对时间 = after_touch.index + offset）
-            - 误差/阈值：0.1ms（内部统一单位）
+        从候选列表中选择最佳的未使用候选
+
+        Args:
+            candidates: 候选列表（已按误差排序）
+            used_indices: 已使用的索引集合
 
         Returns:
-            (candidates, max_allowed_error, reason_if_empty)
+            Optional[Candidate]: 最佳候选，如果没有则返回None
         """
-        # 1) 过滤同键ID
-        matching = []
-        for idx, note in enumerate(notes_list):
-            if getattr(note, 'id', None) == target_key_id:
-                matching.append((idx, note))
+        for candidate in candidates:
+            if candidate.index not in used_indices:
+                return candidate
+        return None
 
-        if not matching:
-            return [], 0.0, f"没有找到键ID {target_key_id} 的音符"
 
-        # 2) 构建候选并计算误差
-        candidates: List[Dict[str, float]] = []
-        for idx, note in matching:
-            # 计算按键开始和结束时间
-            current_keyon = note.after_touch.index[0] + note.offset
-            current_keyoff = note.after_touch.index[-1] + note.offset
 
-            # 只使用keyon_offset计算误差
-            keyon_offset = current_keyon - target_keyon
+    def _log_successful_match(self, match_pair: Tuple, expanded_candidates: bool) -> None:
+        """
+        记录成功的匹配
 
-            # 评分：只使用 |keyon_offset| （单位：0.1ms）
-            total_error = abs(keyon_offset)
+        Args:
+            match_pair: 匹配对
+            expanded_candidates: 是否为扩展候选匹配
+        """
+        record_idx, replay_idx, record_note, replay_note = match_pair
 
-            candidates.append({
-                'index': idx,
-                'total_error': total_error,
-                'keyon_error': abs(keyon_offset)
-            })
+        status = "🔄 匹配成功（扩展候选）" if expanded_candidates else "✅ 匹配成功"
 
-        if not candidates:
-            return [], 0.0, f"没有找到键ID {target_key_id} 的候选音符"
+        # 计算时间信息用于日志
+        record_keyon, record_keyoff = self._calculate_note_times(record_note)
+        replay_keyon, replay_keyoff = self._calculate_note_times(replay_note)
 
-        # 3) 动态阈值计算（用于显示）
-        base_threshold = 500.0
-        duration = (target_keyoff - target_keyon)
-        if duration <= 0:
-            return [], 0.0, "无效持续时间(≤0)，疑似异常音符"
-        duration_factor = min(1.0, max(0.6, duration / 500.0))
-        max_allowed_error = base_threshold * duration_factor
+        # logger.info(f"{status}: 键ID={record_note.id}, 录制索引={record_idx}, 回放索引={replay_idx}")
 
-        # 4) 排序所有候选（包括超过阈值的）
-        candidates.sort(key=lambda x: x['total_error'])
+    def _log_failed_match(self, record_index: int, record_note: Note, reason: str,
+                         candidates: List[Dict], replay_data: List[Note]) -> None:
+        """
+        记录失败的匹配
 
-        return candidates, max_allowed_error, ""
+        Args:
+            record_index: 录制音符索引
+            record_note: 录制音符
+            reason: 失败原因
+            candidates: 候选列表
+            replay_data: 播放数据
+        """
+        note_info = self._extract_note_info(record_note, record_index)
+
+        logger.info(f"❌ 匹配失败: 键ID={note_info['key_id']}, 录制索引={record_index}, "
+                   f"录制时间=({note_info['keyon']/10:.2f}ms, {note_info['keyoff']/10:.2f}ms), "
+                   f"原因: {reason}")
+
+        # 记录被占用的候选详细信息
+        for j, cand in enumerate(candidates[:3]):
+            cand_note = replay_data[cand['index']]
+            cand_keyon, cand_keyoff = self._calculate_note_times(cand_note)
+            logger.info(f"   候选{j+1}: 回放索引={cand['index']}, "
+                       f"回放时间=({cand_keyon/10:.2f}ms, {cand_keyoff/10:.2f}ms), "
+                       f"总误差={cand['total_error']/10:.2f}ms")
+
+    def _log_matching_statistics(self, record_data: List[Note], replay_data: List[Note],
+                                matched_pairs: List, used_replay_indices: set) -> None:
+        """
+        记录匹配统计信息
+
+        Args:
+            record_data: 录制数据
+            replay_data: 播放数据
+            matched_pairs: 匹配对列表
+            used_replay_indices: 已使用的播放索引
+        """
+        success_count = len(matched_pairs)
+        failure_count = len(record_data) - success_count
+
+        logger.info(f"📊 匹配完成: 成功{success_count}对, 失败{failure_count}对, "
+                   f"总计{len(record_data)}个录制音符, 使用{len(used_replay_indices)}/{len(replay_data)}个播放音符")
+
     
     def _extract_note_info(self, note: Note, index: int) -> Dict:
         """
@@ -315,19 +775,21 @@ class NoteMatcher:
             index: 音符索引
             
         Returns:
-            Dict: 音符信息字典
+            Dict: 音符信息字典，包含绝对时间戳
         """
-        # 计算绝对时间戳
-        absolute_keyon = note.after_touch.index[0] + note.offset
-        absolute_keyoff = note.after_touch.index[-1] + note.offset
+        # 计算绝对时间戳（after_touch.index + offset）
+        # 这是音符在整个时间线上的实际发生时间
+        try:
+            absolute_keyon = note.after_touch.index[0] + note.offset
+            absolute_keyoff = note.after_touch.index[-1] + note.offset
+        except (IndexError, AttributeError) as e:
+            raise ValueError(f"音符ID {note.id} 的after_touch数据无效: {e}") from e
         
         return {
-            'keyon': absolute_keyon,
-            'keyoff': absolute_keyoff,
-            'key_id': note.id,
-            'index': index,
-            'relative_keyon': note.after_touch.index[0] + note.offset,
-            'relative_keyoff': note.after_touch.index[-1] + note.offset
+            'keyon': absolute_keyon,      # 绝对时间戳：按键开始时间
+            'keyoff': absolute_keyoff,    # 绝对时间戳：按键结束时间
+            'key_id': note.id,            # 按键ID
+            'index': index                # 音符在列表中的索引
         }
     
     def extract_normal_matched_pairs(self, matched_pairs: List[Tuple[int, int, Note, Note]], 
@@ -364,26 +826,144 @@ class NoteMatcher:
     # TODO
     def get_offset_alignment_data(self) -> List[Dict[str, Union[int, float]]]:
         """
-        获取偏移对齐数据 - 计算每个匹配对的时间偏移
+        获取偏移对齐数据 - 计算每个匹配对的时间偏移（包括超过阈值的匹配对）
         
         Returns:
             List[Dict[str, Union[int, float]]]: 偏移对齐数据列表
         """
         offset_data: List[Dict[str, Union[int, float]]] = []
         
-        for record_idx, replay_idx, record_note, replay_note in self.matched_pairs:
+        # 所有匹配对都在 matched_pairs 中
+        all_matched_pairs = self.matched_pairs
+
+        for record_idx, replay_idx, record_note, replay_note in all_matched_pairs:
             # 计算录制和播放音符的时间
             record_keyon, record_keyoff = self._calculate_note_times(record_note)
             replay_keyon, replay_keyoff = self._calculate_note_times(replay_note)
-            
-            # 计算偏移量：只使用keyon_offset
+
+            # 计算原始偏移量
             keyon_offset = replay_keyon - record_keyon
+
+            # 计算校准后的偏移（去除全局固定延时）
+            # 这反映了音符相对于系统平均延时的"抖动"或"误差"
+            corrected_offset = keyon_offset - self.global_time_offset
+
+
             record_duration = record_keyoff - record_keyon
             replay_duration = replay_keyoff - replay_keyon
             duration_diff = replay_duration - record_duration
             duration_offset = duration_diff
-            # 只使用keyon_offset计算average_offset
-            avg_offset = abs(keyon_offset)
+            # 使用校准后的绝对误差
+            avg_offset = abs(corrected_offset)
+
+
+            offset_data.append({
+                'record_index': record_idx,
+                'replay_index': replay_idx,
+                'key_id': record_note.id,
+                'record_keyon': record_keyon,
+                'replay_keyon': replay_keyon,
+                'keyon_offset': keyon_offset,       # 原始偏移
+                'corrected_offset': corrected_offset, # 校准后偏移（用于分析）
+                'record_keyoff': record_keyoff,
+                'replay_keyoff': replay_keyoff,
+                'duration_offset': duration_offset,
+                'average_offset': avg_offset,
+                'record_duration': record_duration,
+                'replay_duration': replay_duration,
+                'duration_diff': duration_diff
+            })
+
+        return offset_data
+
+    def get_precision_offset_alignment_data(self) -> List[Dict[str, Union[int, float]]]:
+        """
+        获取精确搜索阶段匹配对的偏移对齐数据 - 包含所有精确搜索阶段的匹配（误差 ≤ 50ms）
+
+        精确搜索阶段：尝试找到误差 ≤ 50ms 的匹配，最终匹配类型可能是优秀/良好/一般
+        用于计算延时误差统计指标，确保只使用相对高质量的匹配数据。
+
+        Returns:
+            List[Dict[str, Union[int, float]]]: 精确搜索阶段匹配对的偏移对齐数据列表
+        """
+        # 直接处理precision_matched_pairs中的所有匹配（≤50ms）
+        offset_data = []
+        for record_idx, replay_idx, record_note, replay_note in self.precision_matched_pairs:
+            # 计算录制和播放音符的时间
+            record_keyon, record_keyoff = self._calculate_note_times(record_note)
+            replay_keyon, replay_keyoff = self._calculate_note_times(replay_note)
+
+            # 计算原始偏移量
+            keyon_offset = replay_keyon - record_keyon
+
+            # 计算校准后的偏移（去除全局固定延时）
+            corrected_offset = keyon_offset - self.global_time_offset
+
+            record_duration = record_keyoff - record_keyon
+            replay_duration = replay_keyoff - replay_keyon
+            duration_diff = replay_duration - record_duration
+            duration_offset = duration_diff
+
+            offset_data.append({
+                'record_index': record_idx,
+                'replay_index': replay_idx,
+                'key_id': record_note.id,
+                'record_keyon': record_keyon,
+                'replay_keyon': replay_keyon,
+                'keyon_offset': keyon_offset,       # 原始偏移
+                'corrected_offset': corrected_offset, # 校准后偏移（用于分析）
+                'record_keyoff': record_keyoff,
+                'replay_keyoff': replay_keyoff,
+                'duration_offset': duration_offset,
+                'average_offset': abs(corrected_offset),
+                'record_duration': record_duration,
+                'replay_duration': replay_duration,
+                'duration_diff': duration_diff
+            })
+
+        return offset_data
+
+    def get_normal_offset_alignment_data(self) -> List[Dict[str, Union[int, float]]]:
+        """
+        获取正常匹配对的偏移对齐数据 - 只计算在阈值内的匹配对的时间偏移
+
+        注意：这个方法只处理正常匹配对，不包括超过阈值的匹配对。
+        用于计算准确的延时指标，避免异常数据影响统计结果。
+
+        Returns:
+            List[Dict[str, Union[int, float]]]: 正常匹配对的偏移对齐数据列表
+        """
+        offset_data: List[Dict[str, Union[int, float]]] = []
+
+        # 只处理正常匹配对（在阈值内的匹配对）
+        for record_idx, replay_idx, record_note, replay_note in self.matched_pairs:
+            # 计算录制和播放音符的时间
+            record_keyon, record_keyoff = self._calculate_note_times(record_note)
+            replay_keyon, replay_keyoff = self._calculate_note_times(replay_note)
+
+            # 计算原始偏移量
+            keyon_offset = replay_keyon - record_keyon
+
+            # 计算校准后的偏移（去除全局固定延时）
+            # 由于DTW已禁用，全局偏移为0，所以corrected_offset = keyon_offset
+            corrected_offset = keyon_offset - self.global_time_offset
+
+            # 安全检查：正常匹配对的偏移应该在合理范围内
+            # 如果超过1000ms，说明数据或匹配逻辑有严重问题
+            max_reasonable_offset = 10000.0  # 1000ms
+            if abs(corrected_offset) > max_reasonable_offset:
+                logger.error(f"🚨 检测到异常大的校准偏移: {corrected_offset/10:.2f}ms, "
+                           f"键ID={record_note.id}, 录制索引={record_idx}, 播放索引={replay_idx}, "
+                           f"这表明匹配逻辑或数据有严重问题")
+                # 跳过这个异常匹配对，不将其包含在统计中
+                continue
+
+            record_duration = record_keyoff - record_keyon
+            replay_duration = replay_keyoff - replay_keyon
+            duration_diff = replay_duration - record_duration
+            duration_offset = duration_diff
+            # 使用校准后的绝对误差
+            avg_offset = abs(corrected_offset)
     
             
             offset_data.append({
@@ -392,7 +972,8 @@ class NoteMatcher:
                 'key_id': record_note.id,
                 'record_keyon': record_keyon,
                 'replay_keyon': replay_keyon,
-                'keyon_offset': keyon_offset,
+                'keyon_offset': keyon_offset,       # 原始偏移
+                'corrected_offset': corrected_offset, # 校准后偏移（用于分析）
                 'record_keyoff': record_keyoff,
                 'replay_keyoff': replay_keyoff,
                 'duration_offset': duration_offset,
@@ -402,6 +983,189 @@ class NoteMatcher:
                 'duration_diff': duration_diff
             })
         
+        return offset_data
+
+
+
+    def get_graded_error_stats(self) -> Dict[str, Dict[str, Union[int, float]]]:
+        """
+        获取分级误差统计 - 成功匹配质量评级
+
+        只统计成功匹配对的质量分布（不包括失败匹配）：
+        - correct: 优秀 (误差 ≤ 20ms)
+        - minor: 良好 (20ms < 误差 ≤ 30ms)
+        - moderate: 一般 (30ms < 误差 ≤ 50ms)
+        - large: 较差 (50ms < 误差 ≤ 1000ms)
+        - severe: 严重 (误差 > 1000ms)
+
+        注意：只统计成功匹配的质量分布，失败匹配不参与评级统计
+
+        Returns:
+            Dict: 包含各级别的计数和百分比
+        """
+        # 总配对数 = 成功的匹配对数（直接使用self.matched_pairs）
+        total_successful_matches = len(self.matched_pairs)
+
+        # 获取所有成功的匹配对数据用于评级
+        # 直接从match_results中获取所有成功匹配的数据
+        all_matched_data = []
+        for result in self.match_results:
+            if result.is_success:
+                # 为评级统计创建数据项
+                item = self._create_offset_data_item(result)
+                all_matched_data.append(item)
+
+        # 初始化统计 - 只统计成功匹配的评级分布
+        stats = {
+            'correct': 0,      # 优秀 (≤20ms)
+            'minor': 0,        # 良好 (20-30ms)
+            'moderate': 0,     # 一般 (30-50ms)
+            'large': 0,        # 较差 (50-1000ms)
+            'severe': 0,       # 严重 (>1000ms)
+            # 注意：不再统计失败匹配，因为失败匹配不参与质量评级
+        }
+
+        # 基于误差范围对所有成功匹配进行评级
+        for item in all_matched_data:
+            error_abs = abs(item['corrected_offset'])
+            error_ms = error_abs / 10.0
+
+            if error_ms <= 20:
+                stats['correct'] += 1      # 优秀
+            elif error_ms > 20 and error_ms <= 30:
+                stats['minor'] += 1        # 良好
+            elif error_ms > 30 and error_ms <= 50:
+                stats['moderate'] += 1     # 一般
+            elif error_ms > 50 and error_ms <= 1000:
+                stats['large'] += 1        # 较差
+            else:  # error_ms > 1000
+                stats['severe'] += 1       # 严重
+
+        # 计算百分比（基于成功的匹配对总数）
+        # 评级统计只反映成功匹配的质量分布，不包括失败匹配
+        result = {}
+        for key, count in stats.items():
+            result[key] = {
+                'count': count,
+                'percent': (count / total_successful_matches * 100) if total_successful_matches > 0 else 0.0
+            }
+
+        result['total_successful_matches'] = total_successful_matches  # 成功匹配总数
+        result['global_offset_ms'] = self.global_time_offset / 10.0
+
+        logger.info(f"📊 [后端] 匹配质量评级统计: 成功配对数={total_successful_matches} (只统计成功匹配的质量分布)")
+
+        return result
+
+    def _get_precision_matches_data(self) -> List[Dict[str, Union[int, float]]]:
+        """
+        获取精确匹配对的偏移数据
+
+        Returns:
+            List[Dict]: 精确匹配对的偏移数据
+        """
+        return self._get_matches_data_by_type(MatchType.PRECISION)
+
+    def _get_approximate_matches_data(self) -> List[Dict[str, Union[int, float]]]:
+        """
+        获取近似匹配对的偏移数据 (50-1000ms)
+
+        Returns:
+            List[Dict]: 近似匹配对的偏移数据
+        """
+        return self._get_matches_data_by_type(MatchType.POOR)
+
+    def _get_large_error_matches_data(self) -> List[Dict[str, Union[int, float]]]:
+        """
+        获取大误差匹配对的偏移数据 (>1000ms)
+
+        Returns:
+            List[Dict]: 大误差匹配对的偏移数据
+        """
+        return self._get_matches_data_by_type(MatchType.FAILED)
+
+    def _get_matches_data_by_type(self, match_type: MatchType) -> List[Dict[str, Union[int, float]]]:
+        """
+        根据匹配类型获取对应的偏移数据
+
+        Args:
+            match_type: 匹配类型
+
+        Returns:
+            List[Dict]: 该类型匹配对的偏移数据
+        """
+        offset_data = []
+
+        # 确定数据源和筛选条件 - 基于新的匹配类型
+        pairs_source = []
+        error_filter = None
+
+        if match_type == MatchType.EXCELLENT:
+            # 优秀匹配：从precision_matched_pairs中筛选 ≤20ms 的
+            pairs_source = self.precision_matched_pairs
+            error_filter = lambda error_ms: error_ms <= 20
+        elif match_type == MatchType.GOOD:
+            # 良好匹配：从precision_matched_pairs中筛选 20-30ms 的
+            pairs_source = self.precision_matched_pairs
+            error_filter = lambda error_ms: 20 < error_ms <= 30
+        elif match_type == MatchType.FAIR:
+            # 一般匹配：从precision_matched_pairs中筛选 30-50ms 的
+            pairs_source = self.precision_matched_pairs
+            error_filter = lambda error_ms: 30 < error_ms <= 50
+        elif match_type == MatchType.POOR:
+            # 较差匹配：所有来自loose_matched_pairs的匹配
+            pairs_source = self.loose_matched_pairs
+            error_filter = lambda error_ms: True  # 不需要额外筛选
+        elif match_type == MatchType.SEVERE:
+            # 严重误差：所有来自severe_matched_pairs的匹配
+            pairs_source = self.severe_matched_pairs
+            error_filter = lambda error_ms: True  # 不需要额外筛选
+        elif match_type == MatchType.FAILED:
+            # 失败匹配：无匹配的情况，不在此处理
+            return []
+        else:
+            return []
+
+        for record_idx, replay_idx, record_note, replay_note in pairs_source:
+            # 计算录制和播放音符的时间
+            record_keyon, record_keyoff = self._calculate_note_times(record_note)
+            replay_keyon, replay_keyoff = self._calculate_note_times(replay_note)
+
+            # 计算原始偏移量
+            keyon_offset = replay_keyon - record_keyon
+
+            # 计算校准后的偏移（去除全局固定延时）
+            corrected_offset = keyon_offset - self.global_time_offset
+
+            # 计算误差（毫秒）
+            error_ms = abs(corrected_offset) / 10.0
+
+            # 根据匹配类型筛选
+            if not error_filter(error_ms):
+                continue
+
+            record_duration = record_keyoff - record_keyon
+            replay_duration = replay_keyoff - replay_keyon
+            duration_diff = replay_duration - record_duration
+            duration_offset = duration_diff
+
+            offset_data.append({
+                'record_index': record_idx,
+                'replay_index': replay_idx,
+                'key_id': record_note.id,
+                'record_keyon': record_keyon,
+                'replay_keyon': replay_keyon,
+                'keyon_offset': keyon_offset,       # 原始偏移
+                'corrected_offset': corrected_offset, # 校准后偏移（用于分析）
+                'record_keyoff': record_keyoff,
+                'replay_keyoff': replay_keyoff,
+                'duration_offset': duration_offset,
+                'average_offset': abs(corrected_offset),
+                'record_duration': record_duration,
+                'replay_duration': replay_duration,
+                'duration_diff': duration_diff
+            })
+
         return offset_data
     
     def get_invalid_notes_offset_analysis(self, record_data: List[Note], replay_data: List[Note]) -> List[Dict[str, Union[int, float, str]]]:
@@ -555,8 +1319,11 @@ class NoteMatcher:
             Tuple[float, float]: (keyon_time, keyoff_time)
         """
 
-        keyon_time = note.after_touch.index[0] + note.offset
-        keyoff_time = note.after_touch.index[-1] + note.offset
+        try:
+            keyon_time = note.after_touch.index[0] + note.offset
+            keyoff_time = note.after_touch.index[-1] + note.offset
+        except (IndexError, AttributeError) as e:
+            raise ValueError(f"音符ID {note.id} 的after_touch数据无效: {e}") from e
         
         return keyon_time, keyoff_time
     
@@ -577,20 +1344,20 @@ class NoteMatcher:
         """
         if not self.matched_pairs:
             return 0.0
+
+        # 获取偏移数据（只使用精确匹配对，误差 ≤ 50ms）
+        offset_data = self.get_precision_offset_alignment_data()
+
+        # 使用带符号的校准后偏移（不取绝对值，去除全局系统延时）
+        corrected_offsets = [item.get('corrected_offset', 0) for item in offset_data if item.get('corrected_offset') is not None]
         
-        # 获取偏移数据
-        offset_data = self.get_offset_alignment_data()
-        
-        # 使用带符号的keyon_offset（不取绝对值）
-        keyon_offsets = [item.get('keyon_offset', 0) for item in offset_data if item.get('keyon_offset') is not None]
-        
-        if not keyon_offsets:
+        if not corrected_offsets:
             return 0.0
-        
+
         # 计算平均值（0.1ms单位，带符号）
-        average_delay = sum(keyon_offsets) / len(keyon_offsets)
-        
-        logger.info(f"📊 整首曲子平均时延(keyon): {average_delay/10:.2f}ms (基于{len(keyon_offsets)}个匹配对，带符号)")
+        average_delay = sum(corrected_offsets) / len(corrected_offsets)
+
+        logger.info(f"📊 [后端] 全局平均延时: {average_delay/10:.2f}ms ({average_delay:.1f}单位，基于{len(corrected_offsets)}个精确匹配对)")
         
         return average_delay
     
@@ -612,15 +1379,15 @@ class NoteMatcher:
         """
         if not self.matched_pairs:
             return 0.0
-        
-        # 获取偏移对齐数据
-        offset_data = self.get_offset_alignment_data()
-        
-        # 提取所有带符号的keyon_offset
+
+        # 获取偏移对齐数据（只使用精确匹配对，误差 ≤ 50ms）
+        offset_data = self.get_precision_offset_alignment_data()
+
+        # 提取所有带符号的校准后偏移（去除全局系统延时）
         offsets = []
         for item in offset_data:
-            keyon_offset = item.get('keyon_offset', 0)
-            offsets.append(keyon_offset)  # 使用带符号值
+            corrected_offset = item.get('corrected_offset', 0)
+            offsets.append(corrected_offset)  # 使用校准后的偏移值
         
         if len(offsets) <= 1:
             return 0.0
@@ -653,6 +1420,7 @@ class NoteMatcher:
             logger.warning(f"⚠️ 总体方差为负数: {variance}，返回0")
             return 0.0
         std = variance ** 0.5
+        logger.info(f"📊 [后端] 总体标准差: {std/10:.2f}ms ({std:.1f}单位，基于精确匹配数据)")
         return std
     
     def get_mean_absolute_error(self) -> float:
@@ -665,20 +1433,21 @@ class NoteMatcher:
         """
         if not self.matched_pairs:
             return 0.0
-        
-        # 获取偏移对齐数据
-        offset_data = self.get_offset_alignment_data()
-        
-        # 提取所有延时的绝对值
+
+        # 获取偏移对齐数据（只使用精确匹配对，误差 ≤ 50ms）
+        offset_data = self.get_precision_offset_alignment_data()
+
+        # 提取所有校准后延时的绝对值（去除全局系统延时）
         abs_errors = []
         for item in offset_data:
-            keyon_offset = item.get('keyon_offset', 0)
-            abs_error = abs(keyon_offset)
+            corrected_offset = item.get('corrected_offset', 0)
+            abs_error = abs(corrected_offset)
             abs_errors.append(abs_error)
         
         # 计算平均绝对误差
         if abs_errors:
             mae = sum(abs_errors) / len(abs_errors)
+            logger.info(f"📊 [后端] 平均绝对误差 MAE: {mae/10:.2f}ms ({mae:.1f}单位，基于{len(abs_errors)}个精确匹配对)")
             return mae
         else:
             return 0.0
@@ -723,14 +1492,14 @@ class NoteMatcher:
         if not self.matched_pairs:
             return 0.0
         
-        # 获取偏移对齐数据
-        offset_data = self.get_offset_alignment_data()
+        # 获取偏移对齐数据（只使用精确匹配对，误差 ≤ 50ms）
+        offset_data = self.get_precision_offset_alignment_data()
         
-        # 提取所有延时的平方值
+        # 提取所有校准后延时的平方值（去除全局系统延时）
         squared_errors = []
         for item in offset_data:
-            keyon_offset = item.get('keyon_offset', 0)
-            squared_error = keyon_offset ** 2  # 注意这里使用原始值（可能为负），平方后为正
+            corrected_offset = item.get('corrected_offset', 0)
+            squared_error = corrected_offset ** 2  # 使用校准后的偏移值
             squared_errors.append(squared_error)
         
         # 计算均方误差
@@ -783,11 +1552,13 @@ class NoteMatcher:
         if not self.matched_pairs:
             return 0.0
 
-        offset_data = self.get_offset_alignment_data()
-        offsets = [item.get('keyon_offset', 0) for item in offset_data]
+        offset_data = self.get_precision_offset_alignment_data()
+        offsets = [item.get('corrected_offset', 0) for item in offset_data]
         if not offsets:
             return 0.0
-        return sum(offsets) / len(offsets)
+        mean_error = sum(offsets) / len(offsets)
+        logger.info(f"📊 [后端] 平均误差 ME: {mean_error/10:.2f}ms ({mean_error:.1f}单位，基于{len(offsets)}个精确匹配对)")
+        return mean_error
 
     def _clear_mean_error_cache(self) -> None:
         """
@@ -811,20 +1582,20 @@ class NoteMatcher:
                 'overall_offset_stats': {'average': 0.0, 'max': 0.0, 'min': 0.0, 'std': 0.0}
             }
         
-        # 获取偏移数据
-        offset_data = self.get_offset_alignment_data()
+        # 获取偏移数据（只使用精确匹配对，误差 ≤ 50ms）
+        offset_data = self.get_precision_offset_alignment_data()
         
-        # 提取偏移值（只使用keyon_offset）
-        keyon_offsets = [item['keyon_offset'] for item in offset_data]
+        # 提取偏移值（使用校准后的keyon_offset）
+        corrected_offsets = [item['corrected_offset'] for item in offset_data]
         duration_offsets = [item.get('duration_offset', 0.0) for item in offset_data]
-        # 整体统计只使用keyon_offset的绝对值
-        overall_offsets = [abs(item.get('keyon_offset', 0)) for item in offset_data if item.get('keyon_offset') is not None]
+        # 整体统计只使用校准后偏移的绝对值
+        overall_offsets = [abs(item.get('corrected_offset', 0)) for item in offset_data if item.get('corrected_offset') is not None]
         
         return {
             'total_pairs': len(self.matched_pairs),
-            'keyon_offset_stats': self._calculate_offset_stats(keyon_offsets),
+            'keyon_offset_stats': self._calculate_offset_stats(corrected_offsets),
             'duration_offset_stats': self._calculate_offset_stats(duration_offsets),
-            'overall_offset_stats': self._calculate_offset_stats(overall_offsets)  # 只使用keyon_offset
+            'overall_offset_stats': self._calculate_offset_stats(overall_offsets)  # 使用校准后的偏移
         }
     
     def _calculate_offset_stats(self, offsets: List[float]) -> Dict[str, float]:
@@ -856,4 +1627,46 @@ class NoteMatcher:
             'max': max_val,
             'min': min_val,
             'std': std
+        }
+
+    def _create_offset_data_item(self, match_result: MatchResult) -> Dict[str, Union[int, float]]:
+        """
+        为评级统计创建偏移数据项
+
+        Args:
+            match_result: 匹配结果
+
+        Returns:
+            Dict: 包含偏移数据的字典
+        """
+        record_note, replay_note = match_result.pair
+        record_keyon, record_keyoff = self._calculate_note_times(record_note)
+        replay_keyon, replay_keyoff = self._calculate_note_times(replay_note)
+
+        # 计算原始偏移量
+        keyon_offset = replay_keyon - record_keyon
+
+        # 计算校准后的偏移（去除全局固定延时）
+        corrected_offset = keyon_offset - self.global_time_offset
+
+        record_duration = record_keyoff - record_keyon
+        replay_duration = replay_keyoff - replay_keyon
+        duration_diff = replay_duration - record_duration
+        duration_offset = duration_diff
+
+        return {
+            'record_index': match_result.record_index,
+            'replay_index': match_result.replay_index,
+            'key_id': record_note.id,
+            'record_keyon': record_keyon,
+            'replay_keyon': replay_keyon,
+            'keyon_offset': keyon_offset,       # 原始偏移
+            'corrected_offset': corrected_offset, # 校准后偏移（用于分析）
+            'record_keyoff': record_keyoff,
+            'replay_keyoff': replay_keyoff,
+            'duration_offset': duration_offset,
+            'average_offset': abs(corrected_offset),
+            'record_duration': record_duration,
+            'replay_duration': replay_duration,
+            'duration_diff': duration_diff
         }

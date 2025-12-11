@@ -384,78 +384,13 @@ class PlotGenerator:
             logger.error(f"创建错误图像失败: {e}")
             return ""
     
-    def generate_delay_by_key_boxplot(self, analysis_result: Dict[str, Any]) -> Any:
-        """
-        生成延时与按键关系的箱线图
-        
-        Args:
-            analysis_result: analyze_delay_by_key()的返回结果
-            
-        Returns:
-            Any: Plotly图表对象
-        """
-        try:
-            
-            descriptive_stats = analysis_result.get('descriptive_stats', [])
-            if not descriptive_stats:
-                return self._create_empty_plot("没有描述性统计数据")
-            
-            # 准备数据
-            key_ids = [s['key_id'] for s in descriptive_stats]
-            means = [s['mean'] for s in descriptive_stats]
-            
-            # 创建箱线图
-            fig = go.Figure()
-            
-            # 添加箱线图
-            fig.add_trace(go.Box(
-                y=means,
-                x=[str(k) for k in key_ids],
-                name='平均延时',
-                boxmean='sd',
-                marker_color='#1976d2',
-                line=dict(color='#0d47a1', width=2)
-            ))
-            
-            # 添加均值线
-            overall_stats = analysis_result.get('overall_stats', {})
-            overall_mean = overall_stats.get('overall_mean', 0.0)
-            fig.add_hline(
-                y=overall_mean,
-                line_dash="dash",
-                line_color="red",
-                annotation_text=f"总体均值: {overall_mean:.2f}ms",
-                annotation_position="right"
-            )
-            
-            fig.update_layout(
-                title={
-                    'text': '延时与按键关系分析 - 箱线图',
-                    'x': 0.5,
-                    'xanchor': 'center',
-                    'font': {'size': 18, 'color': '#1976d2'}
-                },
-                xaxis_title='按键ID',
-                yaxis_title='延时 (ms)',
-                showlegend=True,
-                template='plotly_white',
-                height=500,
-                hovermode='closest'
-            )
-            
-            return fig
-            
-        except Exception as e:
-            logger.error(f"生成箱线图失败: {e}")
-            logger.error(traceback.format_exc())
-            return self._create_empty_plot(f"生成箱线图失败: {str(e)}")
     
     def generate_delay_by_key_barplot(self, analysis_result: Dict[str, Any]) -> Any:
         """
         生成延时与按键关系的条形图（显示均值和标准差）
         
         Args:
-            analysis_result: analyze_delay_by_key()的返回结果
+            analysis_result: 延时与按键分析结果
             
         Returns:
             Any: Plotly图表对象
@@ -547,145 +482,6 @@ class PlotGenerator:
             logger.error(traceback.format_exc())
             return self._create_empty_plot(f"生成条形图失败: {str(e)}")
     
-    def generate_delay_by_velocity_analysis_plot(self, analysis_result: Dict[str, Any]) -> Any:
-        """
-        生成延时与锤速关系的分析图表（散点图+分组统计）
-        
-        Args:
-            analysis_result: analyze_delay_by_velocity()的返回结果
-            
-        Returns:
-            Any: Plotly图表对象
-        """
-        try:
-            
-            scatter_data = analysis_result.get('scatter_data', {})
-            velocities = scatter_data.get('velocities', [])
-            delays = scatter_data.get('delays', [])
-
-            if not velocities or not delays:
-                return self._create_empty_plot("没有散点图数据")
-
-            # 过滤掉非正值
-            valid_data = [(v, d) for v, d in zip(velocities, delays) if v > 0]
-            if not valid_data:
-                return self._create_empty_plot("没有有效的锤速数据")
-            
-            velocities_clean = [v for v, d in valid_data]
-            delays_clean = [d for v, d in valid_data]
-            log10_velocities = [np.log10(v) for v in velocities_clean]
-
-
-            fig = go.Figure()
-
-            # 添加散点图 - 使用log10(锤速)作为横坐标
-            fig.add_trace(go.Scatter(
-                x=log10_velocities,
-                y=delays_clean,
-                mode='markers',
-                name='数据点',
-                marker=dict(
-                    size=6,
-                    color='#d32f2f',
-                    opacity=0.6,
-                    line=dict(width=1, color='#b71c1c')
-                ),
-                hovertemplate='锤速: %{customdata:.2f}<br>log₁₀(锤速): %{x:.2f}<br>延时: %{y:.2f}ms<extra></extra>',
-                customdata=velocities_clean  # 在hover中显示原始锤速值
-            ))
-            
-            # 添加分组统计（按锤速区间）
-            grouped_analysis = analysis_result.get('grouped_analysis', {})
-            groups = grouped_analysis.get('groups', [])
-            if groups:
-                for group in groups:
-                    v_min = group.get('velocity_min', 0)
-                    v_max = group.get('velocity_max', float('inf'))
-                    mean_delay = group.get('mean_delay', 0)
-                    mean_velocity = group.get('mean_velocity', 0)
-                    count = group.get('count', 0)
-                    label = group.get('range_label', '')
-                    
-                    if mean_velocity > 0:
-                        fig.add_trace(go.Scatter(
-                            x=[np.log10(mean_velocity)],  # 使用log10(平均锤速)值
-                            y=[mean_delay],
-                            mode='markers',
-                            name=label,
-                            marker=dict(
-                                size=15,
-                                symbol='diamond',
-                                color='#7b1fa2',
-                                line=dict(width=2, color='#4a148c')
-                            ),
-                            hovertemplate=f'{label}<br>平均锤速: {mean_velocity:.2f}<br>log₁₀(锤速): %{{x:.2f}}<br>平均延时: %{{y:.2f}}ms<br>样本数: {count}<extra></extra>'
-                        ))
-            
-            # 添加相关性信息文本
-            correlation_result = analysis_result.get('correlation_result', {})
-            pearson_r = correlation_result.get('pearson_r', None)
-            pearson_p = correlation_result.get('pearson_p', None)
-            pearson_significant = correlation_result.get('pearson_significant', False)
-            
-            if pearson_r is not None:
-                corr_text = f"皮尔逊相关系数: r={pearson_r:.4f}, p={pearson_p:.4f}"
-                if pearson_significant:
-                    corr_text += " (显著)"
-                else:
-                    corr_text += " (不显著)"
-                
-                fig.add_annotation(
-                    x=0.02,
-                    y=0.98,
-                    xref='paper',
-                    yref='paper',
-                    text=corr_text,
-                    showarrow=False,
-                    bgcolor='rgba(255,255,255,0.8)',
-                    bordercolor='#1976d2',
-                    borderwidth=2,
-                    font=dict(size=12, color='#2c3e50')
-                )
-            
-            fig.update_layout(
-                title={
-                    'text': '延时与锤速关系分析',
-                    'x': 0.5,
-                    'xanchor': 'center',
-                    'font': {'size': 18, 'color': '#d32f2f'}
-                },
-                xaxis_title='log₁₀(锤速)',
-                yaxis_title='延时 (ms)',
-                xaxis=dict(
-                    showgrid=True,
-                    gridcolor='lightgray',
-                    gridwidth=1,
-                    showticklabels=True,
-                    # 手动设置刻度以确保显示合适的范围
-                    tickmode='linear',
-                    tick0=min(log10_velocities) if log10_velocities else 0,
-                    dtick=0.1,  # 每0.1个单位一个刻度
-                    range=[min(log10_velocities) - 0.1, max(log10_velocities) + 0.1] if log10_velocities else None
-                ),
-                showlegend=True,
-                template='plotly_white',
-                height=500,
-                hovermode='closest',
-                legend=dict(
-                    orientation="h",
-                    yanchor="bottom",
-                    y=1.02,
-                    xanchor="right",
-                    x=1
-                )
-            )
-            
-            return fig
-            
-        except Exception as e:
-            logger.error(f"生成延时与锤速分析图失败: {e}")
-            logger.error(traceback.format_exc())
-            return self._create_empty_plot(f"生成分析图失败: {str(e)}")
     
     
     def _handle_multi_algorithm_plot(self, fig, algorithm_results, algorithm_colors):
@@ -866,9 +662,8 @@ class PlotGenerator:
         current = min_log
         while current <= max_log:
             tick_positions.append(current)
-            # 显示对应的实际锤速值，而不是log10值
-            actual_velocity = 10 ** current
-            tick_texts.append(f"{actual_velocity:.0f}")
+            # 显示log10值本身
+            tick_texts.append(f"{current:.1f}")
             current += 0.2  # 每0.2个log10单位一个刻度
 
         return tick_positions, tick_texts

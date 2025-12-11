@@ -2,6 +2,7 @@
 UI布局模块 - 定义Dash应用的界面布局
 包含主界面、报告布局等UI组件
 """
+import traceback
 import dash_bootstrap_components as dbc
 from dash import dcc, html, dash_table
 import plotly.graph_objects as go
@@ -18,6 +19,85 @@ empty_figure.add_annotation(
     x=0.5, y=0.5, showarrow=False,
     font=dict(size=20, color='gray')
 )
+
+# 评级统计配置常量 - 统一版本
+# 基于误差范围进行评级，与评级统计和表格筛选保持一致
+GRADE_CONFIGS = [
+    ('correct', '优秀 (≤20ms)', 'success'),
+    ('minor', '良好 (20-30ms)', 'warning'),
+    ('moderate', '一般 (30-50ms)', 'info'),
+    ('large', '较差 (50-1000ms)', 'danger'),
+    ('severe', '严重 (>1000ms)', 'dark')
+    # 注意：不再显示失败匹配，因为匹配质量评级只统计成功匹配
+]
+
+def create_grade_statistics_rows(graded_stats, algorithm_name=None):
+    """统一创建评级统计UI组件
+
+    Args:
+        graded_stats: 评级统计数据
+        algorithm_name: 算法名称（None表示单算法模式）
+
+    Returns:
+        list: 包含评级统计UI组件的列表
+    """
+    rows = []
+
+    # 计算总匹配对数（只统计成功匹配的评级）
+    total_count = sum(graded_stats.get(level, {}).get('count', 0)
+                     for level in ['correct', 'minor', 'moderate', 'large', 'severe'])
+    print(f"最终总匹配对数 total_count: {total_count}")
+
+    if total_count > 0:
+        # 总体统计行
+        total_label = "所有类型的匹配对" if algorithm_name is None else f"{algorithm_name} - 所有类型的匹配对"
+        rows.append(
+            dbc.Row([
+                dbc.Col([
+                    html.Div([
+                        html.H3(f"{total_count}", className="text-info mb-1"),
+                        html.P("总匹配对数", className="text-muted mb-0"),
+                        html.Small(total_label, className="text-muted", style={'fontSize': '10px'})
+                    ], className="text-center")
+                ], width=12)
+            ], className="mb-3")
+        )
+
+        # 评级统计按钮行
+        grade_cols = []
+        for grade_key, grade_name, color_class in GRADE_CONFIGS:
+            grade_data = graded_stats.get(grade_key, {})
+            count = grade_data.get('count', 0)
+            percentage = grade_data.get('percent', 0.0)
+
+            # 构建按钮ID
+            button_index = grade_key if algorithm_name is None else f"{algorithm_name}_{grade_key}"
+
+            grade_cols.append(
+                dbc.Col([
+                    html.Div([
+                        dbc.Button(
+                            f"{count}",
+                            id={'type': 'grade-detail-btn', 'index': button_index},
+                            color=color_class,
+                            size='lg',
+                            className="mb-1",
+                            disabled=(count == 0),
+                            style={'fontSize': '24px', 'fontWeight': 'bold', 'width': '100%'}
+                        ),
+                        html.P(f"{grade_name}", className="text-muted mb-0"),
+                        html.Small(f"{percentage:.1f}%", className="text-muted", style={'fontSize': '10px'})
+                    ], className="text-center")
+                ], width='auto', className="px-2")
+            )
+
+        if grade_cols:
+            rows.append(
+                dbc.Row(grade_cols, className="mb-3 justify-content-center")
+            )
+
+    return rows
+
 empty_figure.update_layout(
     title='钢琴数据分析工具 - 等待数据加载',
     xaxis_title='Time (ms)',
@@ -43,23 +123,38 @@ def create_multi_algorithm_upload_area():
             'marginBottom': '10px',
             'fontSize': '16px'
         }),
-        dcc.Upload(
-            id='upload-multi-algorithm-data',
-            children=html.Div([
-                html.I(className="fas fa-upload",
-                      style={'fontSize': '32px', 'color': '#28a745', 'marginBottom': '10px'}),
-                html.Br(),
-                html.Span('上传算法文件（支持多选）', style={'fontSize': '14px', 'color': '#6c757d'})
-            ], style={
-                'textAlign': 'center',
-                'padding': '20px',
-                'border': '2px dashed #28a745',
-                'borderRadius': '8px',
-                'backgroundColor': '#f8f9fa',
-                'cursor': 'pointer'
-            }),
-            multiple=True
-        ),
+        dbc.Row([
+            dbc.Col([
+                dcc.Upload(
+                    id='upload-multi-algorithm-data',
+                    children=html.Div([
+                        html.I(className="fas fa-upload",
+                              style={'fontSize': '32px', 'color': '#28a745', 'marginBottom': '10px'}),
+                        html.Br(),
+                        html.Span('上传算法文件（支持多选）', style={'fontSize': '14px', 'color': '#6c757d'})
+                    ], style={
+                        'textAlign': 'center',
+                        'padding': '20px',
+                        'border': '2px dashed #28a745',
+                        'borderRadius': '8px',
+                        'backgroundColor': '#f8f9fa',
+                        'cursor': 'pointer'
+                    }),
+                    multiple=True
+                )
+            ], width=10),
+            dbc.Col([
+                dbc.Button(
+                    "🔄 重置",
+                    id='reset-multi-algorithm-upload',
+                    color='secondary',
+                    size='sm',
+                    n_clicks=0,
+                    style={'height': '100%', 'width': '100%'},
+                    title='如果重复上传同一文件没有反应，请点击此按钮重置上传区域'
+                )
+            ], width=2)
+        ]),
         html.Div(id='multi-algorithm-upload-status', style={'marginTop': '10px', 'fontSize': '12px'}),
         # 文件列表区域（上传后显示）
         html.Div(id='multi-algorithm-file-list', style={'marginTop': '15px'})
@@ -755,33 +850,24 @@ def create_main_layout():
     })
 
 
-def _create_single_algorithm_overview_row(algorithm, algorithm_name):
+def _create_single_algorithm_overview_row(algorithm, algorithm_name, backend=None):
     """为单个算法创建数据概览行（不包含卡片，只返回行内容）"""
-    
+
     try:
-        # 获取算法的统计数据
-        if not algorithm.analyzer:
-            return None
-        
-        # 计算基础统计
-        # 使用初始有效数据（第一次过滤后）来计算总有效音符数，这样才能正确反映准确率
-        initial_valid_record = getattr(algorithm.analyzer, 'initial_valid_record_data', None)
-        initial_valid_replay = getattr(algorithm.analyzer, 'initial_valid_replay_data', None)
-        
-        total_valid_record = len(initial_valid_record) if initial_valid_record else 0
-        total_valid_replay = len(initial_valid_replay) if initial_valid_replay else 0
-        
-        # 获取匹配对和错误统计
-        matched_pairs = algorithm.analyzer.matched_pairs if hasattr(algorithm.analyzer, 'matched_pairs') else []
-        drop_hammers = algorithm.analyzer.drop_hammers if hasattr(algorithm.analyzer, 'drop_hammers') else []
-        multi_hammers = algorithm.analyzer.multi_hammers if hasattr(algorithm.analyzer, 'multi_hammers') else []
-        
-        # 计算准确率
-        # 公式：成功匹配的音符对数 * 2 / (初始有效录制音符数 + 初始有效播放音符数) * 100
-        matched_count = len(matched_pairs)
-        total_valid = total_valid_record + total_valid_replay
-        accuracy = (matched_count * 2 / total_valid * 100) if total_valid > 0 else 0.0
-        
+
+        # 所有统计信息都从后端统一获取，无需前端重复计算
+
+        # 获取完整统计信息：使用统一的后端统计服务
+        if not backend or not hasattr(backend, 'get_algorithm_statistics'):
+            raise ValueError("后端对象或get_algorithm_statistics方法不可用")
+
+        # 获取完整的统计信息（包括准确率、错误统计等）
+        stats = backend.get_algorithm_statistics(algorithm)
+        accuracy = stats['accuracy']
+        matched_count = stats['matched_count']
+        drop_count = stats['drop_count']
+        multi_count = stats['multi_count']
+
         # 生成数据概览行（带算法名称标识）
         overview_row = html.Div([
             dbc.Row([
@@ -796,19 +882,19 @@ def _create_single_algorithm_overview_row(algorithm, algorithm_name):
                                     html.Div([
                         html.H3(f"{accuracy:.1f}%", className="text-success mb-1"),
                                         html.P("准确率", className="text-muted mb-0"),
-                                        html.Small("成功匹配音符数/总有效音符数", className="text-muted", style={'fontSize': '10px'})
+                                        html.Small("所有配对音符数/总有效音符数", className="text-muted", style={'fontSize': '10px'})
                                     ], className="text-center")
                                 ], width=3),
                                 dbc.Col([
                                     html.Div([
-                        html.H3(f"{len(drop_hammers)}", className="text-warning mb-1"),
+                        html.H3(f"{drop_count}", className="text-warning mb-1"),
                                         html.P("丢锤数", className="text-muted mb-0"),
                                         html.Small("录制有但播放没有", className="text-muted", style={'fontSize': '10px'})
                                     ], className="text-center")
                                 ], width=3),
                                 dbc.Col([
                                     html.Div([
-                        html.H3(f"{len(multi_hammers)}", className="text-info mb-1"),
+                        html.H3(f"{multi_count}", className="text-info mb-1"),
                                         html.P("多锤数", className="text-muted mb-0"),
                                         html.Small("播放有但录制没有", className="text-muted", style={'fontSize': '10px'})
                                     ], className="text-center")
@@ -816,20 +902,25 @@ def _create_single_algorithm_overview_row(algorithm, algorithm_name):
                                 dbc.Col([
                                     html.Div([
                         html.H3(f"{matched_count}", className="text-secondary mb-1"),
-                                        html.P("已配对音符数", className="text-muted mb-0"),
-                                        html.Small("成功匹配的record-play配对数量", className="text-muted", style={'fontSize': '10px'})
+                        html.P("总匹配对数", className="text-muted mb-0"),
+                        html.Small("成功建立的record-play配对数量", className="text-muted", style={'fontSize': '10px'})
                                     ], className="text-center")
                                 ], width=3)
             ], className="mb-3")
         ], className="mb-3", style={'borderBottom': '1px solid #dee2e6', 'paddingBottom': '15px'})
         
         return overview_row
-        
+
     except Exception as e:
-        logger.error(f"❌ 获取算法 '{algorithm_name}' 的数据概览失败: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return None
+        # 检查是否是后端不可用的严重错误
+        if isinstance(e, ValueError) and "后端对象或calculate_accuracy_for_algorithm方法不可用" in str(e):
+            # 后端不可用，直接重新抛出
+            raise
+        else:
+            # 其他异常（包括后端计算失败、数据处理错误等），记录日志但不抛出，保持向后兼容
+            logger.error(f"❌ 获取算法 '{algorithm_name}' 的数据概览失败: {e}")
+            logger.error(traceback.format_exc())
+            return None
 
 
 def _create_single_algorithm_error_stats_row(algorithm, algorithm_name):
@@ -839,13 +930,22 @@ def _create_single_algorithm_error_stats_row(algorithm, algorithm_name):
         if not algorithm.analyzer:
             return None
         
-        # 计算延时误差统计指标
+        # 计算延时误差统计指标（只使用精确匹配数据）
         mae_0_1ms = algorithm.analyzer.get_mean_absolute_error() if hasattr(algorithm.analyzer, 'get_mean_absolute_error') else 0.0
         variance_0_1ms_squared = algorithm.analyzer.get_variance() if hasattr(algorithm.analyzer, 'get_variance') else 0.0
         std_0_1ms = algorithm.analyzer.get_standard_deviation() if hasattr(algorithm.analyzer, 'get_standard_deviation') else 0.0
         me_0_1ms = algorithm.analyzer.get_mean_error() if hasattr(algorithm.analyzer, 'get_mean_error') else 0.0
         rmse_0_1ms = algorithm.analyzer.get_root_mean_squared_error() if hasattr(algorithm.analyzer, 'get_root_mean_squared_error') else 0.0
         cv = algorithm.analyzer.get_coefficient_of_variation() if hasattr(algorithm.analyzer, 'get_coefficient_of_variation') else 0.0
+
+        # 添加日志输出，便于调试数据一致性
+        logger.info(f"📊 [{algorithm_name}] 延时误差统计指标 (精确匹配数据):")
+        logger.info(f"   MAE: {mae_0_1ms/10:.2f}ms ({mae_0_1ms:.1f}单位)")
+        logger.info(f"   方差: {variance_0_1ms_squared/100:.4f}ms² ({variance_0_1ms_squared:.1f}单位²)")
+        logger.info(f"   标准差: {std_0_1ms/10:.2f}ms ({std_0_1ms:.1f}单位)")
+        logger.info(f"   平均误差: {me_0_1ms/10:.2f}ms ({me_0_1ms:.1f}单位)")
+        logger.info(f"   RMSE: {rmse_0_1ms/10:.2f}ms ({rmse_0_1ms:.1f}单位)")
+        logger.info(f"   变异系数: {cv:.2f}%")
         
         variance_ms_squared = variance_0_1ms_squared / 100.0
         std_ms = std_0_1ms / 10.0
@@ -853,30 +953,36 @@ def _create_single_algorithm_error_stats_row(algorithm, algorithm_name):
         me_ms = me_0_1ms / 10.0
         rmse_ms = rmse_0_1ms / 10.0
         
-        # 计算按键延时的最大值和最小值（从已匹配按键的keyon_offset）
+        # 计算按键延时的最大值和最小值（从正常匹配按键的keyon_offset）
         max_delay_ms = None
         min_delay_ms = None
         max_delay_item = None  # 保存最大延迟对应的完整数据项
         min_delay_item = None  # 保存最小延迟对应的完整数据项
         if hasattr(algorithm.analyzer, 'note_matcher') and algorithm.analyzer.note_matcher:
             try:
-                offset_data = algorithm.analyzer.note_matcher.get_offset_alignment_data()
+                # 只使用精确匹配对的数据（误差 ≤ 50ms），与统计指标保持一致
+                offset_data = algorithm.analyzer.note_matcher.get_precision_offset_alignment_data()
                 if offset_data:
-                    # 提取所有keyon_offset（单位：0.1ms，带符号）
-                    keyon_offsets = [item.get('keyon_offset', 0) for item in offset_data]
-                    if keyon_offsets:
+                    # 提取所有校准后的偏移（单位：0.1ms，带符号，去除全局系统延时）
+                    corrected_offsets = [item.get('corrected_offset', 0) for item in offset_data]
+                    if corrected_offsets:
                         # 转换为ms单位
-                        keyon_offsets_ms = [offset / 10.0 for offset in keyon_offsets]
-                        max_delay_ms = max(keyon_offsets_ms)
-                        min_delay_ms = min(keyon_offsets_ms)
-                        
+                        corrected_offsets_ms = [offset / 10.0 for offset in corrected_offsets]
+                        max_delay_ms = max(corrected_offsets_ms)
+                        min_delay_ms = min(corrected_offsets_ms)
+
                         # 找到对应的数据项
                         for item in offset_data:
-                            item_delay_ms = item.get('keyon_offset', 0) / 10.0
+                            item_delay_ms = item.get('corrected_offset', 0) / 10.0
                             if max_delay_item is None or item_delay_ms == max_delay_ms:
                                 max_delay_item = item
                             if min_delay_item is None or item_delay_ms == min_delay_ms:
                                 min_delay_item = item
+
+                        # 添加日志输出
+                        logger.info(f"📊 [{algorithm_name}] 延时范围统计 (精确匹配数据):")
+                        logger.info(f"   最大延时: {max_delay_ms:.2f}ms (基于{len(corrected_offsets)}个精确匹配对)")
+                        logger.info(f"   最小延时: {min_delay_ms:.2f}ms")
             except Exception as e:
                 logger.warning(f"⚠️ 计算按键延时最大值/最小值失败: {e}")
         
@@ -981,7 +1087,6 @@ def _create_single_algorithm_error_stats_row(algorithm, algorithm_name):
         
     except Exception as e:
         logger.error(f"❌ 获取算法 '{algorithm_name}' 的延时误差统计指标失败: {e}")
-        import traceback
         logger.error(traceback.format_exc())
         return None
 
@@ -1239,7 +1344,6 @@ def _create_single_algorithm_error_tables(algorithm, algorithm_name):
         
     except Exception as e:
         logger.error(f"❌ 创建算法 {algorithm_name} 错误表格失败: {e}")
-        import traceback
         logger.error(traceback.format_exc())
         return None, None
 
@@ -1300,13 +1404,167 @@ def create_report_layout(backend):
         if hasattr(algorithm, 'color'):
             algorithm_colors[algorithm.metadata.algorithm_name] = algorithm.color
     
-    if not active_algorithms:
-        # 没有激活的算法，显示提示
+    # 用于收集所有行内容
+    all_rows = []
+
+    # 检查是否有数据可以显示（单算法或多算法）
+    has_data = bool(active_algorithms) or (hasattr(backend, 'analyzer') and backend.analyzer)
+
+    # 获取数据源信息（在所有模式下都需要）
+    source_info = backend.get_data_source_info() if hasattr(backend, 'get_data_source_info') else {}
+
+    # 处理单算法模式
+    if not active_algorithms and hasattr(backend, 'analyzer') and backend.analyzer:
+        # 单算法模式：显示评级统计
+        graded_rows = []  # 初始化变量
+        if backend and hasattr(backend, 'get_graded_error_stats'):
+            try:
+                graded_stats = backend.get_graded_error_stats()
+                if graded_stats and 'error' not in graded_stats:
+                    # 构建评级统计内容
+
+                    # 使用统一函数创建评级统计UI
+                    graded_rows.extend(create_grade_statistics_rows(graded_stats, algorithm_name=None))
+
+            except Exception as e:
+                logger.warning(f"创建单算法评级统计卡片失败: {e}")
+                graded_rows = []
+
+        # 单算法模式：直接返回包含评级统计的布局
+        data_source = source_info.get('filename') or "单算法分析"
+
+        # 构建单算法模式的完整布局
+        layout_rows = []
+
+        # 添加评级统计卡片（总是创建，即使没有数据）
+        if True:  # 总是创建评级统计卡片
+            layout_rows.append(
+                dbc.Row([
+                    dbc.Col([
+                        dbc.Card([
+                            dbc.CardHeader([
+                                html.H4([
+                                    html.I(className="fas fa-chart-pie", style={'marginRight': '10px', 'color': '#6f42c1'}),
+                                    "匹配质量评级统计"
+                                ], className="mb-0")
+                            ]),
+                            dbc.CardBody([
+                                *graded_rows,
+                                # 详细表格区域（默认隐藏）- 为每个评级创建单独的表格
+                                # 注意：这里需要动态创建，但为了简化，我们只创建一个通用表格
+                                # 在单算法模式下，所有按钮共享同一个表格
+                                html.Div(
+                                    id={'type': 'grade-detail-table', 'index': 'single'},
+                                    style={'display': 'none', 'marginTop': '20px'},
+                                    children=[
+                                        html.H5("详细数据", className="mb-3"),
+                                        dash_table.DataTable(
+                                            id={'type': 'grade-detail-datatable', 'index': 'single'},
+                                            columns=[],
+                                            data=[],
+                                            page_action='none',
+                                            fixed_rows={'headers': True},  # 固定表头
+                                            style_table={
+                                                'maxHeight': '400px',
+                                                'overflowY': 'auto',
+                                                'overflowX': 'auto'
+                                            },
+                                            style_cell={
+                                                'textAlign': 'center',
+                                                'fontSize': '14px',
+                                                'fontFamily': 'Arial, sans-serif',
+                                                'padding': '8px',
+                                                'minWidth': '80px'
+                                            },
+                                            style_header={
+                                                'backgroundColor': '#f8f9fa',
+                                                'fontWeight': 'bold',
+                                                'borderBottom': '2px solid #dee2e6'
+                                            }
+                                        )
+                                    ]
+                                )
+                            ])
+                        ], className="shadow-sm mb-4")
+                    ], width=12)
+                ])
+            )
+
+        # 添加其他单算法内容（数据概览、延时误差统计、错误表格等）
+        if hasattr(backend, 'analyzer') and backend.analyzer:
+            overview_row = _create_single_algorithm_overview_row(backend.analyzer, data_source, backend)
+            error_stats_row = _create_single_algorithm_error_stats_row(backend.analyzer, data_source)
+
+            if overview_row:
+                layout_rows.append(overview_row)
+            if error_stats_row:
+                layout_rows.append(error_stats_row)
+
+        # 返回单算法模式的完整布局
+        return html.Div([
+            dcc.Download(id='download-pdf'),
+            dbc.Container([
+                dbc.Row([
+                    dbc.Col([
+                        html.H2(f"分析报告 - {data_source}", className="text-center mb-3",
+                               style={'color': '#2E86AB', 'fontWeight': 'bold', 'textShadow': '1px 1px 2px rgba(0,0,0,0.1)'}),
+                    ], width=8),
+                    dbc.Col([
+                        html.Div([
+                            dbc.Button([
+                                html.I(className="fas fa-file-pdf", style={'marginRight': '8px'}),
+                                "导出PDF报告"
+                            ], id='btn-export-pdf', color='danger', size='sm', className='mb-2'),
+                            html.Div(id='pdf-status')
+                        ], className="text-end")
+                    ], width=4)
+                ], className="mb-4"),
+
+                # 单算法内容
+                *layout_rows,
+
+                # 其余内容（图表、表格等）- 与多算法模式保持一致
+                # 柱状图分析区域 - 独立全宽区域
+                dbc.Row([
+                    dbc.Col([
+                        html.Div([
+                            dbc.Row([
+                                dbc.Col([
+                                    html.H6("按键延时分析条形图", className="mb-2",
+                                           style={'color': '#6f42c1', 'fontWeight': 'bold', 'borderBottom': '2px solid #6f42c1', 'paddingBottom': '5px'}),
+                                ], width=12)
+                            ]),
+                            html.Div(id='offset-alignment-plot'),
+                        ], className="mt-4")
+                    ], width=12)
+                ]),
+
+                # 图表区域
+                dbc.Row([
+                    dbc.Col([
+                        dcc.Graph(id='key-delay-scatter-plot'),
+                        html.Div(id='key-delay-zscore-scatter-plot'),
+                        dcc.Graph(id='hammer-velocity-delay-scatter-plot'),
+                        dcc.Graph(id='key-force-interaction-plot'),
+                        dcc.Graph(id='relative-delay-distribution-plot'),
+                        html.Div(id='hammer-velocity-comparison-plot'),
+                        dash_table.DataTable(id='offset-alignment-table')
+                    ], width=12)
+                ]),
+
+                # 错误表格（单算法模式）
+                _create_single_algorithm_error_tables(backend.analyzer, data_source) if hasattr(backend, 'analyzer') and backend.analyzer else html.Div(),
+
+            ], fluid=True),
+        ], style={'padding': '20px'})
+
+    if not has_data:
+        # 没有数据，显示提示
         # 关键：必须包含所有回调函数需要的组件，否则 Dash 会报错
         empty_fig = {}
         return html.Div([
             html.H4("暂无数据", className="text-center text-muted"),
-            html.P("请至少激活一个算法以查看分析报告", className="text-center text-muted"),
+            html.P("请先上传并分析SPMID文件", className="text-center text-muted"),
             # 包含所有必需的图表组件（隐藏），确保回调函数不会报错
             dcc.Graph(id='key-delay-scatter-plot', figure=empty_fig, style={'display': 'none'}),
             dcc.Graph(id='key-delay-zscore-scatter-plot', figure=empty_fig, style={'display': 'none'}),
@@ -1353,7 +1611,7 @@ def create_report_layout(backend):
     
     for algorithm in active_algorithms:
         algorithm_name = algorithm.metadata.algorithm_name
-        overview_row = _create_single_algorithm_overview_row(algorithm, algorithm_name)
+        overview_row = _create_single_algorithm_overview_row(algorithm, algorithm_name, backend)
         error_stats_row = _create_single_algorithm_error_stats_row(algorithm, algorithm_name)
         
         if overview_row:
@@ -1402,8 +1660,158 @@ def create_report_layout(backend):
             ])
         )
     
-    # 获取数据源信息（使用第一个算法的文件名）
-    source_info = backend.get_data_source_info()
+    # 创建评级统计卡片 - 为每个算法分别显示
+    if active_algorithms:
+        # 多算法模式：为每个算法分别创建评级统计
+        for algorithm in active_algorithms:
+            if algorithm.analyzer and algorithm.analyzer.note_matcher:
+                try:
+                    alg_stats = algorithm.analyzer.note_matcher.get_graded_error_stats()
+                    if alg_stats and 'error' not in alg_stats:
+                        # 构建该算法的评级统计内容
+                        graded_rows = []
+                        algorithm_name = algorithm.metadata.algorithm_name
+
+                        # 使用统一函数创建评级统计UI
+                        graded_rows.extend(create_grade_statistics_rows(alg_stats, algorithm_name=algorithm_name))
+
+                        # 添加该算法的评级统计卡片
+                        if graded_rows:
+                            all_rows.append(
+                                dbc.Row([
+                                    dbc.Col([
+                                        dbc.Card([
+                                            dbc.CardHeader([
+                                                html.H4([
+                                                    html.I(className="fas fa-chart-pie", style={'marginRight': '10px', 'color': '#6f42c1'}),
+                                                    f"{algorithm_name} - 匹配质量评级统计"
+                                                ], className="mb-0")
+                                            ]),
+                                            dbc.CardBody([
+                                                *graded_rows,
+                                                # 详细表格区域（默认隐藏）
+                                                html.Div(
+                                                    id={'type': 'grade-detail-table', 'index': algorithm_name},
+                                                    style={'display': 'none', 'marginTop': '20px'},
+                                                    children=[
+                                                        html.H5("详细数据", className="mb-3"),
+                                                        dash_table.DataTable(
+                                                            id={'type': 'grade-detail-datatable', 'index': algorithm_name},
+                                                            columns=[],
+                                                            data=[],
+                                                            page_action='none',
+                                                            fixed_rows={'headers': True},  # 固定表头
+                                                            style_table={
+                                                                'maxHeight': '400px',
+                                                                'overflowY': 'auto',
+                                                                'overflowX': 'auto'
+                                                            },
+                                                            style_cell={
+                                                                'textAlign': 'center',
+                                                                'fontSize': '14px',
+                                                                'fontFamily': 'Arial, sans-serif',
+                                                                'padding': '8px',
+                                                                'minWidth': '80px'
+                                                            },
+                                                            style_header={
+                                                                'backgroundColor': '#f8f9fa',
+                                                                'fontWeight': 'bold',
+                                                                'borderBottom': '2px solid #dee2e6'
+                                                            }
+                                                        )
+                                                    ]
+                                                )
+                                            ])
+                                        ], className="shadow-sm mb-4")
+                                    ], width=12)
+                                ])
+                            )
+
+                except Exception as e:
+                    logger.warning(f"创建算法 {algorithm.metadata.algorithm_name} 的评级统计卡片失败: {e}")
+    else:
+        # 单算法模式：汇总显示评级统计
+        if backend and backend.analyzer and backend.analyzer.note_matcher:
+            try:
+                graded_stats = backend.analyzer.note_matcher.get_graded_error_stats()
+                if graded_stats and 'error' not in graded_stats:
+                    # 构建评级统计内容
+                    graded_rows = []
+
+                    # 总体统计
+                    total_count = sum(graded_stats.get(level, {}).get('count', 0)
+                                    for level in ['correct', 'minor', 'moderate', 'large', 'major'])
+
+                    if total_count > 0:
+                        graded_rows.append(
+                            dbc.Row([
+                                dbc.Col([
+                                    html.Div([
+                                        html.H3(f"{total_count}", className="text-info mb-1"),
+                                        html.P("总匹配对数", className="text-muted mb-0"),
+                                        html.Small("所有类型的匹配对", className="text-muted", style={'fontSize': '10px'})
+                                    ], className="text-center")
+                                ], width=12)
+                            ], className="mb-3")
+                        )
+
+                        # 分级统计 - 横排显示
+                        grade_configs = [
+                            ('correct', '优秀 (≤20ms)', 'success'),
+                            ('minor', '良好 (20-30ms)', 'warning'),
+                            ('moderate', '一般 (30-50ms)', 'info'),
+                            ('large', '较差 (50-1000ms)', 'danger'),
+                            ('severe', '严重 (>1000ms)', 'dark')
+                            # 注意：不再显示失败匹配，只统计成功匹配的质量分布
+                        ]
+
+                        # 创建横排的评级统计行
+                        grade_cols = []
+                        for grade_key, grade_name, color_class in grade_configs:
+                            if grade_key in graded_stats:
+                                grade_data = graded_stats[grade_key]
+                                count = grade_data.get('count', 0)
+                                percentage = grade_data.get('percent', 0.0)
+
+                                grade_cols.append(
+                                    dbc.Col([
+                                        html.Div([
+                                            html.H3(f"{count}", className=f"text-{color_class} mb-1"),
+                                            html.P(f"{grade_name}", className="text-muted mb-0"),
+                                            html.Small(f"{percentage:.1f}%", className="text-muted", style={'fontSize': '10px'})
+                                        ], className="text-center")
+                                    ], width='auto', className="px-2")  # width='auto' 让列自适应宽度，px-2 添加水平间距
+                                )
+
+                        if grade_cols:
+                            graded_rows.append(
+                                dbc.Row(grade_cols, className="mb-3 justify-content-center")
+                            )
+
+                    # 添加评级统计卡片
+                    if graded_rows:
+                        all_rows.append(
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Card([
+                                        dbc.CardHeader([
+                                            html.H4([
+                                                html.I(className="fas fa-chart-pie", style={'marginRight': '10px', 'color': '#6f42c1'}),
+                                                "匹配质量评级统计"
+                                            ], className="mb-0")
+                                        ]),
+                                        dbc.CardBody([
+                                            *graded_rows
+                                        ])
+                                    ], className="shadow-sm mb-4")
+                                ], width=12)
+                            ])
+                        )
+
+            except Exception as e:
+                logger.warning(f"创建评级统计卡片失败: {e}")
+
+    # 数据源信息已在前面获取
     data_source = source_info.get('filename') or "多算法对比"
     
     # 注意：由于这些UI组件（dcc.Graph、dash_table.DataTable等）需要在布局中定义
@@ -1454,6 +1862,68 @@ def create_report_layout(backend):
             ], width=12)
         ]),
         
+        # 按键与相对延时散点图区域
+        dbc.Row([
+            dbc.Col([
+                html.Div([
+                    dbc.Row([
+                        dbc.Col([
+                            html.H6("按键与相对延时散点图", className="mb-2",
+                                   style={'color': '#1976d2', 'fontWeight': 'bold', 'borderBottom': '2px solid #1976d2', 'paddingBottom': '5px'}),
+                        ], width=6),
+                        dbc.Col([
+                            dbc.Checkbox(
+                                id={'type': 'key-delay-scatter-common-keys-only', 'index': 0},
+                                label="只显示公共按键",
+                                value=False,
+                                style={'fontSize': '14px', 'fontWeight': 'bold', 'display': 'inline-block'}
+                            )
+                        ], width=2, style={'textAlign': 'right', 'paddingTop': '5px'}),
+                        dbc.Col([
+                            dcc.Dropdown(
+                                id={'type': 'key-delay-scatter-algorithm-selector', 'index': 0},
+                                multi=True,
+                                placeholder="选择参与对比的曲子",
+                                style={'fontSize': '12px'}
+                            )
+                        ], width=4)
+                    ]),
+                    dcc.Graph(
+                        id='key-delay-scatter-plot',
+                        figure={},
+                        style={'height': '500px'}
+                    ),
+                ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
+            ], width=12)
+        ]),
+
+        # 单键多曲延时对比区域
+        dbc.Row([
+            dbc.Col([
+                html.Div([
+                    dbc.Row([
+                        dbc.Col([
+                            html.H6("单键多曲延时对比", className="mb-2",
+                                   style={'color': '#009688', 'fontWeight': 'bold', 'borderBottom': '2px solid #009688', 'paddingBottom': '5px'}),
+                        ], width=8),
+                        dbc.Col([
+                            dcc.Dropdown(
+                                id='single-key-selector',
+                                placeholder='选择要分析的按键',
+                                clearable=True,
+                                style={'fontSize': '12px'}
+                            )
+                        ], width=4)
+                    ]),
+                    dcc.Graph(
+                        id='single-key-delay-comparison-plot',
+                        figure={},
+                        style={'height': '400px'}
+                    ),
+                ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
+            ], width=12)
+        ]),
+
         # 按键与延时Z-Score标准化散点图区域
         dbc.Row([
             dbc.Col([
@@ -1593,11 +2063,38 @@ def create_report_layout(backend):
                         style={'height': '500px'}
                     ),
                     html.Div([
-                        html.P("💡 提示：点击直方图中的柱状图区域，可查看该延时范围内的数据点详情", 
-                               className="text-muted", 
-                               style={'fontSize': '12px', 'marginTop': '10px', 'marginBottom': '10px'}),
-                        html.Div(id='delay-histogram-selection-info', 
-                                style={'marginBottom': '10px', 'fontSize': '14px', 'fontWeight': 'bold', 'color': '#2c3e50'}),
+                        dbc.Row([
+                            dbc.Col([
+                                html.P("💡 提示：点击直方图中的柱状图区域，可查看该延时范围内的数据点详情",
+                                       className="text-muted",
+                                       style={'fontSize': '12px', 'marginTop': '10px', 'marginBottom': '10px'}),
+                                html.Div(id='delay-histogram-selection-info',
+                                        style={'marginBottom': '10px', 'fontSize': '14px', 'fontWeight': 'bold', 'color': '#2c3e50'}),
+                            ], width=8),
+                            dbc.Col([
+                                dbc.Button([
+                                    html.I(className="fas fa-download", style={'marginRight': '8px'}),
+                                    "导出CSV"
+                                ], id='export-delay-histogram-csv', color='success', size='sm',
+                                   style={'marginTop': '10px'}),
+                                html.Div(id='export-delay-histogram-status',
+                                        style={'marginTop': '5px', 'fontSize': '12px'}),
+                                dbc.Button([
+                                    html.I(className="fas fa-sync-alt", style={'marginRight': '8px'}),
+                                    "重复验证一致性"
+                                ], id='repeat-verification-btn', color='info', size='sm',
+                                   style={'marginTop': '5px'}),
+                                html.Div(id='repeat-verification-status',
+                                        style={'marginTop': '2px', 'fontSize': '12px'}),
+                                dbc.Button([
+                                    html.I(className="fas fa-flask", style={'marginRight': '8px'}),
+                                    "导出匹配前数据(测试)"
+                                ], id='export-pre-match-csv', color='warning', size='sm',
+                                   style={'marginTop': '5px'}),
+                                html.Div(id='export-pre-match-status',
+                                        style={'marginTop': '2px', 'fontSize': '12px'})
+                            ], width=4, style={'textAlign': 'right'})
+                        ]),
                         dash_table.DataTable(
                             id='delay-histogram-detail-table',
                             columns=[
@@ -1757,10 +2254,7 @@ def create_report_layout(backend):
                         ]),
                         dash_table.DataTable(
                             id='multi-hammers-table',
-                                columns=(
-                                    # 多算法模式：添加"算法名称"列
-                                [{"name": "算法名称", "id": "algorithm_name"}]
-                                ) + [
+                            columns=[
                                 {"name": "数据类型", "id": "data_type"},
                                 {"name": "键位ID", "id": "keyId"},
                                 {"name": "按下时间(ms)", "id": "keyOn"},

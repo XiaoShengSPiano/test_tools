@@ -13,9 +13,11 @@ def get_bar_segments2(track):
     all_bars = []
     index = 0
     for note in track:
-        key_on = note.after_touch.index[0] + note.offset
-        
-        key_off = note.after_touch.index[len(note.after_touch.index) - 1] + note.offset
+        try:
+            key_on = note.after_touch.index[0] + note.offset
+            key_off = note.after_touch.index[len(note.after_touch.index) - 1] + note.offset
+        except (IndexError, AttributeError) as e:
+            raise ValueError(f"音符ID {note.id} 的after_touch数据无效: {e}") from e
         
         key_id = note.id
 
@@ -384,8 +386,8 @@ def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None, oth
     fig = make_subplots(
         rows=2, cols=1,
         subplot_titles=('偏移前曲线对比', '偏移后曲线对比'),
-        shared_xaxes=True,  # 共享X轴
-        vertical_spacing=0.1,  # 子图间距
+        shared_xaxes=False,  # 不共享X轴，上下子图各自有独立的时间刻度
+        vertical_spacing=0.3,  # 增加子图间距，为图注和时间刻度留出足够空间
         row_heights=[0.5, 0.5]  # 上下子图高度相等
     )
     
@@ -403,7 +405,7 @@ def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None, oth
                 x_after_touch = (record_note.after_touch.index + record_note.offset) / 10.0
                 y_after_touch = record_note.after_touch.values  # 触后压力值
 
-                # 在两个子图中都显示录制数据作为基准，但只在上子图显示图例
+                # 在两个子图中都显示录制数据作为基准，并在各自子图显示图例
                 for row in [1, 2]:
                     legend_name = "legend" if row == 1 else "legend2"
                     fig.add_trace(
@@ -413,8 +415,8 @@ def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None, oth
                             mode='lines',
                             name='录制触后',
                             line=dict(color='blue', width=3),
-                            showlegend=True if row == 1 else False,  # 只在上子图显示图例
-                            legend=legend_name if row == 1 else None,  # 指定使用哪个图例
+                            showlegend=True,  # 在两个子图都显示图例
+                            legend=legend_name,  # 指定使用哪个图例
                             legendgroup='record',  # 录制数据分组（触后和锤子一组）
                             hovertemplate='录制触后时间: %{x:.2f} ms<br>触后压力: %{y}<extra></extra>'
                         ),
@@ -429,7 +431,7 @@ def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None, oth
                 # 获取第一个锤子的时间
                 first_hammer_time_ms = x_hammers[0] if len(x_hammers) > 0 else 0.0
 
-                # 在两个子图中都显示录制锤子数据作为基准
+                # 在两个子图中都显示录制锤子数据作为基准，并在各自子图显示图例
                 for row in [1, 2]:
                     legend_name = "legend" if row == 1 else "legend2"
                     fig.add_trace(
@@ -439,8 +441,8 @@ def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None, oth
                             mode='markers',
                             name='录制锤子',
                             marker=dict(color='blue', size=8, symbol='circle'),
-                            showlegend=True if row == 1 else False,  # 只在上子图显示图例
-                            legend=legend_name if row == 1 else None,  # 指定使用哪个图例
+                            showlegend=True,  # 在两个子图都显示图例
+                            legend=legend_name,  # 指定使用哪个图例
                             legendgroup='record',  # 录制数据分组（触后和锤子一组）
                             hovertemplate=f'录制锤子时间: %{{x:.2f}} ms<br>锤子速度: %{{y}}<br>第一个锤子时间: {first_hammer_time_ms:.2f} ms<extra></extra>'
                         ),
@@ -458,8 +460,10 @@ def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None, oth
                 x_after_touch_adjusted = (play_note.after_touch.index + play_note.offset) / 10.0 - mean_delay_ms
                 x_after_touch_actual = (play_note.after_touch.index + play_note.offset) / 10.0  # 实际播放时间（偏移前）
                 y_after_touch = play_note.after_touch.values  # 触后压力值
-                play_name_adjusted = '回放触后(调整后)'  # 调整后的曲线名称
-                play_name_original = '回放触后(原始)'  # 原始曲线名称
+                # 构建包含算法名称的图注名称
+                alg_prefix = f"{algorithm_name} - " if algorithm_name else ""
+                play_name_adjusted = f'{alg_prefix}回放触后(调整后)'  # 调整后的曲线名称
+                play_name_original = f'{alg_prefix}回放触后(原始)'  # 原始曲线名称
                 # 当前算法的触后和锤子为一组
                 alg_group = f'algorithm_{algorithm_name}' if algorithm_name else 'algorithm_default'
 
@@ -502,7 +506,7 @@ def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None, oth
                 # 计算绝对时间：相对时间 + offset，转换为 ms（锤子不进行时间偏移）
                 x_hammers = (play_note.hammers.index + play_note.offset) / 10.0  # 锤子使用原始时间，不偏移
                 y_hammers = play_note.hammers.values  # 锤子速度值
-                play_name_hammer = '回放锤子'  # 统一的锤子名称
+                play_name_hammer = f'{alg_prefix}回放锤子'  # 包含算法名称的锤子名称
                 # 当前算法的触后和锤子为一组
                 alg_group = f'algorithm_{algorithm_name}' if algorithm_name else 'algorithm_default'
 
@@ -516,8 +520,8 @@ def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None, oth
                             mode='markers',
                             name=play_name_hammer,
                             marker=dict(color='red', size=8, symbol='circle'),
-                            showlegend=True if row == 1 else False,  # 只在上子图显示图例
-                            legend=legend_name if row == 1 else None,  # 指定使用哪个图例
+                            showlegend=True,  # 在两个子图都显示图例
+                            legend=legend_name,  # 指定使用哪个图例
                             legendgroup=alg_group,  # 当前算法的触后和锤子一组
                             customdata=x_hammers,  # 传递实际播放时间作为自定义数据
                             hovertemplate=f'算法: {algorithm_name if algorithm_name else "未知"}<br>锤子时间: %{{customdata:.2f}} ms<br>锤子速度: %{{y}}<extra></extra>'
@@ -551,7 +555,7 @@ def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None, oth
                         x=x_after_touch_adjusted,
                         y=y_after_touch,
                         mode='lines',
-                        name='回放触后',  # 移除算法名，悬浮时会显示
+                        name=f'{other_alg_name} - 回放触后',  # 包含算法名称
                         line=dict(color=color, width=2, dash='dash'),
                         showlegend=True,
                         legend="legend2",  # 使用下子图的图例
@@ -571,7 +575,7 @@ def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None, oth
                         x=x_hammers,
                         y=y_hammers,
                         mode='markers',
-                        name='回放锤子',  # 移除算法名，悬浮时会显示
+                        name=f'{other_alg_name} - 回放锤子',  # 包含算法名称
                         marker=dict(color=color, size=6, symbol='square'),
                         showlegend=True,
                         legend="legend2",  # 使用下子图的图例
@@ -651,50 +655,54 @@ def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None, oth
             mirror=True
         ),
         height=900,  # 增加高度以适应两个子图
-        width=1200,  # 适当减少宽度，使图表更紧凑
+        width=1200,  # 图表宽度，适当缩小
         template='simple_white',
-        # 为上子图创建独立的图例（曲线图内部）
+        # 为上子图创建独立的图例（上子图区域上方左上角）
+        # 在 Plotly 子图中，row_heights=[0.5, 0.5] 和 vertical_spacing=0.3 时
+        # 上子图大约占据 y 从 0.65 到 1.0（在 paper 坐标系中）
         legend=dict(
-            orientation="h",
-            yanchor="top",
-            y=1.08,  # 上子图内部顶部
+            orientation="h",  # 水平排列
+            yanchor="bottom",
+            y=1.05,  # 在上子图区域上方，增加与标题的间距（相对于整个图表）
             xanchor="left",
-            x=0.00,  # 左边位置
+            x=0.0,  # 左上角
             traceorder='grouped',
-            tracegroupgap=60,
-            itemwidth=40,
-            font=dict(size=8),
-            bgcolor='rgba(255,255,255,0.9)',
+            tracegroupgap=10,  # 水平排列时的组间距
+            itemwidth=30,
+            font=dict(size=9),
+            bgcolor='rgba(255,255,255,0.95)',
             bordercolor='blue',
             borderwidth=1,
             entrywidthmode='pixels',
-            entrywidth=80,
+            entrywidth=240,  # 增大图注项宽度，为长算法名字留出更多空间
             groupclick='toggleitem',
             itemsizing='trace',
             itemclick='toggle'
         ),
-        # 为下子图创建独立的图例（曲线图内部）
+        # 为下子图创建独立的图例（下子图区域上方左上角）
+        # 下子图大约占据 y 从 0.0 到 0.35（在 paper 坐标系中，考虑 vertical_spacing=0.25）
+        # 需要增大与上子图底部时间刻度的间距，将图注位置调低
         legend2=dict(
-            orientation="h",
-            yanchor="top",
-            y=0.53,  # 下子图内部顶部（相对于整个图表坐标系）
+            orientation="h",  # 水平排列
+            yanchor="bottom",
+            y=0.40,  # 在下子图区域上方，增大与上子图底部时间刻度的间距（相对于整个图表，上子图底部约在 y=0.6，下子图顶部约在 y=0.35）
             xanchor="left",
-            x=0.0,  # 左边位置
+            x=0.0,  # 左上角
             traceorder='grouped',
-            tracegroupgap=60,
-            itemwidth=40,
-            font=dict(size=8),
-            bgcolor='rgba(255,255,255,0.9)',
+            tracegroupgap=10,  # 水平排列时的组间距
+            itemwidth=30,
+            font=dict(size=9),
+            bgcolor='rgba(255,255,255,0.95)',
             bordercolor='red',
             borderwidth=1,
             entrywidthmode='pixels',
-            entrywidth=80,
+            entrywidth=240,  # 增大图注项宽度，为长算法名字留出更多空间
             groupclick='toggleitem',
             itemsizing='trace',
             itemclick='toggle'
         ),
         hovermode='x unified',  # 统一悬停模式
-        margin=dict(l=60, r=40, t=120, b=80)  # 增加上边距为图注和标题留出空间但不覆盖曲线
+        margin=dict(l=80, r=60, t=160, b=100)  # 增加顶部边距，为图注留出空间
     )
     
     return fig

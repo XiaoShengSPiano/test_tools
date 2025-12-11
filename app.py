@@ -41,7 +41,9 @@ class ApplicationManager:
     def history_manager(self) -> HistoryManager:
         """获取历史管理器单例"""
         if self._history_manager is None:
-            self._history_manager = HistoryManager()
+            # 检查是否禁用数据库功能
+            disable_db = os.environ.get('DISABLE_DATABASE', 'false').lower() == 'true'
+            self._history_manager = HistoryManager(disable_database=disable_db)
         return self._history_manager
 
     @property

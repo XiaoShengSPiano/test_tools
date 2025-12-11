@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
+import json
 from utils.logger import Logger
 from spmid.spmid_analyzer import SPMIDAnalyzer
 from spmid.spmid_reader import Note
@@ -102,7 +104,11 @@ class AlgorithmDataset:
         """
         try:
             self.metadata.status = AlgorithmStatus.LOADING
-            
+
+            # 清除之前的一致性验证状态，确保重新验证
+            self._last_algorithm_hash = None
+            self._last_overview_metrics = None
+
             # 保存原始数据
             self.record_data = record_data
             self.replay_data = replay_data
@@ -110,7 +116,10 @@ class AlgorithmDataset:
             # 创建分析器并执行分析
             self.analyzer = SPMIDAnalyzer()
             self.analyzer.analyze(record_data, replay_data)
-            
+
+            # 验证数据一致性
+            self._verify_algorithm_consistency()
+
             self.metadata.status = AlgorithmStatus.READY
             logger.info(f"✅ 算法 {self.metadata.algorithm_name} 数据加载完成")
             return True
@@ -156,6 +165,162 @@ class AlgorithmDataset:
     def is_ready(self) -> bool:
         """检查算法是否已就绪"""
         return self.metadata.status == AlgorithmStatus.READY and self.analyzer is not None
+
+    def _verify_algorithm_consistency(self) -> None:
+        """
+        验证算法数据一致性，包括数据概览指标的具体对比
+
+        计算分析结果的哈希值，用于检测相同输入是否产生相同输出。
+        """
+        try:
+            import hashlib
+            import json
+
+            # 计算当前分析结果的哈希值
+            current_hash = self._calculate_algorithm_hash()
+            current_metrics = self._calculate_overview_metrics()
+
+            # 获取之前保存的哈希值和指标
+            previous_hash = getattr(self, '_last_algorithm_hash', None)
+            previous_metrics = getattr(self, '_last_overview_metrics', None)
+
+            if previous_hash is not None and previous_metrics is not None:
+                if current_hash == previous_hash:
+                    logger.info(f"✅ 算法 {self.metadata.algorithm_name} 数据一致性验证通过")
+                    logger.info(f"📊 数据概览指标验证: 准确率={current_metrics.get('accuracy_percent', 'N/A')}%, "
+                              f"丢锤数={current_metrics.get('drop_hammers_count', 'N/A')}, "
+                              f"多锤数={current_metrics.get('multi_hammers_count', 'N/A')}, "
+                              f"已配对数={current_metrics.get('matched_pairs_count', 'N/A')}")
+                else:
+                    logger.warning(f"⚠️ 算法 {self.metadata.algorithm_name} 数据一致性警告：相同输入产生了不同输出！")
+                    logger.warning(f"  之前的哈希值: {previous_hash}")
+                    logger.warning(f"  当前的哈希值: {current_hash}")
+
+                    # 对比具体指标
+                    self._log_metrics_comparison(previous_metrics, current_metrics)
+            else:
+                logger.info(f"📝 算法 {self.metadata.algorithm_name} 首次分析，记录数据哈希值: {current_hash}")
+                logger.info(f"📊 记录数据概览指标: 准确率={current_metrics.get('accuracy_percent', 'N/A')}%, "
+                          f"丢锤数={current_metrics.get('drop_hammers_count', 'N/A')}, "
+                          f"多锤数={current_metrics.get('multi_hammers_count', 'N/A')}, "
+                          f"已配对数={current_metrics.get('matched_pairs_count', 'N/A')}")
+
+            # 保存当前哈希值和指标供下次比较
+            self._last_algorithm_hash = current_hash
+            self._last_overview_metrics = current_metrics
+
+        except Exception as e:
+            logger.warning(f"⚠️ 算法 {self.metadata.algorithm_name} 一致性验证失败: {e}")
+
+    def _log_metrics_comparison(self, previous_metrics: Dict[str, Any], current_metrics: Dict[str, Any]) -> None:
+        """
+        记录指标对比信息，用于调试不一致问题
+
+        Args:
+            previous_metrics: 之前的指标数据
+            current_metrics: 当前的指标数据
+        """
+        try:
+            logger.warning("🔍 数据概览指标对比:")
+
+            metrics_to_compare = [
+                ('accuracy_percent', '准确率(%)'),
+                ('drop_hammers_count', '丢锤数'),
+                ('multi_hammers_count', '多锤数'),
+                ('matched_pairs_count', '已配对音符数'),
+                ('total_valid_record', '有效录制音符数'),
+                ('total_valid_replay', '有效播放音符数'),
+                ('total_valid_combined', '总有效音符数')
+            ]
+
+            for key, name in metrics_to_compare:
+                prev_val = previous_metrics.get(key, 'N/A')
+                curr_val = current_metrics.get(key, 'N/A')
+                if prev_val != curr_val:
+                    logger.warning(f"  ❌ {name}: {prev_val} → {curr_val} (不一致！)")
+                else:
+                    logger.info(f"  ✅ {name}: {curr_val} (一致)")
+
+        except Exception as e:
+            logger.warning(f"记录指标对比失败: {e}")
+
+    def _calculate_algorithm_hash(self) -> str:
+        """
+        计算算法分析结果的哈希值，包括数据概览指标
+
+        Returns:
+            str: 分析结果的SHA256哈希值
+        """
+        try:
+            # 获取数据概览指标的具体数值
+            overview_metrics = self._calculate_overview_metrics()
+
+            hash_data = {
+                'overview_metrics': overview_metrics,
+                'matched_pairs_count': len(getattr(self.analyzer, 'matched_pairs', [])),
+                'valid_record_count': len(getattr(self.analyzer, 'valid_record_data', [])),
+                'valid_replay_count': len(getattr(self.analyzer, 'valid_replay_data', [])),
+                'multi_hammers_count': len(getattr(self.analyzer, 'multi_hammers', [])),
+                'drop_hammers_count': len(getattr(self.analyzer, 'drop_hammers', [])),
+                'silent_hammers_count': len(getattr(self.analyzer, 'silent_hammers', [])),
+            }
+
+            # 添加matched_pairs的详细信息
+            if hasattr(self.analyzer, 'matched_pairs') and self.analyzer.matched_pairs:
+                pairs_info = []
+                for i, (r_idx, p_idx, r_note, p_note) in enumerate(self.analyzer.matched_pairs[:5]):
+                    pairs_info.append({
+                        'record_index': r_idx,
+                        'replay_index': p_idx,
+                        'record_note_id': getattr(r_note, 'id', None),
+                        'replay_note_id': getattr(p_note, 'id', None)
+                    })
+                hash_data['matched_pairs_sample'] = pairs_info
+
+            # 转换为JSON字符串并计算哈希
+            hash_string = json.dumps(hash_data, sort_keys=True, default=str)
+            return hashlib.sha256(hash_string.encode('utf-8')).hexdigest()
+
+        except Exception as e:
+            logger.warning(f"计算算法哈希失败: {e}")
+            return "hash_calculation_failed"
+
+    def _calculate_overview_metrics(self) -> Dict[str, Any]:
+        """
+        计算数据概览中的关键指标，用于一致性验证
+
+        Returns:
+            Dict[str, Any]: 包含数据概览指标的字典
+        """
+        try:
+            # 使用与UI相同的计算逻辑
+            initial_valid_record = getattr(self.analyzer, 'initial_valid_record_data', None)
+            initial_valid_replay = getattr(self.analyzer, 'initial_valid_replay_data', None)
+
+            total_valid_record = len(initial_valid_record) if initial_valid_record else 0
+            total_valid_replay = len(initial_valid_replay) if initial_valid_replay else 0
+
+            matched_pairs = getattr(self.analyzer, 'matched_pairs', [])
+            drop_hammers = getattr(self.analyzer, 'drop_hammers', [])
+            multi_hammers = getattr(self.analyzer, 'multi_hammers', [])
+
+            matched_count = len(matched_pairs)
+            total_valid = total_valid_record + total_valid_replay
+            accuracy = (matched_count * 2 / total_valid * 100) if total_valid > 0 else 0.0
+
+            return {
+                'accuracy_percent': round(accuracy, 1),
+                'drop_hammers_count': len(drop_hammers),
+                'multi_hammers_count': len(multi_hammers),
+                'matched_pairs_count': matched_count,
+                'total_valid_record': total_valid_record,
+                'total_valid_replay': total_valid_replay,
+                'total_valid_combined': total_valid
+            }
+
+        except Exception as e:
+            logger.warning(f"计算概览指标失败: {e}")
+            return {'error': str(e)}
 
 
 class MultiAlgorithmManager:

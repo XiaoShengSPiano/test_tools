@@ -90,6 +90,9 @@ class SPMIDAnalyzer:
         
         # 步骤3：执行按键匹配
         self.matched_pairs = self.note_matcher.find_all_matched_pairs(self.valid_record_data, self.valid_replay_data)
+
+        # 保存匹配统计信息
+        self.match_statistics = self.note_matcher.match_statistics
         
         # 步骤4：分析异常（传递note_matcher以便识别超过阈值的匹配对）
         self.drop_hammers, self.multi_hammers = self.error_detector.analyze_hammer_issues(
@@ -140,16 +143,17 @@ class SPMIDAnalyzer:
     
     def _initialize_threshold_checker(self) -> MotorThresholdChecker:
         """初始化电机阈值检查器"""
-        try:
-            threshold_checker = MotorThresholdChecker(
-                fit_equations_path="spmid/quadratic_fit_formulas.json",
-                pwm_thresholds_path="spmid/inflection_pwm_values.json"
-            )
-            logger.info("✅ 电机阈值检查器初始化成功")
-            return threshold_checker
-        except Exception as e:
-            logger.error(f"初始化电机阈值检查器失败: {e}")
-            raise RuntimeError("电机阈值检查器初始化失败，无法进行SPMID数据分析")
+        pass
+        # try:
+        #     threshold_checker = MotorThresholdChecker(
+        #         fit_equations_path="spmid/quadratic_fit_formulas.json",
+        #         pwm_thresholds_path="spmid/inflection_pwm_values.json"
+        #     )
+        #     logger.info("✅ 电机阈值检查器初始化成功")
+        #     return threshold_checker
+        # except Exception as e:
+        #     logger.error(f"初始化电机阈值检查器失败: {e}")
+        #     raise RuntimeError("电机阈值检查器初始化失败，无法进行SPMID数据分析")
     
     def _extract_silent_hammers_from_invalid_counts(self, invalid_counts: Dict[str, Any]) -> List[ErrorNote]:
         """
@@ -175,8 +179,11 @@ class SPMIDAnalyzer:
             index = item['index']
             
             # 计算时间信息
-            keyon_time = note.after_touch.index[0] + note.offset if len(note.after_touch) > 0 else 0
-            keyoff_time = note.after_touch.index[-1] + note.offset if len(note.after_touch) > 0 else 0
+            try:
+                keyon_time = note.after_touch.index[0] + note.offset if len(note.after_touch) > 0 else 0
+                keyoff_time = note.after_touch.index[-1] + note.offset if len(note.after_touch) > 0 else 0
+            except (IndexError, AttributeError) as e:
+                raise ValueError(f"音符ID {note.id} 的after_touch数据无效: {e}") from e
             
             error_note = ErrorNote(
                 infos=[NoteInfo(

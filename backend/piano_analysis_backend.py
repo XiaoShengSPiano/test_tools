@@ -9,11 +9,17 @@
 import os
 import tempfile
 import traceback
+import hashlib
+import json
 import pandas as pd
 import numpy as np
 from typing import Optional, Tuple, Dict, Any, List, Union
 from plotly.graph_objects import Figure
 from utils.logger import Logger
+
+# Dash UI imports for report generation
+import dash_bootstrap_components as dbc
+from dash import html
 
 # SPMID相关导入
 import spmid
@@ -34,6 +40,107 @@ from .force_curve_analyzer import ForceCurveAnalyzer
 logger = Logger.get_logger()
 
 
+# 统一统计服务类
+class AlgorithmStatistics:
+    """算法统计服务 - 统一处理准确率和错误计算"""
+
+    def __init__(self, algorithm):
+        self.algorithm = algorithm
+        self._cache = {}  # 计算结果缓存
+
+    def get_accuracy_info(self) -> dict:
+        """获取准确率相关信息"""
+        if 'accuracy_info' not in self._cache:
+            self._cache['accuracy_info'] = self._calculate_accuracy_info()
+        return self._cache['accuracy_info']
+
+    def get_error_info(self) -> dict:
+        """获取错误统计信息"""
+        if 'error_info' not in self._cache:
+            self._cache['error_info'] = self._calculate_error_info()
+        return self._cache['error_info']
+
+    def get_full_statistics(self) -> dict:
+        """获取完整的统计信息"""
+        accuracy_info = self.get_accuracy_info()
+        error_info = self.get_error_info()
+
+        return {
+            **accuracy_info,
+            **error_info,
+            'total_errors': error_info['drop_count'] + error_info['multi_count']
+        }
+
+    def _calculate_accuracy_info(self) -> dict:
+        """计算准确率相关信息"""
+        # 分母：总有效按键数
+        total_effective_keys = self._get_total_effective_keys()
+
+        if total_effective_keys == 0:
+            return {
+                'accuracy': 0.0,
+                'matched_count': 0,
+                'total_effective_keys': 0,
+                'precision_matches': 0,
+                'approximate_matches': 0
+            }
+
+        # 已配对音符数：直接使用成功匹配对的数量
+        # 现在所有成功的匹配（包括SEVERE）都在matched_pairs中
+        note_matcher = getattr(self.algorithm.analyzer, 'note_matcher', None)
+        if note_matcher and hasattr(note_matcher, 'matched_pairs'):
+            matched_count = len(note_matcher.matched_pairs)
+        else:
+            matched_count = 0
+
+        # 注意：不再需要加上失败匹配数量，因为失败匹配不构成配对关系
+        total_matched_count = matched_count  # 总匹配对数 = 成功匹配对数
+
+        # 分子：匹配的音符总数（每个匹配对包含2个音符）
+        # 注意：只计算成功匹配的音符，不包括失败匹配
+        matched_keys_count = matched_count * 2
+
+        # 准确率计算
+        accuracy = (matched_keys_count / total_effective_keys) * 100
+
+        # 获取匹配统计信息（用于其他用途）
+        # 注意：现在stats不再包含failed_matches，所以我们从match_statistics获取兼容字段
+        match_stats = self.algorithm.analyzer.match_statistics
+        precision_matches = getattr(match_stats, 'precision_matches', 0)
+        approximate_matches = getattr(match_stats, 'approximate_matches', 0)
+
+        return {
+            'accuracy': accuracy,
+            'matched_count': total_matched_count,  # 返回总匹配对数
+            'total_effective_keys': total_effective_keys,
+            'precision_matches': precision_matches,
+            'approximate_matches': approximate_matches
+        }
+
+    def _calculate_error_info(self) -> dict:
+        """计算错误统计信息"""
+        # 直接使用analyzer中已计算的错误数据，保持与表格显示一致
+        drop_hammers = getattr(self.algorithm.analyzer, 'drop_hammers', [])
+        multi_hammers = getattr(self.algorithm.analyzer, 'multi_hammers', [])
+
+        return {
+            'drop_hammers': drop_hammers,
+            'multi_hammers': multi_hammers,
+            'drop_count': len(drop_hammers),
+            'multi_count': len(multi_hammers)
+        }
+
+    def _get_total_effective_keys(self) -> int:
+        """获取总有效按键数"""
+        initial_valid_record = getattr(self.algorithm.analyzer, 'initial_valid_record_data', None)
+        initial_valid_replay = getattr(self.algorithm.analyzer, 'initial_valid_replay_data', None)
+
+        total_valid_record = len(initial_valid_record) if initial_valid_record else 0
+        total_valid_replay = len(initial_valid_replay) if initial_valid_replay else 0
+
+        return total_valid_record + total_valid_replay
+
+
 class PianoAnalysisBackend:
 
     def __init__(self, session_id=None, history_manager=None):
@@ -52,7 +159,11 @@ class PianoAnalysisBackend:
         self.plot_generator = PlotGenerator(self.data_filter)
         self.time_filter = TimeFilter()
         self.table_generator = TableDataGenerator()
-        
+
+        # 初始化多算法图表生成器（复用实例，避免重复初始化）
+        from backend.multi_algorithm_plot_generator import MultiAlgorithmPlotGenerator
+        self.multi_algorithm_plot_generator = MultiAlgorithmPlotGenerator(self.data_filter)
+
         # 初始化力度曲线分析器
         self.force_curve_analyzer = ForceCurveAnalyzer()
         
@@ -124,7 +235,215 @@ class PianoAnalysisBackend:
         from backend.upload_manager import UploadManager
         upload_manager = UploadManager(self)
         return upload_manager.process_upload(contents, filename)
-    
+
+    def process_spmid_upload(self, contents, filename):
+        """
+        处理SPMID文件上传并执行完整分析流程
+
+        Args:
+            contents: 文件内容（base64编码）
+            filename: 文件名
+
+        Returns:
+            tuple: (success, result_data, error_msg)
+        """
+        try:
+            # 使用上传管理器处理文件
+            from backend.upload_manager import UploadManager
+            upload_manager = UploadManager(self)
+            success, result_data, error_msg = upload_manager.process_upload(contents, filename)
+
+            if not success:
+                return success, result_data, error_msg
+
+            # 执行数据分析
+            self.analyze_data()
+
+            return True, result_data, None
+
+        except Exception as e:
+            logger.error(f"SPMID文件处理异常: {e}")
+            return False, None, f"处理异常: {str(e)}"
+
+    def analyze_data(self) -> bool:
+        """
+        执行完整的数据分析流程
+
+        Returns:
+            bool: 分析是否成功
+        """
+        try:
+            logger.info("🎯 开始数据分析流程")
+
+            # 获取过滤后的数据
+            record_data = self.data_manager.get_record_data()
+            replay_data = self.data_manager.get_replay_data()
+
+            if not record_data or not replay_data:
+                logger.error("❌ 没有有效的录制或播放数据")
+                return False
+
+            # 创建分析器
+            from spmid.spmid_analyzer import SPMIDAnalyzer
+            self.analyzer = SPMIDAnalyzer()
+
+            # 执行分析
+            success = self.analyzer.analyze(record_data, replay_data)
+
+            if success:
+                logger.info("✅ 数据分析完成")
+                return True
+            else:
+                logger.error("❌ 数据分析失败")
+                return False
+
+        except Exception as e:
+            logger.error(f"❌ 数据分析异常: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
+
+    def generate_report_content(self):
+        """
+        生成报告内容（用于单算法模式）
+
+        Returns:
+            html.Div: 报告内容
+        """
+        try:
+            from ui.layout_components import create_report_layout
+            return create_report_layout(self)
+        except Exception as e:
+            logger.error(f"生成报告内容失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return html.Div([
+                dbc.Alert(f"报告生成失败: {str(e)}", color="danger")
+            ])
+
+    def export_pre_match_data_to_csv(self, filename: str = None) -> Optional[str]:
+        """
+        导出匹配前的数据到CSV文件（测试功能）
+
+        在按键匹配之前进行编号，为录制和播放音符分别分配索引并导出CSV。
+
+        Args:
+            filename: 自定义文件名，如果为None则自动生成
+
+        Returns:
+            str: CSV文件路径，如果导出失败则返回None
+        """
+        try:
+            import csv
+            import os
+            from datetime import datetime
+
+            # 检查是否有有效的分析器和数据
+            if not self.analyzer:
+                logger.warning("⚠️ 没有有效的分析器，无法导出匹配前数据")
+                return None
+
+            # 获取匹配前的数据（空数据过滤之后，按键匹配之前）
+            initial_valid_record = self.analyzer.get_initial_valid_record_data() if hasattr(self.analyzer, 'get_initial_valid_record_data') else None
+            initial_valid_replay = self.analyzer.get_initial_valid_replay_data() if hasattr(self.analyzer, 'get_initial_valid_replay_data') else None
+
+            if not initial_valid_record or not initial_valid_replay:
+                logger.warning("⚠️ 没有匹配前的数据，无法导出")
+                return None
+
+
+            # 生成文件名
+            if filename is None:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"pre_match_data_{timestamp}.csv"
+
+            # 确保文件名有.csv扩展名
+            if not filename.endswith('.csv'):
+                filename += '.csv'
+
+            # 创建输出目录
+            output_dir = "exports"
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+
+            filepath = os.path.join(output_dir, filename)
+
+            # 准备CSV数据 - 将录制和播放索引并排编号
+            csv_data = []
+
+            # 获取录制和播放数据的数量
+            record_count = len(initial_valid_record)
+            replay_count = len(initial_valid_replay)
+
+            # 使用较大的数量作为行数
+            max_count = max(record_count, replay_count)
+
+            # 并排编号录制和播放索引
+            for i in range(max_count):
+                # 录制数据
+                if i < record_count:
+                    record_note = initial_valid_record[i]
+                    record_index = i  # 录制索引
+                    record_key_id = getattr(record_note, 'id', 'N/A')
+
+                    # 获取录制音符的时间信息
+                    record_keyon_time = 0
+                    if hasattr(record_note, 'after_touch') and record_note.after_touch is not None and not record_note.after_touch.empty:
+                        record_keyon_time = record_note.after_touch.index[0] + record_note.offset
+                    elif hasattr(record_note, 'hammers') and record_note.hammers is not None and not record_note.hammers.empty:
+                        record_keyon_time = record_note.hammers.index[0] + record_note.offset
+                else:
+                    record_index = -1  # 没有录制数据
+                    record_key_id = 'N/A'
+                    record_keyon_time = 0
+
+                # 播放数据
+                if i < replay_count:
+                    replay_note = initial_valid_replay[i]
+                    replay_index = i  # 播放索引
+                    replay_key_id = getattr(replay_note, 'id', 'N/A')
+
+                    # 获取播放音符的时间信息
+                    replay_keyon_time = 0
+                    if hasattr(replay_note, 'after_touch') and replay_note.after_touch is not None and not replay_note.after_touch.empty:
+                        replay_keyon_time = replay_note.after_touch.index[0] + replay_note.offset
+                    elif hasattr(replay_note, 'hammers') and replay_note.hammers is not None and not replay_note.hammers.empty:
+                        replay_keyon_time = replay_note.hammers.index[0] + replay_note.offset
+                else:
+                    replay_index = -1  # 没有播放数据
+                    replay_key_id = 'N/A'
+                    replay_keyon_time = 0
+
+                csv_data.append({
+                    '算法名称': '单算法模式',  # 固定值
+                    '显示名称': '单算法模式',  # 固定值
+                    '录制索引': record_index,
+                    '回放索引': replay_index,
+                    '录制按键ID': record_key_id,
+                    '回放按键ID': replay_key_id,
+                    '录制按键时间(ms)': record_keyon_time / 10.0 if record_keyon_time else 0,
+                    '回放按键时间(ms)': replay_keyon_time / 10.0 if replay_keyon_time else 0
+                })
+
+            # 写入CSV
+            fieldnames = ['算法名称', '显示名称', '录制索引', '回放索引',
+                         '录制按键ID', '回放按键ID',
+                         '录制按键时间(ms)', '回放按键时间(ms)']
+
+            with open(filepath, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(csv_data)
+
+            logger.info(f"✅ 匹配前数据已导出到: {filepath}")
+            logger.info(f"📊 录制音符: {len(initial_valid_record)} 个, 播放音符: {len(initial_valid_replay)} 个")
+            logger.info(f"📊 导出总记录数: {len(csv_data)} 条")
+            return filepath
+
+        except Exception as e:
+            logger.error(f"❌ 导出匹配前数据失败: {e}")
+            return None
+
     def process_history_selection(self, history_id):
         """
         处理历史记录选择 - 统一的历史记录入口
@@ -353,9 +672,7 @@ class PianoAnalysisBackend:
                 return self.plot_generator._create_empty_plot("没有激活的算法")
             
             # 使用多算法图表生成器
-            from backend.multi_algorithm_plot_generator import MultiAlgorithmPlotGenerator
-            multi_plot_generator = MultiAlgorithmPlotGenerator(self.data_filter)
-            return multi_plot_generator.generate_multi_algorithm_delay_time_series_plot(
+            return self.multi_algorithm_plot_generator.generate_multi_algorithm_delay_time_series_plot(
                 active_algorithms
             )
         
@@ -508,15 +825,100 @@ class PianoAnalysisBackend:
             logger.error(traceback.format_exc())
             return self.plot_generator._create_empty_plot(f"生成延时时间序列图失败: {str(e)}")
     
+    def export_delay_histogram_data_to_csv(self, filename: str = None) -> Optional[str]:
+        """
+        将延时分布直方图的数据导出为CSV文件
+
+        Args:
+            filename: 自定义文件名，如果为None则自动生成
+
+        Returns:
+            str: CSV文件路径，如果导出失败则返回None
+        """
+        try:
+            import csv
+            import os
+            from datetime import datetime
+
+            # 检查数据
+            if not self.analyzer or not self.analyzer.note_matcher:
+                logger.error("❌ 没有分析器数据，无法导出")
+                return None
+
+            offset_data = self.analyzer.get_offset_alignment_data()
+            if not offset_data:
+                logger.error("❌ 没有匹配数据，无法导出")
+                return None
+
+            # 提取数据
+            csv_data = []
+            for item in offset_data:
+                keyon_offset = item.get('keyon_offset', 0.0)
+                delay_ms = keyon_offset / 10.0
+
+                # 获取更多信息
+                record_index = item.get('record_index', -1)
+                replay_index = item.get('replay_index', -1)
+                record_keyon = item.get('record_keyon', 0)
+                replay_keyon = item.get('replay_keyon', 0)
+
+                csv_data.append({
+                    'record_index': record_index,
+                    'replay_index': replay_index,
+                    'record_keyon_raw': record_keyon,
+                    'replay_keyon_raw': replay_keyon,
+                    'record_keyon_ms': record_keyon / 10.0,
+                    'replay_keyon_ms': replay_keyon / 10.0,
+                    'keyon_offset_raw': keyon_offset,
+                    'delay_ms': delay_ms
+                })
+
+            if not csv_data:
+                logger.error("❌ 没有有效数据，无法导出")
+                return None
+
+            # 生成文件名
+            if filename is None:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"delay_histogram_data_{timestamp}.csv"
+
+            # 确保文件名有.csv扩展名
+            if not filename.endswith('.csv'):
+                filename += '.csv'
+
+            # 创建输出目录
+            output_dir = "exports"
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+
+            filepath = os.path.join(output_dir, filename)
+
+            # 写入CSV
+            fieldnames = ['record_index', 'replay_index', 'record_keyon_raw', 'replay_keyon_raw',
+                         'record_keyon_ms', 'replay_keyon_ms', 'keyon_offset_raw', 'delay_ms']
+
+            with open(filepath, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(csv_data)
+
+            logger.info(f"✅ 延时分布数据已导出到: {filepath}")
+            logger.info(f"📊 共导出 {len(csv_data)} 条记录")
+            return filepath
+
+        except Exception as e:
+            logger.error(f"❌ 导出延时分布数据失败: {e}")
+            return None
+
     def generate_delay_histogram_plot(self) -> Any:
         """
-        生成延时分布直方图，并叠加正态拟合曲线（基于相对时延）。
-        
-        相对时延 = 原始时延 - 平均时延
-        - 消除了整体偏移，更公平地比较不同算法的稳定性
-        - 均值接近0，标准差保持不变
-        
-        x轴：相对延时 (ms)，y轴：概率密度（支持单算法和多算法模式）
+        生成延时分布直方图，并叠加正态拟合曲线（基于绝对时延）。
+
+        绝对时延 = keyon_offset（直接测量值）
+        - 反映算法的实际延时表现
+        - 包含整体偏移信息
+
+        x轴：绝对延时 (ms)，y轴：概率密度（支持单算法和多算法模式）
         """
         # 检查是否在多算法模式
         if self.multi_algorithm_mode and self.multi_algorithm_manager:
@@ -527,9 +929,7 @@ class PianoAnalysisBackend:
                 return self.plot_generator._create_empty_plot("没有激活的算法")
             
             # 使用多算法图表生成器
-            from backend.multi_algorithm_plot_generator import MultiAlgorithmPlotGenerator
-            multi_plot_generator = MultiAlgorithmPlotGenerator(self.data_filter)
-            return multi_plot_generator.generate_multi_algorithm_delay_histogram_plot(
+            return self.multi_algorithm_plot_generator.generate_multi_algorithm_delay_histogram_plot(
                 active_algorithms
             )
         
@@ -542,21 +942,12 @@ class PianoAnalysisBackend:
             if not offset_data:
                 return self.plot_generator._create_empty_plot("无匹配数据")
 
-            # 步骤1：提取原始延时数据（带符号的keyon_offset）
+            # 步骤1：提取绝对延时数据（带符号的keyon_offset）
             # keyon_offset = replay_keyon - record_keyon
             # 正值表示延迟，负值表示提前，零值表示无延时
-            absolute_delays_ms = [item.get('keyon_offset', 0.0) / 10.0 for item in offset_data]
-            if not absolute_delays_ms:
+            delays_ms = [item.get('keyon_offset', 0.0) / 10.0 for item in offset_data]
+            if not delays_ms:
                 return self.plot_generator._create_empty_plot("无有效延时数据")
-            
-            # 步骤2：计算平均延时（用于计算相对延时）
-            n = len(absolute_delays_ms)
-            mean_delay_ms = sum(absolute_delays_ms) / n
-            
-            # 步骤3：计算相对延时（消除整体偏移）
-            # 相对延时 = 原始延时 - 平均延时
-            # 这样均值接近0，标准差保持不变，更适合评估稳定性
-            delays_ms = [delay - mean_delay_ms for delay in absolute_delays_ms]
 
             import plotly.graph_objects as go
             import math
@@ -576,6 +967,7 @@ class PianoAnalysisBackend:
             # ========== 步骤4：计算统计量（基于相对延时）==========
             # 计算样本均值和样本标准差（使用n-1作为分母，无偏估计）
             # 注意：相对延时的均值应该接近0（理论上为0，但由于浮点运算可能有微小偏差）
+            n = len(delays_ms)  # 样本数量
             mean_val = sum(delays_ms) / n  # 样本均值：μ ≈ 0（相对延时的均值）
             if n > 1:
                 # 样本方差：s² = (1/(n-1)) * Σ(x_i - μ)²
@@ -629,7 +1021,7 @@ class PianoAnalysisBackend:
 
             fig.update_layout(
                 # 删除title，因为UI区域已有标题
-                xaxis_title='相对延时 (ms)',
+                xaxis_title='绝对延时 (ms)',
                 yaxis_title='概率密度',
                 bargap=0.05,
                 plot_bgcolor='white',
@@ -1017,9 +1409,7 @@ class PianoAnalysisBackend:
                 return self.plot_generator._create_empty_plot("没有激活的算法")
             
             # 使用多算法图表生成器
-            from backend.multi_algorithm_plot_generator import MultiAlgorithmPlotGenerator
-            multi_plot_generator = MultiAlgorithmPlotGenerator(self.data_filter)
-            return multi_plot_generator.generate_multi_algorithm_offset_alignment_plot(
+            return self.multi_algorithm_plot_generator.generate_multi_algorithm_offset_alignment_plot(
                 active_algorithms
             )
         
@@ -1338,12 +1728,16 @@ class PianoAnalysisBackend:
             logger.error(traceback.format_exc())
             return self.plot_generator._create_empty_plot(f"生成柱状图失败: {str(e)}")
     
-    def generate_key_delay_scatter_plot(self) -> Any:
+    def generate_key_delay_scatter_plot(self, only_common_keys: bool = False, selected_algorithm_names: List[str] = None) -> Any:
         """
         生成按键与延时的散点图（支持单算法和多算法模式）
         x轴：按键ID（key_id）
         y轴：延时（keyon_offset，转换为ms）
         数据来源：所有已匹配的按键对
+        
+        Args:
+            only_common_keys: 是否只显示公共按键 (仅多算法模式有效)
+            selected_algorithm_names: 指定参与对比的算法名称列表 (仅多算法模式有效)
         """
         # 检查是否在多算法模式
         if self.multi_algorithm_mode and self.multi_algorithm_manager:
@@ -1354,10 +1748,10 @@ class PianoAnalysisBackend:
                 return self.plot_generator._create_empty_plot("没有激活的算法")
             
             # 使用多算法图表生成器
-            from backend.multi_algorithm_plot_generator import MultiAlgorithmPlotGenerator
-            multi_plot_generator = MultiAlgorithmPlotGenerator(self.data_filter)
-            return multi_plot_generator.generate_multi_algorithm_key_delay_scatter_plot(
-                active_algorithms
+            return self.multi_algorithm_plot_generator.generate_multi_algorithm_key_delay_scatter_plot(
+                active_algorithms,
+                only_common_keys=only_common_keys,
+                selected_algorithm_names=selected_algorithm_names
             )
         
         # 向后兼容：使用原有逻辑（已废弃）
@@ -1560,9 +1954,7 @@ class PianoAnalysisBackend:
                 return self.plot_generator._create_empty_plot("没有激活的算法")
             
             # 使用多算法图表生成器
-            from backend.multi_algorithm_plot_generator import MultiAlgorithmPlotGenerator
-            multi_plot_generator = MultiAlgorithmPlotGenerator(self.data_filter)
-            return multi_plot_generator.generate_multi_algorithm_key_delay_zscore_scatter_plot(
+            return self.multi_algorithm_plot_generator.generate_multi_algorithm_key_delay_zscore_scatter_plot(
                 active_algorithms
             )
         
@@ -1570,6 +1962,32 @@ class PianoAnalysisBackend:
         logger.warning("⚠️ Z-Score标准化散点图目前仅支持多算法模式")
         return self.plot_generator._create_empty_plot("Z-Score标准化散点图目前仅支持多算法模式")
     
+    def generate_single_key_delay_comparison_plot(self, key_id: int) -> Any:
+        """
+        生成单键多曲延时对比图
+        
+        Args:
+            key_id: 按键ID
+            
+        Returns:
+            Any: Plotly图表对象
+        """
+        # 检查是否在多算法模式
+        if self.multi_algorithm_mode and self.multi_algorithm_manager:
+            # 多算法模式：生成对比图
+            active_algorithms = self.multi_algorithm_manager.get_active_algorithms()
+            if not active_algorithms:
+                logger.warning("⚠️ 多算法模式下没有激活的算法，返回空图表")
+                return self.plot_generator._create_empty_plot("没有激活的算法")
+            
+            # 使用多算法图表生成器
+            return self.multi_algorithm_plot_generator.generate_single_key_delay_comparison_plot(
+                active_algorithms, key_id
+            )
+        
+        # 单算法模式：不支持对比，返回空图表
+        return self.plot_generator._create_empty_plot("单键多曲对比仅支持多算法模式")
+
     def generate_hammer_velocity_delay_scatter_plot(self) -> Any:
         """
         生成锤速与延时的散点图（支持单算法和多算法模式）
@@ -1586,9 +2004,7 @@ class PianoAnalysisBackend:
                 return self.plot_generator._create_empty_plot("没有激活的算法")
             
             # 使用多算法图表生成器
-            from backend.multi_algorithm_plot_generator import MultiAlgorithmPlotGenerator
-            multi_plot_generator = MultiAlgorithmPlotGenerator(self.data_filter)
-            return multi_plot_generator.generate_multi_algorithm_hammer_velocity_delay_scatter_plot(
+            return self.multi_algorithm_plot_generator.generate_multi_algorithm_hammer_velocity_delay_scatter_plot(
                 active_algorithms
             )
         
@@ -1820,9 +2236,7 @@ class PianoAnalysisBackend:
                 return self.plot_generator._create_empty_plot("没有激活的算法")
             
             # 使用多算法图表生成器
-            from backend.multi_algorithm_plot_generator import MultiAlgorithmPlotGenerator
-            multi_plot_generator = MultiAlgorithmPlotGenerator(self.data_filter)
-            return multi_plot_generator.generate_multi_algorithm_key_hammer_velocity_scatter_plot(
+            return self.multi_algorithm_plot_generator.generate_multi_algorithm_key_hammer_velocity_scatter_plot(
                 active_algorithms
             )
         
@@ -1974,9 +2388,7 @@ class PianoAnalysisBackend:
                 return self.plot_generator._create_empty_plot("没有激活的算法")
             
             # 使用多算法图表生成器
-            from backend.multi_algorithm_plot_generator import MultiAlgorithmPlotGenerator
-            multi_plot_generator = MultiAlgorithmPlotGenerator(self.data_filter)
-            return multi_plot_generator.generate_multi_algorithm_waterfall_plot(
+            return self.multi_algorithm_plot_generator.generate_multi_algorithm_waterfall_plot(
                 active_algorithms,
                 self.time_filter
             )
@@ -2010,7 +2422,7 @@ class PianoAnalysisBackend:
         """根据索引生成瀑布图对比图"""
         return self.plot_generator.generate_watefall_conbine_plot_by_index(index, is_record)
     
-    def get_notes_by_delay_type(self, algorithm_name: str, delay_type: str) -> Optional[Tuple[Any, Any]]:
+    def get_notes_by_delay_type(self, algorithm_name: str, delay_type: str) -> Optional[Tuple[Any, Any, int, int]]:
         """
         根据延迟类型（最大/最小）获取对应的音符
         
@@ -2058,7 +2470,7 @@ class PianoAnalysisBackend:
                 if max_delay_items:
                     # 如果有多个，选择第一个（也可以选择其他策略，比如按时间排序）
                     target_item = max_delay_items[0]
-                    logger.info(f"🔍 最大延迟: {max_delay/10.0:.2f}ms, 找到{len(max_delay_items)}个匹配项, 选择record_index={target_item.get('record_index')}, replay_index={target_item.get('replay_index')}, key_id={target_item.get('key_id')}")
+                    logger.info(f"🔍 最大延迟: {max_delay/10.0:.2f}ms, 找到{len(max_delay_items)}个匹配项, 选择record_index={target_item.get('record_index')}, replay_index={target_item.get('replay_index')}")
                     if len(max_delay_items) > 1:
                         logger.warning(f"⚠️ 找到{len(max_delay_items)}个具有最大延迟({max_delay/10.0:.2f}ms)的数据项，选择第一个")
                 else:
@@ -2087,12 +2499,12 @@ class PianoAnalysisBackend:
                     # 统计有多少个匹配项
                     min_delay_items = [item for item in offset_data if abs(item.get('keyon_offset', 0) / 10.0 - min_delay_ms) < 0.001]
                     logger.info(f"🔍 找到{len(min_delay_items)}个具有最小延迟({min_delay_ms:.2f}ms)的数据项")
-                    logger.info(f"🔍 选择的数据项（与UI逻辑一致，最后一个匹配项）: record_index={target_item.get('record_index')}, replay_index={target_item.get('replay_index')}, key_id={target_item.get('key_id')}, keyon_offset={target_item.get('keyon_offset', 0)/10.0:.2f}ms")
+                    logger.info(f"🔍 选择的数据项（与UI逻辑一致，最后一个匹配项）: record_index={target_item.get('record_index')}, replay_index={target_item.get('replay_index')}, keyon_offset={target_item.get('keyon_offset', 0)/10.0:.2f}ms")
                     if len(min_delay_items) > 1:
                         logger.warning(f"⚠️ 找到{len(min_delay_items)}个具有最小延迟({min_delay_ms:.2f}ms)的数据项，选择最后一个（与UI逻辑一致）")
                         # 列出所有匹配项的信息
                         for idx, item in enumerate(min_delay_items):
-                            logger.info(f"  匹配项{idx+1}: record_index={item.get('record_index')}, replay_index={item.get('replay_index')}, key_id={item.get('key_id')}")
+                            logger.info(f"  匹配项{idx+1}: record_index={item.get('record_index')}, replay_index={item.get('replay_index')}")
                 else:
                     logger.warning(f"⚠️ 未找到最小延迟对应的数据项")
             else:
@@ -2126,10 +2538,11 @@ class PianoAnalysisBackend:
                 return None
             
             delay_ms = target_item.get('keyon_offset', 0) / 10.0
-            key_id = target_item.get('key_id', 'N/A')
+            # 从音符对象获取正确的按键ID，而不是从offset_data中获取
+            key_id = getattr(record_note, 'id', 'N/A') if record_note else 'N/A'
             delay_type_name = "最大" if delay_type == 'max' else "最小"
             logger.info(f"✅ 找到{delay_type_name}延迟对应的音符: 算法={algorithm_name}, 按键ID={key_id}, record_index={record_index}, replay_index={replay_index}, delay={delay_ms:.2f}ms")
-            return (record_note, replay_note)
+            return (record_note, replay_note, record_index, replay_index)
             
         except Exception as e:
             logger.error(f"❌ 获取{delay_type}延迟对应的音符失败: {e}")
@@ -2677,12 +3090,9 @@ class PianoAnalysisBackend:
             return None, None, None
         
         # 获取匹配对列表，尝试查找是否有匹配的音符对
-        # 包括正常的matched_pairs和超过阈值的exceeds_threshold_matched_pairs
+        # 注意：现在所有成功的匹配都在matched_pairs中，包括扩展候选匹配
         matched_pairs = getattr(algorithm.analyzer, 'matched_pairs', [])
         note_matcher = getattr(algorithm.analyzer, 'note_matcher', None)
-        exceeds_threshold_matched_pairs = []
-        if note_matcher and hasattr(note_matcher, 'exceeds_threshold_matched_pairs'):
-            exceeds_threshold_matched_pairs = note_matcher.exceeds_threshold_matched_pairs
         
         record_note = None
         play_note = None
@@ -2701,9 +3111,9 @@ class PianoAnalysisBackend:
                     return None, None, None
                 logger.info(f"✅ NoteID验证通过: keyId={expected_key_id}, 音符id={record_note.id}")
             
-            # 尝试从matched_pairs和exceeds_threshold_matched_pairs中查找匹配的播放音符
+            # 尝试从matched_pairs中查找匹配的播放音符
             play_note = None
-            # 先检查正常的matched_pairs
+            # 检查matched_pairs（现在包含所有成功的匹配）
             if matched_pairs:
                 for record_index, replay_index, r_note, p_note in matched_pairs:
                     if record_index == index:
@@ -2711,12 +3121,7 @@ class PianoAnalysisBackend:
                         logger.info(f"🔍 丢锤数据在matched_pairs中找到匹配的播放音符: replay_index={replay_index}")
                         break
             # 如果没找到，再检查超过阈值的匹配对
-            if play_note is None and exceeds_threshold_matched_pairs:
-                for record_index, replay_index, r_note, p_note in exceeds_threshold_matched_pairs:
-                    if record_index == index:
-                        play_note = p_note
-                        logger.info(f"🔍 丢锤数据在exceeds_threshold_matched_pairs中找到匹配的播放音符（超过阈值）: replay_index={replay_index}")
-                        break
+            # 注意：现在所有匹配都在matched_pairs中，不需要额外检查
             
             if play_note is None:
                 logger.info(f"✅ 生成丢锤详细曲线图（无匹配播放数据），算法={algorithm_name}, index={index}")
@@ -2737,9 +3142,9 @@ class PianoAnalysisBackend:
                     return None, None, None
                 logger.info(f"✅ NoteID验证通过: keyId={expected_key_id}, 音符id={play_note.id}")
             
-            # 尝试从matched_pairs和exceeds_threshold_matched_pairs中查找匹配的录制音符
+            # 尝试从matched_pairs中查找匹配的录制音符
             record_note = None
-            # 先检查正常的matched_pairs
+            # 检查matched_pairs（现在包含所有成功的匹配）
             if matched_pairs:
                 for record_index, replay_index, r_note, p_note in matched_pairs:
                     if replay_index == index:
@@ -2747,12 +3152,7 @@ class PianoAnalysisBackend:
                         logger.info(f"🔍 多锤数据在matched_pairs中找到匹配的录制音符: record_index={record_index}")
                         break
             # 如果没找到，再检查超过阈值的匹配对
-            if record_note is None and exceeds_threshold_matched_pairs:
-                for record_index, replay_index, r_note, p_note in exceeds_threshold_matched_pairs:
-                    if replay_index == index:
-                        record_note = r_note
-                        logger.info(f"🔍 多锤数据在exceeds_threshold_matched_pairs中找到匹配的录制音符（超过阈值）: record_index={record_index}")
-                        break
+            # 注意：现在所有匹配都在matched_pairs中，不需要额外检查
             
             if record_note is None:
                 logger.info(f"✅ 生成多锤详细曲线图（无匹配录制数据），算法={algorithm_name}, index={index}")
@@ -2854,6 +3254,82 @@ class PianoAnalysisBackend:
     def get_summary_info(self) -> Dict[str, Any]:
         """获取摘要信息"""
         return self.table_generator.get_summary_info()
+
+    def calculate_accuracy_for_algorithm(self, algorithm) -> float:
+        """
+        为指定的算法计算准确率 - 重构版本
+
+        使用统一的AlgorithmStatistics服务进行计算，确保前后端数据一致性
+
+        Args:
+            algorithm: 算法对象（具有analyzer属性）
+
+        Returns:
+            float: 准确率百分比
+        """
+        try:
+            if not hasattr(algorithm, 'analyzer') or not algorithm.analyzer:
+                return 0.0
+
+            # 使用统一的统计服务
+            stats_service = AlgorithmStatistics(algorithm)
+            accuracy_info = stats_service.get_accuracy_info()
+
+            # 输出调试信息
+            algorithm_name = getattr(getattr(algorithm, 'metadata', None), 'algorithm_name', 'unknown')
+            print(f"[DEBUG] 准确率计算 - 算法: {algorithm_name}")
+            print(f"[DEBUG]   精确匹配: {accuracy_info['precision_matches']} 对")
+            print(f"[DEBUG]   近似匹配: {accuracy_info['approximate_matches']} 对")
+            print(f"[DEBUG]   总匹配对: {accuracy_info['matched_count']} 对")
+            print(f"[DEBUG]   分子（匹配按键数）: {accuracy_info['matched_count'] * 2}")
+            print(f"[DEBUG]   分母（总有效按键数）: {accuracy_info['total_effective_keys']}")
+            print(f"[DEBUG]   准确率: {accuracy_info['accuracy']:.2f}%")
+
+            return accuracy_info['accuracy']
+
+        except Exception as e:
+            logger.error(f"计算算法准确率失败: {e}")
+            return 0.0
+
+    def get_algorithm_statistics(self, algorithm) -> dict:
+        """
+        获取算法的完整统计信息 - 统一接口
+
+        Args:
+            algorithm: 算法对象
+
+        Returns:
+            dict: 包含准确率和错误统计的完整信息
+        """
+        try:
+            if not hasattr(algorithm, 'analyzer') or not algorithm.analyzer:
+                return {
+                    'accuracy': 0.0,
+                    'matched_count': 0,
+                    'total_effective_keys': 0,
+                    'precision_matches': 0,
+                    'approximate_matches': 0,
+                    'drop_count': 0,
+                    'multi_count': 0,
+                    'total_errors': 0
+                }
+
+            # 使用统一的统计服务
+            stats_service = AlgorithmStatistics(algorithm)
+            return stats_service.get_full_statistics()
+
+        except Exception as e:
+            logger.error(f"获取算法统计信息失败: {e}")
+            return {
+                'accuracy': 0.0,
+                'matched_count': 0,
+                'total_effective_keys': 0,
+                'precision_matches': 0,
+                'approximate_matches': 0,
+                'drop_count': 0,
+                'multi_count': 0,
+                'total_errors': 0
+            }
     
     def get_invalid_notes_table_data(self) -> List[Dict[str, Any]]:
         """
@@ -2988,8 +3464,32 @@ class PianoAnalysisBackend:
             
             return table_data
         
-        # 向后兼容：使用原有逻辑（已废弃）
-        return self.table_generator.get_error_table_data(error_type)
+        # 单算法模式：直接从analyzer获取数据
+        if not self.analyzer:
+            return []
+
+        # 获取错误数据
+        if error_type == '丢锤':
+            error_notes = self.analyzer.drop_hammers if hasattr(self.analyzer, 'drop_hammers') else []
+        elif error_type == '多锤':
+            error_notes = self.analyzer.multi_hammers if hasattr(self.analyzer, 'multi_hammers') else []
+        else:
+            return []
+
+        # 转换为表格数据格式（单算法模式不需要添加算法名称列）
+        table_data = []
+        for note in error_notes:
+            row = {
+                'data_type': 'record' if error_type == '丢锤' else 'play',
+                'keyId': note.keyId if hasattr(note, 'keyId') else 'N/A',
+                'keyOn': f"{note.keyOn:.2f}" if hasattr(note, 'keyOn') and note.keyOn is not None else 'N/A',
+                'keyOff': f"{note.keyOff:.2f}" if hasattr(note, 'keyOff') and note.keyOff is not None else 'N/A',
+                'index': note.index if hasattr(note, 'index') else 'N/A',
+                'analysis_reason': getattr(note, 'analysis_reason', '未匹配')
+            }
+            table_data.append(row)
+
+        return table_data
     
     
     # ==================== 内部方法 ====================
@@ -3001,7 +3501,11 @@ class PianoAnalysisBackend:
             if self.analyzer is None:
                 self.analyzer = SPMIDAnalyzer()
                 logger.info("✅ 重新初始化analyzer（向后兼容）")
-            
+
+            # 清除之前的一致性验证状态，确保每次分析都会重新验证
+            self._last_analysis_hash = None
+            self._last_overview_metrics = None
+
             # 执行分析
             record_data = self.data_manager.get_record_data()
             replay_data = self.data_manager.get_replay_data()
@@ -3025,9 +3529,12 @@ class PianoAnalysisBackend:
             
             # 同步分析结果到各个模块
             self._sync_analysis_results()
-            
+
+            # 数据一致性验证
+            self._verify_data_consistency()
+
             logger.info("✅ 错误分析完成")
-            
+
             # 初始化延时分析器（在分析完成后）
             if self.analyzer:
                 self.delay_analysis = DelayAnalysis(self.analyzer)
@@ -3039,120 +3546,9 @@ class PianoAnalysisBackend:
     
     # ==================== 延时关系分析相关方法 ====================
     
-    def get_delay_by_key_analysis(self) -> Dict[str, Any]:
-        """
-        获取延时与按键的关系分析结果
-        
-        Returns:
-            Dict[str, Any]: 分析结果，包含描述性统计、ANOVA检验、事后检验、异常按键等
-        """
-        try:
-            if not self.delay_analysis:
-                if self.analyzer:
-                    self.delay_analysis = DelayAnalysis(self.analyzer)
-                else:
-                    logger.warning("⚠️ 分析器不存在，无法进行延时与按键分析")
-                    return {
-                        'status': 'error',
-                        'message': '分析器不存在'
-                    }
-            
-            result = self.delay_analysis.analyze_delay_by_key()
-            logger.info("✅ 延时与按键关系分析完成")
-            return result
-            
-        except Exception as e:
-            logger.error(f"❌ 延时与按键分析失败: {e}")
-            
-            logger.error(traceback.format_exc())
-            return {
-                'status': 'error',
-                'message': f'分析失败: {str(e)}'
-            }
     
-    def get_delay_by_velocity_analysis(self) -> Dict[str, Any]:
-        """
-        获取延时与锤速的关系分析结果
-        
-        Returns:
-            Dict[str, Any]: 分析结果，包含相关性分析、回归分析、分组分析等
-        """
-        try:
-            if not self.delay_analysis:
-                if self.analyzer:
-                    self.delay_analysis = DelayAnalysis(self.analyzer)
-                else:
-                    logger.warning("⚠️ 分析器不存在，无法进行延时与锤速分析")
-                    return {
-                        'status': 'error',
-                        'message': '分析器不存在'
-                    }
-            
-            result = self.delay_analysis.analyze_delay_by_velocity()
-            logger.info("✅ 延时与锤速关系分析完成")
-            return result
-            
-        except Exception as e:
-            logger.error(f"❌ 延时与锤速分析失败: {e}")
-            
-            logger.error(traceback.format_exc())
-            return {
-                'status': 'error',
-                'message': f'分析失败: {str(e)}'
-            }
     
-    def generate_delay_by_key_analysis_plots(self) -> Dict[str, Any]:
-        """
-        生成延时与按键关系的可视化图表
-        
-        Returns:
-            Dict[str, Any]: 包含箱线图的字典
-        """
-        try:
-            analysis_result = self.get_delay_by_key_analysis()
-            
-            if analysis_result.get('status') != 'success':
-                return {
-                    'boxplot': self.plot_generator._create_empty_plot("分析失败"),
-                    'analysis_result': analysis_result
-                }
-            
-            boxplot = self.plot_generator.generate_delay_by_key_boxplot(analysis_result)
-            
-            return {
-                'boxplot': boxplot,
-                'analysis_result': analysis_result
-            }
-            
-        except Exception as e:
-            logger.error(f"❌ 生成延时与按键分析图表失败: {e}")
-            
-            logger.error(traceback.format_exc())
-            return {
-                'boxplot': self.plot_generator._create_empty_plot(f"生成失败: {str(e)}"),
-                'analysis_result': {}
-            }
     
-    def generate_delay_by_velocity_analysis_plot(self) -> Any:
-        """
-        生成延时与锤速关系的可视化图表
-        
-        Returns:
-            Any: Plotly图表对象
-        """
-        try:
-            analysis_result = self.get_delay_by_velocity_analysis()
-            
-            if analysis_result.get('status') != 'success':
-                return self.plot_generator._create_empty_plot("分析失败")
-            
-            return self.plot_generator.generate_delay_by_velocity_analysis_plot(analysis_result)
-            
-        except Exception as e:
-            logger.error(f"❌ 生成延时与锤速分析图表失败: {e}")
-            
-            logger.error(traceback.format_exc())
-            return self.plot_generator._create_empty_plot(f"生成失败: {str(e)}")
     
     def get_force_delay_by_key_analysis(self) -> Dict[str, Any]:
         """
@@ -3963,13 +4359,265 @@ class PianoAnalysisBackend:
                 )
             
             # 使用多算法图表生成器
-            from backend.multi_algorithm_plot_generator import MultiAlgorithmPlotGenerator
-            multi_plot_generator = MultiAlgorithmPlotGenerator(self.data_filter)
-            return multi_plot_generator.generate_relative_delay_distribution_plot(analysis_result)
+            return self.multi_algorithm_plot_generator.generate_relative_delay_distribution_plot(analysis_result)
             
         except Exception as e:
             logger.error(f"❌ 生成相对延时分布图失败: {e}")
-            
+
             logger.error(traceback.format_exc())
             return self.plot_generator._create_empty_plot(f"生成失败: {str(e)}")
-    
+
+    # ==================== 数据一致性验证相关方法 ====================
+
+    def _verify_data_consistency(self) -> None:
+        """
+        验证数据一致性，确保相同输入产生相同输出，包括数据概览指标的具体对比
+
+        这个方法会计算关键数据的哈希值，并在重复分析时进行比较，
+        以确保数据处理过程的确定性。
+        """
+        try:
+            # 计算当前分析结果的哈希值和指标
+            current_hash = self._calculate_analysis_hash()
+            current_metrics = self._calculate_overview_metrics()
+
+            # 获取之前保存的哈希值和指标
+            previous_hash = getattr(self, '_last_analysis_hash', None)
+            previous_metrics = getattr(self, '_last_overview_metrics', None)
+
+            if previous_hash is not None and previous_metrics is not None:
+                if current_hash == previous_hash:
+                    logger.info("✅ 数据一致性验证通过：相同输入产生相同输出")
+                    logger.info(f"📊 数据概览指标验证: 准确率={current_metrics.get('accuracy_percent', 'N/A')}%, "
+                              f"丢锤数={current_metrics.get('drop_hammers_count', 'N/A')}, "
+                              f"多锤数={current_metrics.get('multi_hammers_count', 'N/A')}, "
+                              f"已配对数={current_metrics.get('matched_pairs_count', 'N/A')}")
+                else:
+                    logger.warning("⚠️ 数据一致性警告：相同输入产生了不同输出！")
+                    logger.warning(f"  之前的哈希值: {previous_hash}")
+                    logger.warning(f"  当前的哈希值: {current_hash}")
+
+                    # 对比具体指标
+                    self._log_metrics_comparison(previous_metrics, current_metrics)
+            else:
+                logger.info(f"📝 首次分析，记录数据哈希值: {current_hash}")
+                logger.info(f"📊 记录数据概览指标: 准确率={current_metrics.get('accuracy_percent', 'N/A')}%, "
+                          f"丢锤数={current_metrics.get('drop_hammers_count', 'N/A')}, "
+                          f"多锤数={current_metrics.get('multi_hammers_count', 'N/A')}, "
+                          f"已配对数={current_metrics.get('matched_pairs_count', 'N/A')}")
+
+            # 保存当前哈希值和指标供下次比较
+            self._last_analysis_hash = current_hash
+            self._last_overview_metrics = current_metrics
+
+        except Exception as e:
+            logger.warning(f"⚠️ 数据一致性验证失败: {e}")
+            # 不影响正常功能，只是警告
+
+    def _log_metrics_comparison(self, previous_metrics: Dict[str, Any], current_metrics: Dict[str, Any]) -> None:
+        """
+        记录指标对比信息，用于调试不一致问题
+
+        Args:
+            previous_metrics: 之前的指标数据
+            current_metrics: 当前的指标数据
+        """
+        try:
+            logger.warning("🔍 数据概览指标对比:")
+
+            metrics_to_compare = [
+                ('accuracy_percent', '准确率(%)'),
+                ('drop_hammers_count', '丢锤数'),
+                ('multi_hammers_count', '多锤数'),
+                ('matched_pairs_count', '已配对音符数'),
+                ('total_valid_record', '有效录制音符数'),
+                ('total_valid_replay', '有效播放音符数'),
+                ('total_valid_combined', '总有效音符数')
+            ]
+
+            for key, name in metrics_to_compare:
+                prev_val = previous_metrics.get(key, 'N/A')
+                curr_val = current_metrics.get(key, 'N/A')
+                if prev_val != curr_val:
+                    logger.warning(f"  ❌ {name}: {prev_val} → {curr_val} (不一致！)")
+                else:
+                    logger.info(f"  ✅ {name}: {curr_val} (一致)")
+
+        except Exception as e:
+            logger.warning(f"记录指标对比失败: {e}")
+
+    def _calculate_analysis_hash(self) -> str:
+        """
+        计算分析结果的哈希值，用于一致性验证，包括数据概览指标
+
+        Returns:
+            str: 分析结果的SHA256哈希值
+        """
+        try:
+            # 计算数据概览指标
+            overview_metrics = self._calculate_overview_metrics()
+
+            # 收集关键数据用于哈希计算
+            hash_data = {
+                'overview_metrics': overview_metrics,
+                'matched_pairs_count': len(getattr(self.analyzer, 'matched_pairs', [])),
+                'valid_record_count': len(getattr(self.analyzer, 'valid_record_data', [])),
+                'valid_replay_count': len(getattr(self.analyzer, 'valid_replay_data', [])),
+                'multi_hammers_count': len(getattr(self.analyzer, 'multi_hammers', [])),
+                'drop_hammers_count': len(getattr(self.analyzer, 'drop_hammers', [])),
+                'silent_hammers_count': len(getattr(self.analyzer, 'silent_hammers', [])),
+            }
+
+            # 添加matched_pairs的详细信息（如果存在）
+            if hasattr(self.analyzer, 'matched_pairs') and self.analyzer.matched_pairs:
+                # 只取前几个匹配对的关键信息，避免哈希过大
+                pairs_info = []
+                for i, (r_idx, p_idx, r_note, p_note) in enumerate(self.analyzer.matched_pairs[:10]):
+                    pairs_info.append({
+                        'record_index': r_idx,
+                        'replay_index': p_idx,
+                        'record_note_id': getattr(r_note, 'id', None),
+                        'replay_note_id': getattr(p_note, 'id', None)
+                    })
+                hash_data['matched_pairs_sample'] = pairs_info
+
+            # 转换为JSON字符串并计算哈希
+            hash_string = json.dumps(hash_data, sort_keys=True, default=str)
+            return hashlib.sha256(hash_string.encode('utf-8')).hexdigest()
+
+        except Exception as e:
+            logger.warning(f"计算分析哈希失败: {e}")
+            return "hash_calculation_failed"
+
+    def _calculate_overview_metrics(self) -> Dict[str, Any]:
+        """
+        计算数据概览中的关键指标，用于一致性验证
+
+        Returns:
+            Dict[str, Any]: 包含数据概览指标的字典
+        """
+        try:
+            # 使用与UI相同的计算逻辑
+            initial_valid_record = getattr(self.analyzer, 'initial_valid_record_data', None)
+            initial_valid_replay = getattr(self.analyzer, 'initial_valid_replay_data', None)
+
+            total_valid_record = len(initial_valid_record) if initial_valid_record else 0
+            total_valid_replay = len(initial_valid_replay) if initial_valid_replay else 0
+
+            matched_pairs = getattr(self.analyzer, 'matched_pairs', [])
+            drop_hammers = getattr(self.analyzer, 'drop_hammers', [])
+            multi_hammers = getattr(self.analyzer, 'multi_hammers', [])
+
+            matched_count = len(matched_pairs)
+            total_valid = total_valid_record + total_valid_replay
+            accuracy = (matched_count * 2 / total_valid * 100) if total_valid > 0 else 0.0
+
+            return {
+                'accuracy_percent': round(accuracy, 1),
+                'drop_hammers_count': len(drop_hammers),
+                'multi_hammers_count': len(multi_hammers),
+                'matched_pairs_count': matched_count,
+                'total_valid_record': total_valid_record,
+                'total_valid_replay': total_valid_replay,
+                'total_valid_combined': total_valid
+            }
+
+        except Exception as e:
+            logger.warning(f"计算概览指标失败: {e}")
+            return {'error': str(e)}
+
+    def _log_consistency_details(self) -> None:
+        """
+        记录数据不一致的详细信息，用于调试
+        """
+        try:
+            logger.warning("🔍 数据不一致详细信息:")
+
+            # 记录关键统计信息
+            analyzer = self.analyzer
+            if analyzer:
+                logger.warning(f"  匹配对数量: {len(getattr(analyzer, 'matched_pairs', []))}")
+                logger.warning(f"  有效录制音符: {len(getattr(analyzer, 'valid_record_data', []))}")
+                logger.warning(f"  有效播放音符: {len(getattr(analyzer, 'valid_replay_data', []))}")
+                logger.warning(f"  多锤错误: {len(getattr(analyzer, 'multi_hammers', []))}")
+                logger.warning(f"  丢锤错误: {len(getattr(analyzer, 'drop_hammers', []))}")
+                logger.warning(f"  静音错误: {len(getattr(analyzer, 'silent_hammers', []))}")
+
+        except Exception as e:
+            logger.warning(f"记录一致性详细信息失败: {e}")
+
+    def get_data_consistency_status(self) -> Dict[str, Any]:
+        """
+        获取数据一致性状态信息
+
+        Returns:
+            Dict[str, Any]: 包含一致性验证状态的信息
+        """
+        return {
+            'last_analysis_hash': getattr(self, '_last_analysis_hash', None),
+            'consistency_verified': hasattr(self, '_last_analysis_hash'),
+            'data_source': self.data_manager.get_upload_data_source_info() if hasattr(self.data_manager, 'get_upload_data_source_info') else None
+        }
+
+    def get_graded_error_stats(self, algorithm=None) -> Dict[str, Any]:
+        """
+        获取分级误差统计数据
+
+        Args:
+            algorithm: 指定算法（用于多算法模式下的单算法查询）
+
+        Returns:
+            Dict[str, Any]: 包含各级别误差统计的数据
+        """
+        try:
+            # 如果指定了算法，使用该算法的数据
+            if algorithm:
+                if algorithm.analyzer and algorithm.analyzer.note_matcher:
+                    return algorithm.analyzer.note_matcher.get_graded_error_stats()
+                else:
+                    return {'error': f'算法 {algorithm} 没有有效的分析器'}
+
+            # 检查是否为多算法模式
+            if self.multi_algorithm_mode and self.multi_algorithm_manager:
+                active_algorithms = self.multi_algorithm_manager.get_active_algorithms()
+                if not active_algorithms:
+                    return {'error': '没有激活的算法'}
+
+                # 汇总所有激活算法的评级统计
+                total_stats = {
+                    'correct': {'count': 0, 'percent': 0.0},
+                    'minor': {'count': 0, 'percent': 0.0},
+                    'moderate': {'count': 0, 'percent': 0.0},
+                    'large': {'count': 0, 'percent': 0.0},
+                    'severe': {'count': 0, 'percent': 0.0}
+                    # 注意：不再汇总失败匹配，因为评级统计不包含失败匹配
+                }
+
+                total_count = 0
+                for algorithm in active_algorithms:
+                    if algorithm.analyzer and algorithm.analyzer.note_matcher:
+                        alg_stats = algorithm.analyzer.note_matcher.get_graded_error_stats()
+                        if alg_stats and 'error' not in alg_stats:
+                            for level in ['correct', 'minor', 'moderate', 'large', 'severe']:
+                                if level in alg_stats:
+                                    total_stats[level]['count'] += alg_stats[level].get('count', 0)
+                                    total_count += alg_stats[level].get('count', 0)
+
+                # 计算百分比
+                if total_count > 0:
+                    for level in ['correct', 'minor', 'moderate', 'large', 'severe']:
+                        total_stats[level]['percent'] = (total_stats[level]['count'] / total_count) * 100.0
+
+                return total_stats
+
+            # 单算法模式
+            if not self.analyzer or not self.analyzer.note_matcher:
+                return {'error': '没有分析器或音符匹配器'}
+
+            stats = self.analyzer.note_matcher.get_graded_error_stats()
+            return stats
+
+        except Exception as e:
+            logger.error(f"获取分级误差统计失败: {e}")
+            return {'error': str(e)}
+

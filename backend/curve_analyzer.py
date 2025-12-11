@@ -4,7 +4,7 @@
 
 面向对象设计，专注于DTW对齐算法
 """
-
+import traceback
 from typing import List, Tuple, Dict, Any, Optional, Callable
 import numpy as np
 from scipy.interpolate import interp1d
@@ -141,7 +141,6 @@ class DTWCurveAligner:
             
         except Exception as e:
             logger.error(f"❌ 曲线对齐失败: {e}")
-            import traceback
             logger.error(traceback.format_exc())
             return None
     
@@ -401,7 +400,6 @@ class DTWCurveAligner:
                     
         except Exception as e:
             logger.error(f"❌ DTW对齐执行失败: {e}")
-            import traceback
             logger.error(traceback.format_exc())
             return None
     
@@ -542,7 +540,6 @@ class DTWCurveAligner:
             
         except Exception as e:
             logger.error(f"❌ 根据对齐路径重新采样失败: {e}")
-            import traceback
             logger.error(traceback.format_exc())
             return None
     

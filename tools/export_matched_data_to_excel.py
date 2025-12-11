@@ -85,9 +85,12 @@ def calculate_note_times(note: Note) -> tuple:
     """
     if note.after_touch is None or len(note.after_touch) == 0:
         return 0.0, 0.0
-    
-    keyon_time = note.after_touch.index[0] + note.offset
-    keyoff_time = note.after_touch.index[-1] + note.offset
+
+    try:
+        keyon_time = note.after_touch.index[0] + note.offset
+        keyoff_time = note.after_touch.index[-1] + note.offset
+    except (IndexError, AttributeError) as e:
+        raise ValueError(f"音符ID {note.id} 的after_touch数据无效: {e}") from e
     
     return keyon_time, keyoff_time
 

@@ -93,6 +93,10 @@ class DataManager:
     def is_upload_source(self) -> bool:
         """判断是否为上传数据源"""
         return self.data_source_info.get('type') == 'upload'
+
+    def get_upload_data_source_info(self) -> Dict[str, Any]:
+        """获取上传数据源信息"""
+        return self.data_source_info.copy()
     
     def is_history_source(self) -> bool:
         """判断是否为历史数据源"""

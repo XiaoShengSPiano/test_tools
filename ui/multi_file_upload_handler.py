@@ -20,17 +20,26 @@ logger = Logger.get_logger()
 class MultiFileUploadHandler:
     """
     多文件上传处理器类
-    
+
     负责处理多算法模式下的文件上传，包括：
     - 文件列表生成
     - 文件ID管理
     - 新文件检测
     - 文件数据存储
     """
-    
+    _instance = None
+
+    def __new__(cls):
+        """单例模式实现"""
+        if cls._instance is None:
+            cls._instance = super(MultiFileUploadHandler, cls).__new__(cls)
+        return cls._instance
+
     def __init__(self):
-        """初始化多文件上传处理器"""
-        logger.info("✅ MultiFileUploadHandler初始化完成")
+        """初始化多文件上传处理器（只在第一次创建时执行）"""
+        if not hasattr(self, '_initialized'):
+            self._initialized = True
+            logger.info("✅ MultiFileUploadHandler初始化完成")
     
     def normalize_file_lists(self, contents_list: Any, filename_list: Any) -> Tuple[List[str], List[str]]:
         """
@@ -181,57 +190,39 @@ class MultiFileUploadHandler:
                 existing_filenames = existing_store_data.get('filenames', [])
                 existing_file_ids = existing_store_data.get('file_ids', [])
                 
-                # 获取所有已添加算法的文件名，过滤掉已添加的文件
-                added_filenames = set()
-                if backend and hasattr(backend, 'get_all_algorithms'):
-                    try:
-                        algorithms = backend.get_all_algorithms()
-                        for alg_info in algorithms:
-                            added_filenames.add(alg_info.get('filename', ''))
-                    except Exception as e:
-                        logger.warning(f"⚠️ 获取已添加算法列表失败: {e}")
-                
-                # 过滤掉已添加的文件，只保留未添加的文件
-                filtered_existing_contents = []
-                filtered_existing_filenames = []
-                filtered_existing_file_ids = []
-                
-                for i, filename in enumerate(existing_filenames):
-                    if filename not in added_filenames:
-                        if i < len(existing_contents):
-                            filtered_existing_contents.append(existing_contents[i])
-                        filtered_existing_filenames.append(filename)
-                        if i < len(existing_file_ids):
-                            filtered_existing_file_ids.append(existing_file_ids[i])
-                
-                # 合并新文件和过滤后的旧文件
+                # 注意：为了支持重复上传相同文件进行测试，我们不再过滤已添加的文件
+                # 用户可以多次上传相同文件来验证数据一致性
+                filtered_existing_contents = existing_contents
+                filtered_existing_filenames = existing_filenames
+                filtered_existing_file_ids = existing_file_ids
+
+                # 合并新文件和现有的所有文件（包括已添加的）
                 new_store_data['contents'] = filtered_existing_contents + new_store_data['contents']
                 new_store_data['filenames'] = filtered_existing_filenames + new_store_data['filenames']
                 new_store_data['file_ids'] = filtered_existing_file_ids + new_store_data['file_ids']
-                
-                # 为所有文件（包括之前上传的，但已过滤掉已添加的）创建文件卡片
+
+                # 为所有文件创建文件卡片（包括已添加的文件，允许用户重新添加）
                 all_file_items = []
                 for i, (content, filename, file_id) in enumerate(zip(
                     new_store_data['contents'],
                     new_store_data['filenames'],
                     new_store_data['file_ids']
                 )):
-                    # 再次检查，确保不会显示已添加的文件
-                    if filename not in added_filenames:
-                        file_card = self.create_file_card(file_id, filename)
-                        all_file_items.append(file_card)
+                    # 总是显示文件卡片，允许用户重新上传相同文件
+                    file_card = self.create_file_card(file_id, filename)
+                    all_file_items.append(file_card)
                 
                 file_list = html.Div(all_file_items)
                 total_files = len(new_store_data['filenames'])
                 new_files_count = len(file_items)
                 if new_files_count > 0:
                     status_text = html.Span(
-                        f"已上传 {new_files_count} 个新文件（共 {total_files} 个文件），请为每个文件输入算法名称", 
+                        f"已上传 {new_files_count} 个文件（共 {total_files} 个文件），支持重复上传相同文件进行测试，请为每个文件输入算法名称",
                         style={'color': '#17a2b8', 'fontWeight': 'bold'}
                     )
                 else:
                     status_text = html.Span(
-                        f"共 {total_files} 个文件，请为每个文件输入算法名称", 
+                        f"共 {total_files} 个文件，支持重复上传相同文件进行测试，请为每个文件输入算法名称",
                         style={'color': '#17a2b8', 'fontWeight': 'bold'}
                     )
             else:

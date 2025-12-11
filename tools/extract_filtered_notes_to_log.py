@@ -118,8 +118,11 @@ def log_note_detailed_info(logger, note: Note, track_name: str, note_idx: int, i
     
     # 时间信息
     if note.after_touch is not None and len(note.after_touch) > 0:
-        keyon_time = (note.after_touch.index[0] + note.offset) / 10.0
-        keyoff_time = (note.after_touch.index[-1] + note.offset) / 10.0
+        try:
+            keyon_time = (note.after_touch.index[0] + note.offset) / 10.0
+            keyoff_time = (note.after_touch.index[-1] + note.offset) / 10.0
+        except (IndexError, AttributeError) as e:
+            raise ValueError(f"音符ID {note.id} 的after_touch数据无效: {e}") from e
         duration = keyoff_time - keyon_time
         logger.info(f"         Time: KeyOn={keyon_time:8.2f}ms, KeyOff={keyoff_time:8.2f}ms, "
                    f"Duration={duration:6.2f}ms")

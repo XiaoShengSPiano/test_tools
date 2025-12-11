@@ -23,7 +23,7 @@ import dash
 import dash.dependencies
 import dash.dcc as dcc
 import dash_bootstrap_components as dbc
-from dash import Input, Output, State, callback_context, dcc, dash_table
+from dash import Input, Output, State, ALL, callback_context, dcc, dash_table
 from dash._callback_context import CallbackContext
 from datetime import datetime
 
@@ -34,6 +34,7 @@ from ui.layout_components import create_report_layout, empty_figure, create_mult
 from backend.session_manager import SessionManager
 from ui.ui_processor import UIProcessor
 from ui.multi_file_upload_handler import MultiFileUploadHandler
+from grade_detail_callbacks import register_grade_detail_callbacks
 from utils.pdf_generator import PDFReportGenerator
 from utils.logger import Logger
 # 后端类型导入
@@ -245,16 +246,40 @@ def _detect_trigger_from_context(ctx: CallbackContext, current_state: StateDict,
 
 def _handle_upload_trigger(current_state: StateDict, previous_state: StateDict,
                           backend: PianoAnalysisBackend, current_time: float) -> Optional[str]:
-    """处理文件上传触发 - 简化为总是允许上传"""
-    if not current_state['has_upload']:
-        return None
-    
-    # 统一上传管理器会处理重复检测，这里总是返回上传
-    logger.info(f"[UPLOAD] 检测到文件上传: {current_state['filename']}")
-    _update_upload_state(backend, current_state['upload_content'], current_time)
+    """处理文件上传触发 - 允许重复上传相同文件以进行一致性验证"""
+    # 注意：HTML文件输入在选择相同文件时不会触发change事件
+    # 所以我们不依赖current_state['has_upload']，而是只要触发了回调就处理
+
+    # 记录上传尝试，无论是否有新内容
+    filename = current_state.get('filename', 'unknown')
+    logger.info(f"[UPLOAD] 文件上传回调被触发: {filename}")
+
+    # 检查是否是重复验证（使用相同文件）
+    is_repeat_verification = False
+    upload_content = current_state.get('upload_content')
+
+    if not upload_content:
+        # 没有新内容，使用上次的内容（重复验证场景）
+        upload_content = previous_state.get('last_upload_content')
+        if upload_content:
+            is_repeat_verification = True
+            logger.info(f"🔄 检测到重复验证请求：使用相同文件重新处理")
+            logger.info(f"🎯 这将是数据一致性验证的第 {getattr(backend, '_analysis_count', 0) + 1} 次分析")
+        else:
+            logger.warning(f"[UPLOAD] 没有可用的文件内容")
+            return None
+    else:
+        logger.info(f"📁 新文件上传: {filename}")
+
+    # 记录验证状态
+    if is_repeat_verification:
+        backend._is_repeat_verification = True
+    else:
+        backend._is_repeat_verification = False
+
+    _update_upload_state(backend, upload_content, current_time, filename)
     return 'upload'
 
-# 
 def _handle_history_trigger(current_state: StateDict, previous_state: StateDict,
                            backend: PianoAnalysisBackend, current_time: float) -> Optional[str]:
     """处理历史记录选择触发"""
@@ -282,9 +307,10 @@ def _detect_trigger_from_state_change(current_state: StateDict, previous_state: 
     
     return None
 
-def _update_upload_state(backend: PianoAnalysisBackend, upload_content: str, current_time: float) -> None:
+def _update_upload_state(backend: PianoAnalysisBackend, upload_content: str, current_time: float, filename: str = None) -> None:
     """更新文件上传状态"""
     backend._last_upload_content = upload_content
+    backend._last_upload_filename = filename or getattr(backend, '_last_upload_filename', 'unknown')
     backend._last_upload_time = current_time
     backend._data_source = 'upload'
 
@@ -459,8 +485,11 @@ def _handle_report_button(backend):
     current_data_source = getattr(backend, '_data_source', 'none') if backend else 'none'
     logger.info(f"[PROCESS] 生成分析报告（数据源: {current_data_source}）")
     
-    # 检查是否有已加载的数据
-    if hasattr(backend, 'all_error_notes') and backend.all_error_notes:
+    # 检查是否有已加载的数据（支持单算法和多算法模式）
+    has_data = (hasattr(backend, 'all_error_notes') and backend.all_error_notes) or \
+               (hasattr(backend, 'analyzer') and backend.analyzer)
+
+    if has_data:
         report_content = create_report_layout(backend)
         return no_update, report_content, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
     else:
@@ -574,6 +603,16 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             return no_update, no_update
         
         try:
+            # 检查数据库功能是否已禁用
+            if hasattr(history_manager, 'disable_database') and history_manager.disable_database:
+                disabled_option = {
+                    'label': '⚠️ 数据库功能已禁用',
+                    'value': 'disabled',
+                    'disabled': True
+                }
+                initialize_history_dropdown._initialized = True
+                return [disabled_option], None
+
             # 获取历史记录列表
             history_list = history_manager.get_history_list(limit=100)
 
@@ -608,6 +647,14 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
     def update_history_dropdown_search(search_value, session_id):
         """更新历史记录下拉框选项 - 仅搜索触发"""
         try:
+            # 检查数据库功能是否已禁用
+            if hasattr(history_manager, 'disable_database') and history_manager.disable_database:
+                return [{
+                    'label': '⚠️ 数据库功能已禁用',
+                    'value': 'disabled',
+                    'disabled': True
+                }]
+
             # 获取历史记录列表
             history_list = history_manager.get_history_list(limit=100)
 
@@ -635,19 +682,119 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             return []
 
     @app.callback(
-        Output('spmid-filename', 'children'),
-        Input('upload-spmid-data', 'contents'),
-        State('upload-spmid-data', 'filename'),
+        [Output('spmid-filename', 'children'),
+         Output('main-plot', 'figure', allow_duplicate=True),
+         Output('report-content', 'children', allow_duplicate=True),
+         Output('time-filter-slider', 'min', allow_duplicate=True),
+         Output('time-filter-slider', 'max', allow_duplicate=True),
+         Output('time-filter-slider', 'value', allow_duplicate=True),
+         Output('time-filter-slider', 'marks', allow_duplicate=True),
+         Output('time-filter-status', 'children', allow_duplicate=True)],
+        [Input('upload-spmid-data', 'contents'),
+         Input('upload-spmid-data', 'filename'),
+         Input('session-id', 'data')],
         prevent_initial_call=True
     )
-    def update_spmid_filename(contents, filename):
-        """更新SPMID文件名显示"""
-        if filename:
-            return html.Div([
-                html.I(className="fas fa-file-audio", style={'marginRight': '8px', 'color': '#28a745'}),
-                html.Span(f"已选择: {filename}", style={'color': '#28a745', 'fontWeight': 'bold'})
-            ])
-        return ""
+    def handle_spmid_upload_and_process(contents, filename, session_id):
+        """处理SPMID文件上传和完整的数据分析流程"""
+        # 获取后端实例
+        backend = session_manager.get_backend(session_id)
+        if not backend:
+            error_fig = _create_empty_figure_for_callback("会话无效，请刷新页面")
+            return "", error_fig, "", 0, 1000, [0, 1000], {}, "会话无效"
+
+        try:
+            # 1. 更新文件名显示
+            filename_display = ""
+            if filename:
+                filename_display = html.Div([
+                    html.I(className="fas fa-file-audio", style={'marginRight': '8px', 'color': '#28a745'}),
+                    html.Span(f"已选择: {filename}", style={'color': '#28a745', 'fontWeight': 'bold'})
+                ])
+
+            # 2. 如果没有文件内容，返回空状态
+            if not contents or not filename:
+                empty_fig = _create_empty_figure_for_callback("请上传SPMID文件")
+                return filename_display, empty_fig, "", 0, 1000, [0, 1000], {}, "等待文件上传"
+
+            # 3. 处理文件上传
+            is_repeat = getattr(backend, '_is_repeat_verification', False)
+            if is_repeat:
+                logger.info(f"[UPLOAD] 🔄 开始重复验证SPMID文件: {filename}")
+                filename_display = html.Div([
+                    html.I(className="fas fa-sync-alt", style={'marginRight': '8px', 'color': '#17a2b8'}),
+                    html.Span(f"重复验证: {filename}", style={'color': '#17a2b8', 'fontWeight': 'bold'}),
+                    html.Br(),
+                    html.Small("正在验证系统计算结果的一致性...", style={'color': '#6c757d'})
+                ])
+            else:
+                logger.info(f"[UPLOAD] 📁 开始处理SPMID文件: {filename}")
+
+            success, result_data, error_msg = backend.process_spmid_upload(contents, filename)
+
+            if not success:
+                error_fig = _create_empty_figure_for_callback(f"文件处理失败: {error_msg}")
+                error_status = f"上传失败: {error_msg}"
+                return filename_display, error_fig, "", 0, 1000, [0, 1000], {}, error_status
+
+            # 4. 生成主图表
+            try:
+                main_figure = backend.generate_waterfall_plot()
+                if not main_figure:
+                    main_figure = _create_empty_figure_for_callback("瀑布图生成失败")
+            except Exception as e:
+                logger.error(f"瀑布图生成失败: {e}")
+                main_figure = _create_empty_figure_for_callback(f"瀑布图生成失败: {str(e)}")
+
+            # 5. 生成报告内容
+            try:
+                report_content = backend.generate_report_content()
+            except Exception as e:
+                logger.error(f"报告生成失败: {e}")
+                report_content = html.Div([
+                    dbc.Alert(f"报告生成失败: {str(e)}", color="danger")
+                ])
+
+            # 6. 设置时间滑块
+            time_min, time_max = 0, 1000
+            time_marks = {}
+            time_status = "时间轴未初始化"
+
+            try:
+                # 获取数据的时间范围
+                if hasattr(backend, 'analyzer') and backend.analyzer:
+                    record_data = backend.analyzer.valid_record_data
+                    replay_data = backend.analyzer.valid_replay_data
+
+                    if record_data and replay_data:
+                        # 计算所有音符的时间范围
+                        all_times = []
+                        for note in record_data + replay_data:
+                            if hasattr(note, 'start_time'):
+                                all_times.extend([note.start_time, note.end_time])
+
+                        if all_times:
+                            time_min = min(all_times)
+                            time_max = max(all_times)
+                            time_marks = {
+                                time_min: f"{time_min:.0f}ms",
+                                time_max: f"{time_max:.0f}ms"
+                            }
+                            time_status = f"时间范围: {time_min:.0f}ms - {time_max:.0f}ms"
+
+            except Exception as e:
+                logger.warning(f"时间滑块初始化失败: {e}")
+
+            time_value = [time_min, time_max]
+
+            logger.info(f"[UPLOAD] SPMID文件处理完成: {filename}")
+            return (filename_display, main_figure, report_content,
+                   time_min, time_max, time_value, time_marks, time_status)
+
+        except Exception as e:
+            logger.error(f"[ERROR] SPMID文件处理异常: {e}")
+            error_fig = _create_empty_figure_for_callback(f"处理异常: {str(e)}")
+            return "", error_fig, "", 0, 1000, [0, 1000], {}, f"处理异常: {str(e)}"
 
     def _validate_zscore_click_data(zscore_scatter_clickData: Dict[str, Any], backend: PianoAnalysisBackend) -> Optional[Dict[str, Any]]:
         """
@@ -945,39 +1092,47 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         [Output('key-curves-modal', 'style', allow_duplicate=True),
          Output('key-curves-comparison-container', 'children', allow_duplicate=True),
          Output('current-clicked-point-info', 'data', allow_duplicate=True),
-         Output('key-delay-zscore-scatter-plot', 'clickData', allow_duplicate=True)],
+         Output('key-delay-zscore-scatter-plot', 'clickData', allow_duplicate=True),
+         Output('key-delay-scatter-plot', 'clickData', allow_duplicate=True)],
         [Input('key-delay-zscore-scatter-plot', 'clickData'),  # Z-Score标准化散点图点击输入
-        Input('close-key-curves-modal', 'n_clicks'),
-        Input('close-key-curves-modal-btn', 'n_clicks')],
+         Input('key-delay-scatter-plot', 'clickData'),  # 新增：按键与相对延时散点图点击输入
+         Input('close-key-curves-modal', 'n_clicks'),
+         Input('close-key-curves-modal-btn', 'n_clicks')],
         [State('session-id', 'data'),
-        State('key-curves-modal', 'style')],
+         State('key-curves-modal', 'style')],
         prevent_initial_call=True
     )
-    def handle_zscore_scatter_click(zscore_scatter_clickData, close_modal_clicks, close_btn_clicks, session_id, current_style):
-        """处理Z-Score标准化散点图点击，显示曲线对比（悬浮窗）并支持跳转到瀑布图"""
+    def handle_zscore_scatter_click(zscore_scatter_clickData, raw_scatter_clickData, close_modal_clicks, close_btn_clicks, session_id, current_style):
+        """处理Z-Score标准化散点图和按键与相对延时散点图点击，显示曲线对比（悬浮窗）并支持跳转到瀑布图"""
         # 检测触发源
         ctx = callback_context
         if not ctx.triggered:
-            logger.debug("[WARNING] Z-Score散点图点击回调：没有触发源")
-            return current_style, [], no_update, no_update
+            logger.debug("[WARNING] 散点图点击回调：没有触发源")
+            return current_style, [], no_update, no_update, no_update
 
         trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
-        logger.info(f"[PROCESS] Z-Score散点图点击回调触发：trigger_id={trigger_id}")
+        logger.info(f"[PROCESS] 散点图点击回调触发：trigger_id={trigger_id}")
 
         # 如果点击了关闭按钮，隐藏模态框
         if trigger_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
             # 注意：这里需要返回 None 给 clickData，以重置图表点击状态
             result = _handle_zscore_modal_close()
-            return result[0], result[1], result[2], None
+            return result[0], result[1], result[2], None, None
 
         # 如果是Z-Score散点图点击
         if trigger_id == 'key-delay-zscore-scatter-plot' and zscore_scatter_clickData:
             result = _handle_zscore_plot_click(zscore_scatter_clickData, session_id, current_style)
             # 保持 clickData 不变 (no_update) 或返回当前值
-            return result[0], result[1], result[2], no_update
+            return result[0], result[1], result[2], no_update, None
+
+        # 如果是按键与相对延时散点图点击
+        if trigger_id == 'key-delay-scatter-plot' and raw_scatter_clickData:
+            # 复用 Z-Score 图表的点击处理逻辑，因为 customdata 格式应该是一样的
+            result = _handle_zscore_plot_click(raw_scatter_clickData, session_id, current_style)
+            return result[0], result[1], result[2], None, no_update
 
         # 其他情况，返回默认值
-        return current_style, [], no_update, no_update
+        return current_style, [], no_update, no_update, no_update
 
 
     # PDF导出回调，添加加载动画和异常处理
@@ -1425,6 +1580,138 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             empty = backend.plot_generator._create_empty_plot(f"生成失败: {str(e)}")
             return [dcc.Graph(figure=empty)], no_update
 
+    # 更新按键与相对延时散点图的曲子选择器选项
+    @app.callback(
+        [Output({'type': 'key-delay-scatter-algorithm-selector', 'index': ALL}, 'options'),
+         Output({'type': 'key-delay-scatter-algorithm-selector', 'index': ALL}, 'value')],
+        [Input('report-content', 'children')],
+        [State('session-id', 'data')],
+        prevent_initial_call=True
+    )
+    def update_key_delay_scatter_algorithm_selector(report_content, session_id):
+        backend = session_manager.get_backend(session_id)
+        if not backend or not hasattr(backend, 'multi_algorithm_manager'):
+            return [], []
+            
+        try:
+            active_algorithms = backend.multi_algorithm_manager.get_active_algorithms()
+            if not active_algorithms:
+                return [], []
+            
+            options = []
+            values = []
+            for alg in active_algorithms:
+                unique_name = alg.metadata.algorithm_name  # unique_algorithm_name
+                display_name = alg.metadata.display_name    # 用户输入的算法名
+                filename = alg.metadata.filename            # 原始文件名
+
+                # 创建更具描述性的标签：算法名 (文件名)
+                # 例如：pid (11-21-音阶测试pid.spmid)
+                descriptive_label = f"{display_name} ({filename})"
+                options.append({'label': descriptive_label, 'value': unique_name})
+                values.append(unique_name)
+            
+            # 返回列表以匹配 Pattern Matching Output
+            return [options], [values]
+            
+        except Exception as e:
+            logger.error(f"[ERROR] 更新曲子选择器失败: {e}")
+            return [], []
+
+    # 统一的按键与相对延时散点图回调函数 - 根据触发源和模式智能响应
+    @app.callback(
+        Output('key-delay-scatter-plot', 'figure'),
+        [Input('report-content', 'children'),
+         Input({'type': 'key-delay-scatter-common-keys-only', 'index': ALL}, 'value'),
+         Input({'type': 'key-delay-scatter-algorithm-selector', 'index': ALL}, 'value')],
+        [State('session-id', 'data')],
+        prevent_initial_call=True
+    )
+    def handle_key_delay_scatter_plot_unified(report_content, common_keys_filter_values, algorithm_selector_values, session_id):
+        """统一的按键与相对延时散点图回调函数 - 根据触发源和当前模式智能响应"""
+        backend = session_manager.get_backend(session_id)
+        if not backend:
+            return no_update
+
+        # 解析 Pattern Matching Inputs
+        # 如果组件不存在，列表为空；如果存在，列表包含一个值
+        common_keys_filter = common_keys_filter_values[0] if common_keys_filter_values else False
+        algorithm_selector = algorithm_selector_values[0] if algorithm_selector_values else []
+
+        # 获取回调上下文，判断触发源
+        ctx = dash.callback_context
+        if not ctx.triggered:
+            return no_update
+
+        triggered_id_str = ctx.triggered[0]['prop_id'].split('.')[0]
+        
+        # 解析触发源ID类型
+        triggered_type = None
+        if '{' in triggered_id_str:
+            try:
+                # 简单判断是否为我们的筛选组件
+                if 'key-delay-scatter-common-keys-only' in triggered_id_str:
+                    triggered_type = 'filter_change'
+                elif 'key-delay-scatter-algorithm-selector' in triggered_id_str:
+                    triggered_type = 'filter_change'
+                else:
+                    triggered_type = 'other'
+            except:
+                triggered_type = 'other'
+        else:
+            triggered_type = 'report-content' if triggered_id_str == 'report-content' else 'other'
+
+        try:
+            # 判断当前是单算法模式还是多算法模式
+            is_multi_algorithm_mode = hasattr(backend, 'multi_algorithm_mode') and backend.multi_algorithm_mode
+            has_analyzer = bool(backend.analyzer)
+
+            # 单算法模式：只响应 report-content 变化
+            if not is_multi_algorithm_mode and has_analyzer:
+                if triggered_type == 'report-content':
+                    fig = backend.generate_key_delay_scatter_plot(
+                        only_common_keys=False,
+                        selected_algorithm_names=[]
+                    )
+                    logger.info("[OK] 单算法模式按键与相对延时散点图生成成功")
+                    return fig
+                else:
+                    # 单算法模式不响应筛选控件变化
+                    return no_update
+
+            # 多算法模式：响应所有变化
+            elif is_multi_algorithm_mode:
+                # 处理筛选控件值
+                only_common_keys = bool(common_keys_filter) if common_keys_filter is not None else False
+                selected_algorithms = algorithm_selector if algorithm_selector is not None else []
+
+                fig = backend.generate_key_delay_scatter_plot(
+                    only_common_keys=only_common_keys,
+                    selected_algorithm_names=selected_algorithms
+                )
+
+                if triggered_type == 'report-content':
+                    logger.info("[OK] 多算法模式按键与相对延时散点图数据加载成功")
+                else:
+                    logger.info("[OK] 多算法模式按键与相对延时散点图筛选更新成功")
+                return fig
+
+            # 其他情况：无分析器，不响应
+            else:
+                logger.warning("[WARNING] 没有有效的分析器，无法生成按键与相对延时散点图")
+                return no_update
+
+        except Exception as e:
+            error_msg = f"按键与相对延时散点图处理失败: {str(e)}"
+            logger.error(f"[ERROR] {error_msg}")
+            logger.error(traceback.format_exc())
+
+            if backend:
+                empty = backend.plot_generator._create_empty_plot(error_msg)
+                return empty
+            else:
+                return no_update
+
     # 按键与延时Z-Score标准化散点图自动生成回调函数 - 当报告内容加载时自动生成
     @app.callback(
         Output('key-delay-zscore-scatter-plot', 'figure'),
@@ -1464,6 +1751,9 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             logger.error(traceback.format_exc())
             empty = backend.plot_generator._create_empty_plot(f"生成Z-Score标准化散点图失败: {str(e)}")
             return empty
+
+    
+
 
     # 锤速与延时散点图自动生成回调函数 - 当报告内容加载时自动生成
     @app.callback(
@@ -2048,7 +2338,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
 
     def _update_algorithm_control_traces(data_list: List, selected_algorithms: List[str]):
         """更新算法控制图注的透明度和大小"""
-        logger.info(f"[DRAW] 开始更新算法控制图注: 选中算法={selected_algorithms}")
+        # logger.info(f"[DRAW] 开始更新算法控制图注: 选中算法={selected_algorithms}")
 
         for trace_idx, trace in enumerate(data_list):
             # 处理dict类型的trace
@@ -2171,7 +2461,6 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
 
                         # 如果没有选择任何算法或按键，则显示所有
                         if not selected_algorithms and not selected_keys:
-                            logger.info(f"[TRACE] ✓ key={trace_key_id}, alg='{trace_algorithm}' - 默认全部可见")
                             return True
                         
                         # 算法匹配逻辑
@@ -2215,8 +2504,6 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         visible_count = 0
         total_data_traces = 0
         
-        logger.info(f"[VISIBILITY] 开始更新可见性, 选择的算法: {selected_algorithms}, 选择的按键: {selected_keys}")
-        logger.info(f"[VISIBILITY] 总trace数: {len(data_list)}")
         
         for trace_idx, trace in enumerate(data_list):
             # 跳过控制图注项
@@ -2231,9 +2518,9 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             
             if target_visible:
                 visible_count += 1
-                logger.debug(f"[VISIBILITY] Trace {trace_idx} 设置为可见 (legendgroup={legendgroup})")
+                pass
             else:
-                logger.debug(f"[VISIBILITY] Trace {trace_idx} 设置为隐藏 (legendgroup={legendgroup})")
+                pass
 
             # 更新可见性
             if isinstance(trace, dict):
@@ -2242,7 +2529,6 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             else:
                 trace.visible = target_visible
         
-        logger.info(f"[VISIBILITY] ✓ 完成: {visible_count}/{total_data_traces} 可见")
 
     # 更新按键选择下拉菜单的选项
     @app.callback(
@@ -3650,7 +3936,8 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
     # 处理最大/最小延迟字段点击，显示对应按键的曲线对比图
     @app.callback(
         [Output('key-curves-modal', 'style', allow_duplicate=True),
-         Output('key-curves-comparison-container', 'children', allow_duplicate=True)],
+         Output('key-curves-comparison-container', 'children', allow_duplicate=True),
+         Output('current-clicked-point-info', 'data', allow_duplicate=True)],
         [Input({'type': 'max-delay-value', 'algorithm': dash.dependencies.ALL}, 'n_clicks'),
          Input({'type': 'min-delay-value', 'algorithm': dash.dependencies.ALL}, 'n_clicks'),
          Input('close-key-curves-modal', 'n_clicks'),
@@ -3668,11 +3955,11 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         import dash
         
         logger.info("[START] handle_delay_value_click 回调被触发")
-        
+
         # 检测触发源
         ctx = callback_context
         if not ctx.triggered:
-            return current_style, []
+            return current_style, [], None
         
         trigger_id = ctx.triggered[0]['prop_id']
         trigger_value = ctx.triggered[0].get('value')
@@ -3691,7 +3978,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 'backgroundColor': 'rgba(0,0,0,0.6)',
                 'backdropFilter': 'blur(5px)'
             }
-            return modal_style, []
+            return modal_style, [], None
         
         # 对于最大/最小延迟字段的点击，需要确保是真正的用户点击
         # 检查clicks列表中是否有任何值>0（真正的点击）
@@ -3710,7 +3997,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         # 如果没有真正的点击，可能是布局更新导致的，跳过处理
         if not has_real_click:
             logger.info(f"[WARNING] 没有检测到真正的用户点击（可能是布局更新），跳过处理: trigger_id={trigger_id}")
-            return current_style, []
+            return current_style, [], None
         
         # 如果点击了关闭按钮，隐藏模态框
         if trigger_id in ['close-key-curves-modal.n_clicks', 'close-key-curves-modal-btn.n_clicks']:
@@ -3731,45 +4018,49 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         # 使用callback_context来准确识别哪个Input被触发
         delay_type = None
         algorithm_name = None
-        
+
         try:
             # 从triggered信息中提取被触发的组件ID
             triggered_prop = ctx.triggered[0]
             prop_id_str = triggered_prop['prop_id']
-            
+
             # prop_id格式可能是: {'type': 'max-delay-value', 'algorithm': 'xxx'}.n_clicks
             # 或者: {'type': 'min-delay-value', 'algorithm': 'xxx'}.n_clicks
+
+            # 使用字符串解析来提取算法名称
+            import ast
             if 'max-delay-value' in prop_id_str:
                 delay_type = 'max'
-                # 从max_ids_list中找到对应的ID
-                if max_ids_list:
-                    for max_id in max_ids_list:
-                        if max_id and isinstance(max_id, dict):
-                            # 检查这个ID是否匹配triggered的ID
-                            # 由于Dash的Pattern Matching，我们需要通过算法名称来匹配
-                            # 从prop_id_str中提取算法名称（如果可能）
-                            # 或者，我们可以通过检查clicks值的变化来确定
-                            algorithm_name = max_id.get('algorithm')
-                            # 验证：检查对应的clicks是否真的被触发了（必须>0才是真正的点击）
-                            idx = max_ids_list.index(max_id)
-                            if idx < len(max_clicks_list) and max_clicks_list[idx] is not None and max_clicks_list[idx] > 0:
-                                logger.info(f"[OK] 检测到最大延迟点击: 算法={algorithm_name}, clicks={max_clicks_list[idx]}")
-                                break
+                try:
+                    # prop_id格式: {"type": "max-delay-value", "algorithm": "xxx"}.n_clicks
+                    # 提取字典部分
+                    dict_str = prop_id_str.split('.')[0]  # 去掉.n_clicks部分
+                    id_dict = ast.literal_eval(dict_str)
+                    algorithm_name = id_dict.get('algorithm')
+                    if algorithm_name:
+                        logger.info(f"[OK] 从prop_id解析得到最大延迟点击: 算法={algorithm_name}")
+                    else:
+                        logger.warning(f"[WARNING] prop_id中没有algorithm字段: {prop_id_str}")
+                except Exception as e:
+                    logger.warning(f"[WARNING] 解析prop_id失败: {prop_id_str}, 错误: {e}")
             elif 'min-delay-value' in prop_id_str:
                 delay_type = 'min'
-                # 从min_ids_list中找到对应的ID
-                if min_ids_list:
-                    for min_id in min_ids_list:
-                        if min_id and isinstance(min_id, dict):
-                            algorithm_name = min_id.get('algorithm')
-                            # 验证：检查对应的clicks是否真的被触发了（必须>0才是真正的点击）
-                            idx = min_ids_list.index(min_id)
-                            if idx < len(min_clicks_list) and min_clicks_list[idx] is not None and min_clicks_list[idx] > 0:
-                                logger.info(f"[OK] 检测到最小延迟点击: 算法={algorithm_name}, clicks={min_clicks_list[idx]}")
-                                break
-            
+                try:
+                    # prop_id格式: {"type": "min-delay-value", "algorithm": "xxx"}.n_clicks
+                    # 提取字典部分
+                    dict_str = prop_id_str.split('.')[0]  # 去掉.n_clicks部分
+                    id_dict = ast.literal_eval(dict_str)
+                    algorithm_name = id_dict.get('algorithm')
+                    if algorithm_name:
+                        logger.info(f"[OK] 从prop_id解析得到最小延迟点击: 算法={algorithm_name}")
+                    else:
+                        logger.warning(f"[WARNING] prop_id中没有algorithm字段: {prop_id_str}")
+                except Exception as e:
+                    logger.warning(f"[WARNING] 解析prop_id失败: {prop_id_str}, 错误: {e}")
+
             # 如果上面的方法没有找到，使用备用方法：检查哪个clicks列表有变化
             if not delay_type or not algorithm_name:
+                logger.warning(f"[WARNING] 主要解析方法失败，使用备用方法")
                 # 检查max_clicks_list中是否有点击
                 if max_clicks_list:
                     for i, clicks in enumerate(max_clicks_list):
@@ -3781,7 +4072,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                                     delay_type = 'max'
                                     logger.info(f"[OK] 备用方法：检测到最大延迟点击: 算法={algorithm_name}, clicks={clicks}")
                                     break
-                
+
                 # 如果还没找到，检查min_clicks_list
                 if not delay_type and min_clicks_list:
                     for i, clicks in enumerate(min_clicks_list):
@@ -3802,23 +4093,23 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             logger.warning(f"[WARNING] 无法解析延迟类型或算法名称: delay_id={trigger_id}, delay_type={delay_type}, algorithm_name={algorithm_name}")
             logger.warning(f"[WARNING] max_clicks_list: {max_clicks_list}, min_clicks_list: {min_clicks_list}")
             logger.warning(f"[WARNING] max_ids_list: {max_ids_list}, min_ids_list: {min_ids_list}")
-            return current_style, []
+            return current_style, [], None
         
         logger.info(f"[STATS] 延迟类型: {delay_type}, 算法名称: {algorithm_name}")
         
         backend = session_manager.get_backend(session_id)
         if not backend:
             logger.warning("[WARNING] backend为空")
-            return current_style, []
+            return current_style, [], None
         
         try:
             # 获取对应延迟类型的音符
             notes = backend.get_notes_by_delay_type(algorithm_name, delay_type)
             if notes is None:
                 logger.warning(f"[WARNING] 无法获取{delay_type}延迟对应的音符")
-                return current_style, []
-            
-            record_note, replay_note = notes
+                return current_style, [], None
+
+            record_note, replay_note, record_index, replay_index = notes
             
             # 在多算法模式下，查找所有算法中匹配到同一个录制音符的播放音符
             other_algorithm_notes = []  # [(algorithm_name, play_note), ...]
@@ -3893,16 +4184,27 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             }
             
             rendered_row = dcc.Graph(figure=detail_figure_combined, style={'height': '600px'})
-            
+
+            # 设置点击点信息，用于跳转到瀑布图
+            key_id = getattr(record_note, 'id', 'N/A') if record_note else 'N/A'
+            clicked_point_info = {
+                'algorithm_name': algorithm_name,
+                'record_idx': record_index,
+                'replay_idx': replay_index,
+                'key_id': key_id,
+                'source_plot_id': 'delay-value-click',  # 标识来源是延迟值点击
+                'delay_type': delay_type
+            }
+
             delay_type_name = "最大" if delay_type == 'max' else "最小"
-            logger.info(f"[OK] {delay_type_name}延迟字段点击处理成功，算法: {algorithm_name}")
-            return modal_style, [rendered_row]
+            logger.info(f"[OK] {delay_type_name}延迟字段点击处理成功，算法: {algorithm_name}, 按键ID: {key_id}")
+            return modal_style, [rendered_row], clicked_point_info
             
         except Exception as e:
             logger.error(f"[ERROR] 处理{delay_type}延迟字段点击失败: {e}")
-            
+
             logger.error(traceback.format_exc())
-        return current_style, []
+        return current_style, [], None
     
     # 延时分布直方图回调 - 报告内容加载时自动生成
     @app.callback(
@@ -3932,7 +4234,155 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             logger.error(f"[ERROR] 生成延时直方图失败: {e}")
             logger.error(traceback.format_exc())
             return backend.plot_generator._create_empty_plot(f"生成直方图失败: {str(e)}")
-    
+
+    # 导出延时分布直方图数据为CSV
+    @app.callback(
+        Output('export-delay-histogram-status', 'children'),
+        Input('export-delay-histogram-csv', 'n_clicks'),
+        State('session-id', 'data'),
+        prevent_initial_call=True
+    )
+    def export_delay_histogram_csv(n_clicks, session_id):
+        """导出延时分布直方图数据为CSV文件"""
+        import os
+
+        backend = session_manager.get_backend(session_id)
+        if not backend:
+            return html.Div("❌ 后端未初始化", style={'color': '#dc3545'})
+
+        try:
+            # 检查是否在多算法模式
+            if backend.multi_algorithm_mode and backend.multi_algorithm_manager:
+                # 多算法模式：导出多算法数据
+                active_algorithms = backend.multi_algorithm_manager.get_active_algorithms()
+                if not active_algorithms:
+                    return html.Div("❌ 没有激活的算法", style={'color': '#dc3545'})
+
+                csv_paths = backend.multi_algorithm_plot_generator.export_multi_algorithm_delay_histogram_data_to_csv(active_algorithms)
+            else:
+                # 单算法模式：导出单算法数据
+                csv_path = backend.export_delay_histogram_data_to_csv()
+                csv_paths = [csv_path] if csv_path else None
+
+            if csv_paths and len(csv_paths) > 0:
+                if len(csv_paths) == 1:
+                    filename = os.path.basename(csv_paths[0])
+                    return html.Div([
+                        html.I(className="fas fa-check-circle", style={'color': '#28a745', 'marginRight': '8px'}),
+                        f"✅ 数据已导出: {filename}"
+                    ], style={'color': '#28a745'})
+                else:
+                    filenames = [os.path.basename(path) for path in csv_paths]
+                    return html.Div([
+                        html.I(className="fas fa-check-circle", style={'color': '#28a745', 'marginRight': '8px'}),
+                        f"✅ 数据已导出 {len(csv_paths)} 个文件: {', '.join(filenames)}"
+                    ], style={'color': '#28a745'})
+            else:
+                return html.Div("❌ 导出失败，请检查数据", style={'color': '#dc3545'})
+
+        except Exception as e:
+            logger.error(f"导出延时分布数据失败: {e}")
+            return html.Div(f"❌ 导出异常: {str(e)}", style={'color': '#dc3545'})
+
+    # 导出匹配前数据为CSV（测试功能）
+    @app.callback(
+        Output('export-pre-match-status', 'children'),
+        Input('export-pre-match-csv', 'n_clicks'),
+        State('session-id', 'data'),
+        prevent_initial_call=True
+    )
+    def export_pre_match_csv(n_clicks, session_id):
+        """导出匹配前的数据为CSV文件（测试功能）"""
+        import os
+
+        backend = session_manager.get_backend(session_id)
+        if not backend:
+            return html.Div("❌ 后端未初始化", style={'color': '#dc3545'})
+
+        try:
+            # 检查当前模式
+            if hasattr(backend, 'multi_algorithm_mode') and backend.multi_algorithm_mode:
+                # 多算法模式
+                active_algorithms = backend.get_active_algorithms()
+                if not active_algorithms:
+                    return html.Div("❌ 没有激活的算法", style={'color': '#dc3545'})
+
+                csv_paths = backend.multi_algorithm_plot_generator.export_multi_algorithm_pre_match_data_to_csv(active_algorithms)
+            else:
+                # 单算法模式
+                csv_paths = backend.export_pre_match_data_to_csv()
+                if csv_paths and not isinstance(csv_paths, list):
+                    csv_paths = [csv_paths]  # 统一转换为列表格式
+
+            if csv_paths:
+                if len(csv_paths) > 1:
+                    # 多文件情况
+                    filenames = [os.path.basename(path) for path in csv_paths]
+                    return html.Div([
+                        html.I(className="fas fa-check-circle", style={'color': '#28a745', 'marginRight': '8px'}),
+                        f"✅ 匹配前数据已导出 {len(csv_paths)} 个文件: {', '.join(filenames)}"
+                    ], style={'color': '#28a745'})
+                else:
+                    # 单文件情况
+                    filename = os.path.basename(csv_paths[0])
+                    return html.Div([
+                        html.I(className="fas fa-check-circle", style={'color': '#28a745', 'marginRight': '8px'}),
+                        f"✅ 匹配前数据已导出: {filename}"
+                    ], style={'color': '#28a745'})
+            else:
+                return html.Div("❌ 导出失败，请检查数据", style={'color': '#dc3545'})
+
+        except Exception as e:
+            logger.error(f"导出匹配前数据失败: {e}")
+            return html.Div(f"❌ 导出异常: {str(e)}", style={'color': '#dc3545'})
+
+    # 重复验证一致性按钮
+    @app.callback(
+        Output('repeat-verification-status', 'children'),
+        Input('repeat-verification-btn', 'n_clicks'),
+        State('session-id', 'data'),
+        prevent_initial_call=True
+    )
+    def repeat_verification(n_clicks, session_id):
+        """重复验证系统计算一致性"""
+        backend = session_manager.get_backend(session_id)
+        if not backend:
+            return html.Div("❌ 会话无效", style={'color': '#dc3545'})
+
+        try:
+            # 检查是否有之前的数据可以验证
+            if not hasattr(backend, '_last_upload_content') or not backend._last_upload_content:
+                return html.Div("❌ 没有可验证的历史数据，请先上传文件", style={'color': '#dc3545'})
+
+            logger.info(f"🔄 用户主动触发重复验证 - 第 {getattr(backend, '_analysis_count', 0) + 1} 次分析")
+
+            # 强制重新处理相同文件
+            filename = getattr(backend, '_last_upload_filename', 'unknown')
+            contents = backend._last_upload_content
+
+            # 设置重复验证标志
+            backend._is_repeat_verification = True
+
+            # 重新处理文件
+            success, result_data, error_msg = backend.process_spmid_upload(contents, filename)
+
+            if success:
+                analysis_count = getattr(backend, '_analysis_count', 1)
+                return html.Div([
+                    html.I(className="fas fa-check-circle", style={'color': '#28a745', 'marginRight': '8px'}),
+                    f"✅ 重复验证完成（第 {analysis_count} 次分析）"
+                ], style={'color': '#28a745'})
+            else:
+                return html.Div(f"❌ 重复验证失败: {error_msg}", style={'color': '#dc3545'})
+
+        except Exception as e:
+            logger.error(f"重复验证异常: {e}")
+            return html.Div(f"❌ 验证异常: {str(e)}", style={'color': '#dc3545'})
+
+        except Exception as e:
+            logger.error(f"[ERROR] 导出延时分布数据失败: {e}")
+            return html.Div(f"❌ 导出异常: {str(e)}", style={'color': '#dc3545'})
+
     # 延时分布直方图点击回调 - 显示指定延时范围内的数据点详情
     @app.callback(
         [Output('delay-histogram-detail-table', 'data'),
@@ -4530,6 +4980,22 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 no_update
             )
     
+    @app.callback(
+        [Output('upload-multi-algorithm-data', 'contents', allow_duplicate=True),
+         Output('upload-multi-algorithm-data', 'filename', allow_duplicate=True),
+         Output('multi-algorithm-file-list', 'children', allow_duplicate=True),
+         Output('multi-algorithm-upload-status', 'children', allow_duplicate=True)],
+        [Input('reset-multi-algorithm-upload', 'n_clicks')],
+        prevent_initial_call=True
+    )
+    def reset_multi_algorithm_upload(n_clicks):
+        """重置多算法上传区域，清除上传状态"""
+        if not n_clicks:
+            return no_update, no_update, no_update, no_update
+
+        # 重置上传组件和状态
+        return None, None, html.Div(), html.Span("上传区域已重置，可以重新选择文件", style={'color': '#17a2b8'})
+
     @app.callback(
         [Output('multi-algorithm-upload-area', 'style', allow_duplicate=True),
          Output('multi-algorithm-management-area', 'style', allow_duplicate=True),
@@ -5202,6 +5668,79 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             logger.error(traceback.format_exc())
             return no_update, no_update, no_update, no_update, no_update, no_update
     
+    # 更新单键选择器的选项
+    @app.callback(
+        Output('single-key-selector', 'options'),
+        [Input('report-content', 'children')],
+        [State('session-id', 'data')],
+        prevent_initial_call=True
+    )
+    def update_single_key_selector_options(report_content, session_id):
+        backend = session_manager.get_backend(session_id)
+        if not backend or not hasattr(backend, 'multi_algorithm_manager'):
+            return []
+            
+        try:
+            active_algorithms = backend.multi_algorithm_manager.get_active_algorithms()
+            if not active_algorithms:
+                return []
+                
+            all_keys = set()
+            for alg in active_algorithms:
+                if alg.analyzer and alg.analyzer.note_matcher:
+                    offset_data = alg.analyzer.note_matcher.get_offset_alignment_data()
+                    if offset_data:
+                        for item in offset_data:
+                            if item.get('key_id') is not None:
+                                all_keys.add(item.get('key_id'))
+                                
+            sorted_keys = sorted(list(all_keys))
+            return [{'label': f'Key {k}', 'value': k} for k in sorted_keys]
+            
+        except Exception as e:
+            logger.error(f"[ERROR] 更新单键选择器失败: {e}")
+            return []
+
+    # 单键多曲延时对比图自动生成回调
+    @app.callback(
+        Output('single-key-delay-comparison-plot', 'figure'),
+        [Input('single-key-selector', 'value'),
+         Input('report-content', 'children')],
+        [State('session-id', 'data')],
+        prevent_initial_call=True
+    )
+    def handle_generate_single_key_comparison_plot(key_id, report_content, session_id):
+        backend = session_manager.get_backend(session_id)
+        if not backend:
+            return no_update
+
+        if not key_id:
+            # 返回空图表提示
+            return {
+                "layout": {
+                    "xaxis": {"visible": False},
+                    "yaxis": {"visible": False},
+                    "annotations": [
+                        {
+                            "text": "请选择一个按键进行分析",
+                            "xref": "paper",
+                            "yref": "paper",
+                            "showarrow": False,
+                            "font": {"size": 20},
+                            "x": 0.5,
+                            "y": 0.5
+                        }
+                    ]
+                }
+            }
+            
+        try:
+            fig = backend.generate_single_key_delay_comparison_plot(key_id)
+            return fig
+        except Exception as e:
+            logger.error(f"[ERROR] 生成单键对比图失败: {e}")
+            return backend.plot_generator._create_empty_plot(f"生成失败: {str(e)}")
+
     # 按键延时分析表格点击回调 - 显示按键曲线对比（悬浮窗）并支持跳转到瀑布图
     @app.callback(
         [Output('key-curves-modal', 'style', allow_duplicate=True),
@@ -6036,7 +6575,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         ctx = callback_context
         if not ctx.triggered:
             logger.debug("[WARNING] 按键-力度交互效应图点击回调：没有触发源")
-            return current_style, [], no_update, no_update
+            return current_style, [], no_update, no_update, no_update
         
         trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
         logger.info(f"[PROCESS] 按键-力度交互效应图点击回调触发：trigger_id={trigger_id}")
@@ -6125,7 +6664,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 
                 if record_idx is None or replay_idx is None:
                     logger.warning(f"[WARNING] 按键-力度交互效应图点击 - 缺少索引信息: record_idx={record_idx}, replay_idx={replay_idx}")
-                    return current_style, [], no_update, no_update
+                    return current_style, [], no_update, no_update, no_update
                 
                 logger.info(f"🖱️ 按键-力度交互效应图点击: 算法={algorithm_display_name}, 按键={key_id}, 锤速={original_velocity}, record_idx={record_idx}, replay_idx={replay_idx}")
                 
@@ -6290,7 +6829,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                         }
                         return modal_style, [html.Div([
                             html.P("图表生成失败", className="text-danger text-center")
-                        ])], waterfall_fig, point_info, no_update, no_update
+                        ])], waterfall_fig, point_info, no_update
                 else:
                     # 单算法模式：使用generate_scatter_detail_plot_by_indices
                     detail_figure1, detail_figure2, detail_figure_combined = backend.generate_scatter_detail_plot_by_indices(
@@ -7289,8 +7828,6 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 ], className="mb-4"))
             
             # 相似度信息
-            
-            # 相似度信息
             children.append(
                 html.Div([
                     html.H6("相似度结果", className="mb-3",
@@ -7505,7 +8042,11 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             
         except Exception as e:
             logger.error(f"[ERROR] 跳转到瀑布图失败: {e}")
-            
+
             logger.error(traceback.format_exc())
             return no_update, no_update
+
+    # 注册评级统计详情回调
+    register_grade_detail_callbacks(app, session_manager)
+
 
