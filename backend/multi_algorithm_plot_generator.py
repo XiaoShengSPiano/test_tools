@@ -913,16 +913,21 @@ class MultiAlgorithmPlotGenerator:
     ) -> Any:
         """
         生成多算法延时分布直方图（叠加显示，不同颜色，图例控制）
-        
+
         为每个算法生成直方图和正态拟合曲线，使用不同颜色区分，叠加显示在同一图表中。
-        
-        使用相对时延（原始时延 - 平均时延）：
-        - 消除整体偏移，更公平地比较不同算法的稳定性
-        - 均值接近0，标准差保持不变
-        
+
+        数据筛选：只使用误差≤50ms的按键数据
+        数据处理：
+        - 只使用误差≤50ms的按键数据
+        - 相对时延（原始时延 - 平均时延）用于分布图：消除整体偏移，更公平地比较稳定性
+        - 均值偏移：显示原始延时的平均值，反映算法整体延时倾向
+        - 方差：基于原始延时计算，反映绝对稳定性
+        - 相对延时分布图均值接近0，标准差反映相对稳定性
+        - 延时有正有负，反映相对于平均水平的偏差
+
         Args:
             algorithms: 激活的算法数据集列表
-            
+
         Returns:
             go.Figure: Plotly图表对象
         """
@@ -973,44 +978,64 @@ class MultiAlgorithmPlotGenerator:
                 try:
                     # 从analyzer获取偏移数据
                     offset_data = algorithm.analyzer.get_offset_alignment_data()
-                    
+
                     if not offset_data:
                         logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有匹配数据，跳过")
                         continue
-                    
-                    # 步骤1：提取原始延时数据（带符号的keyon_offset）
-                    absolute_delays_ms = [item.get('keyon_offset', 0.0) / 10.0 for item in offset_data]
-                    
-                    if not absolute_delays_ms:
-                        logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有有效延时数据，跳过")
+
+                    # 步骤1：筛选误差<=50ms的数据
+                    # 误差 = abs(keyon_offset) / 10.0 <= 50.0
+                    filtered_offset_data = [
+                        item for item in offset_data
+                        if abs(item.get('keyon_offset', 0.0)) / 10.0 <= 50.0
+                    ]
+
+                    if not filtered_offset_data:
+                        logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有误差≤50ms的有效匹配数据，跳过")
                         continue
-                    
-                    # 步骤2：计算该算法的平均延时（用于计算相对延时）
+
+                    # 步骤2：提取筛选后的原始延时数据（带符号的keyon_offset）
+                    absolute_delays_ms = [item.get('keyon_offset', 0.0) / 10.0 for item in filtered_offset_data]
+
+                    if not absolute_delays_ms:
+                        logger.warning(f"⚠️ 算法 '{algorithm_name}' 筛选后没有有效延时数据，跳过")
+                        continue
+
+                    # 步骤3：计算该算法的平均延时（均值偏移）
                     n = len(absolute_delays_ms)
                     mean_delay_ms = sum(absolute_delays_ms) / n
-                    
-                    # 步骤3：计算相对延时（消除整体偏移）
+
+                    # 步骤4：计算相对延时（消除整体偏移，用于分布图）
                     # 相对延时 = 原始延时 - 平均延时
-                    # 这样均值接近0，标准差保持不变，更适合评估稳定性
-                    delays_ms = [delay - mean_delay_ms for delay in absolute_delays_ms]
-                    
-                    all_delays.extend(delays_ms)
-                    
-                    # 步骤4：计算统计量（基于相对延时）
-                    # 注意：相对延时的均值应该接近0（理论上为0，但由于浮点运算可能有微小偏差）
-                    mean_val = sum(delays_ms) / n  # 均值 ≈ 0
+                    # 这样均值接近0，更适合评估相对稳定性
+                    relative_delays_ms = [delay - mean_delay_ms for delay in absolute_delays_ms]
+
+                    all_delays.extend(relative_delays_ms)
+
+                    # 步骤5：计算统计量
+                    # 均值偏移：使用原始延时的平均值，反映算法整体的延时倾向
+                    mean_offset = mean_delay_ms
+
+                    # 方差：使用原始延时的方差，反映绝对稳定性
                     if n > 1:
-                        # 样本方差：相对延时的方差和标准差与原始延时相同（因为减去常数不改变方差）
-                        var = sum((x - mean_val) ** 2 for x in delays_ms) / (n - 1)
-                        std_val = var ** 0.5
+                        var_offset = sum((x - mean_delay_ms) ** 2 for x in absolute_delays_ms) / (n - 1)
+                        std_offset = var_offset ** 0.5
                     else:
-                        std_val = 0.0
+                        var_offset = 0.0
+                        std_offset = 0.0
+
+                    # 相对延时的统计量（用于正态拟合）
+                    if n > 1:
+                        var_relative = sum((x - 0) ** 2 for x in relative_delays_ms) / (n - 1)  # 相对均值=0
+                        std_relative = var_relative ** 0.5
+                    else:
+                        std_relative = 0.0
                     
                     color = colors[alg_idx % len(colors)]
                     
                     # 添加直方图
                     fig.add_trace(go.Histogram(
-                        x=delays_ms,
+                        x=relative_delays_ms,
                         histnorm='probability density',
                         name=f'{descriptive_name} - 延时分布',
                         marker_color=color,
@@ -1021,27 +1046,27 @@ class MultiAlgorithmPlotGenerator:
                         showlegend=True
                     ))
                     
-                    # 生成正态拟合曲线
-                    if std_val > 0:
-                        min_x = min(delays_ms)
-                        max_x = max(delays_ms)
-                        span = max(1e-6, 3 * std_val)
-                        x_start = min(mean_val - span, min_x)
-                        x_end = max(mean_val + span, max_x)
-                        
+                    # 生成正态拟合曲线（基于相对延时，均值=0）
+                    if std_relative > 0:
+                        min_x = min(relative_delays_ms)
+                        max_x = max(relative_delays_ms)
+                        span = max(1e-6, 3 * std_relative)
+                        x_start = min(-span, min_x)  # 相对均值=0
+                        x_end = max(span, max_x)
+
                         num_pts = 200
                         step = (x_end - x_start) / (num_pts - 1) if num_pts > 1 else 1.0
                         xs = [x_start + i * step for i in range(num_pts)]
-                        ys = [(1.0 / (std_val * (2 * math.pi) ** 0.5)) * 
-                              math.exp(-0.5 * ((x - mean_val) / std_val) ** 2) 
+                        ys = [(1.0 / (std_relative * (2 * math.pi) ** 0.5)) *
+                              math.exp(-0.5 * ((x - 0) / std_relative) ** 2)  # 均值=0
                               for x in xs]
-                        
+
                         # 添加正态拟合曲线
                         fig.add_trace(go.Scatter(
                             x=xs,
                             y=ys,
                             mode='lines',
-                            name=f'{descriptive_name} - 正态拟合 (μ={mean_val:.2f}ms, σ={std_val:.2f}ms)',
+                            name=f'{descriptive_name} - 正态拟合 (μ={mean_offset:.2f}ms, σ={std_offset:.2f}ms)',
                             line=dict(color=color, width=2),
                             legendgroup=descriptive_name,
                             showlegend=True

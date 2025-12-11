@@ -50,12 +50,44 @@ class AlgorithmStatistics:
 
     def get_accuracy_info(self) -> dict:
         """获取准确率相关信息"""
+        # 检查数据是否已经准备好（是否有匹配结果）
+        note_matcher = getattr(getattr(self.algorithm, 'analyzer', None), 'note_matcher', None)
+        has_match_data = (note_matcher and
+                         hasattr(note_matcher, 'match_results') and
+                         len(getattr(note_matcher, 'match_results', [])) > 0)
+
+        if not has_match_data:
+            # 数据还没有准备好，清除缓存并返回空数据
+            self._cache.pop('accuracy_info', None)
+            return {
+                'accuracy': 0.0,
+                'matched_count': 0,
+                'total_effective_keys': 0,
+                'precision_matches': 0,
+                'approximate_matches': 0
+            }
+
         if 'accuracy_info' not in self._cache:
             self._cache['accuracy_info'] = self._calculate_accuracy_info()
         return self._cache['accuracy_info']
 
     def get_error_info(self) -> dict:
         """获取错误统计信息"""
+        # 检查数据是否已经准备好
+        note_matcher = getattr(getattr(self.algorithm, 'analyzer', None), 'note_matcher', None)
+        has_match_data = (note_matcher and
+                         hasattr(note_matcher, 'match_results') and
+                         len(getattr(note_matcher, 'match_results', [])) > 0)
+
+        if not has_match_data:
+            # 数据还没有准备好，清除缓存并返回空数据
+            self._cache.pop('error_info', None)
+            return {
+                'drop_count': 0,
+                'multi_count': 0,
+                'silent_count': 0
+            }
+
         if 'error_info' not in self._cache:
             self._cache['error_info'] = self._calculate_error_info()
         return self._cache['error_info']
@@ -85,23 +117,26 @@ class AlgorithmStatistics:
                 'approximate_matches': 0
             }
 
-        # 已配对音符数：直接使用成功匹配对的数量
-        # 现在所有成功的匹配（包括SEVERE）都在matched_pairs中
+        # 使用匹配质量评级统计中的总匹配对数，确保数据源一致
         note_matcher = getattr(self.algorithm.analyzer, 'note_matcher', None)
-        if note_matcher and hasattr(note_matcher, 'matched_pairs'):
-            matched_count = len(note_matcher.matched_pairs)
+        if note_matcher and hasattr(note_matcher, 'get_graded_error_stats'):
+            graded_stats = note_matcher.get_graded_error_stats()
+            total_matched_count = graded_stats.get('total_successful_matches', 0)
         else:
-            matched_count = 0
-
-        # 注意：不再需要加上失败匹配数量，因为失败匹配不构成配对关系
-        total_matched_count = matched_count  # 总匹配对数 = 成功匹配对数
+            total_matched_count = 0
 
         # 分子：匹配的音符总数（每个匹配对包含2个音符）
         # 注意：只计算成功匹配的音符，不包括失败匹配
-        matched_keys_count = matched_count * 2
+        matched_keys_count = total_matched_count * 2
 
         # 准确率计算
-        accuracy = (matched_keys_count / total_effective_keys) * 100
+        # 准确率 = (成功匹配的音符数 / 总有效音符数) * 100
+        # 每个匹配对包含2个音符（1个录制 + 1个播放）
+        accuracy = (matched_keys_count / total_effective_keys) * 100 if total_effective_keys > 0 else 0.0
+
+        # 调试信息
+        print(f"[DEBUG] 准确率计算: matched_keys_count={matched_keys_count}, total_effective_keys={total_effective_keys}, accuracy={accuracy:.2f}%")
+        print(f"[DEBUG]   total_matched_count={total_matched_count}, matched_keys_count={matched_keys_count}")
 
         # 获取匹配统计信息（用于其他用途）
         # 注意：现在stats不再包含failed_matches，所以我们从match_statistics获取兼容字段
@@ -138,7 +173,9 @@ class AlgorithmStatistics:
         total_valid_record = len(initial_valid_record) if initial_valid_record else 0
         total_valid_replay = len(initial_valid_replay) if initial_valid_replay else 0
 
-        return total_valid_record + total_valid_replay
+        total_keys = total_valid_record + total_valid_replay
+        print(f"[DEBUG] 总有效按键数: record={total_valid_record}, replay={total_valid_replay}, total={total_keys}")
+        return total_keys
 
 
 class PianoAnalysisBackend:
@@ -914,9 +951,11 @@ class PianoAnalysisBackend:
         """
         生成延时分布直方图，并叠加正态拟合曲线（基于绝对时延）。
 
+        数据筛选：只使用误差≤50ms的按键数据
         绝对时延 = keyon_offset（直接测量值）
         - 反映算法的实际延时表现
         - 包含整体偏移信息
+        - 延时有正有负，正值表示延迟，负值表示提前
 
         x轴：绝对延时 (ms)，y轴：概率密度（支持单算法和多算法模式）
         """
@@ -942,18 +981,32 @@ class PianoAnalysisBackend:
             if not offset_data:
                 return self.plot_generator._create_empty_plot("无匹配数据")
 
-            # 步骤1：提取绝对延时数据（带符号的keyon_offset）
-            # keyon_offset = replay_keyon - record_keyon
-            # 正值表示延迟，负值表示提前，零值表示无延时
-            delays_ms = [item.get('keyon_offset', 0.0) / 10.0 for item in offset_data]
-            if not delays_ms:
+            # 步骤1：筛选误差<=50ms的数据
+            # 误差 = abs(keyon_offset) / 10.0 <= 50.0
+            filtered_offset_data = [
+                item for item in offset_data
+                if abs(item.get('keyon_offset', 0.0)) / 10.0 <= 50.0
+            ]
+
+            if not filtered_offset_data:
+                return self.plot_generator._create_empty_plot("无误差≤50ms的有效匹配数据")
+
+            # 步骤2：提取筛选后的绝对延时数据（带符号的keyon_offset）
+            absolute_delays_ms = [item.get('keyon_offset', 0.0) / 10.0 for item in filtered_offset_data]
+            if not absolute_delays_ms:
                 return self.plot_generator._create_empty_plot("无有效延时数据")
+
+            # 步骤3：计算相对延时（消除整体偏移）
+            # 相对延时 = 原始延时 - 平均延时
+            n = len(absolute_delays_ms)
+            mean_delay_ms = sum(absolute_delays_ms) / n
+            delays_ms = [delay - mean_delay_ms for delay in absolute_delays_ms]
 
             import plotly.graph_objects as go
             import math
             fig = go.Figure()
 
-            # 添加直方图
+            # 添加直方图（使用相对延时）
             fig.add_trace(go.Histogram(
                 x=delays_ms,
                 histnorm='probability density',
@@ -964,18 +1017,25 @@ class PianoAnalysisBackend:
                 marker_line_width=1
             ))
 
-            # ========== 步骤4：计算统计量（基于相对延时）==========
-            # 计算样本均值和样本标准差（使用n-1作为分母，无偏估计）
-            # 注意：相对延时的均值应该接近0（理论上为0，但由于浮点运算可能有微小偏差）
-            n = len(delays_ms)  # 样本数量
-            mean_val = sum(delays_ms) / n  # 样本均值：μ ≈ 0（相对延时的均值）
+            # ========== 步骤4：计算统计量 ==========
+            # 均值偏移：基于原始延时，反映算法整体延时倾向
+            mean_offset = mean_delay_ms
+
+            # 方差：基于原始延时，反映绝对稳定性
             if n > 1:
-                # 样本方差：s² = (1/(n-1)) * Σ(x_i - μ)²
-                # 注意：相对延时的方差和标准差与原始延时相同（因为减去常数不改变方差）
-                var = sum((x - mean_val) ** 2 for x in delays_ms) / (n - 1)
-                std_val = var ** 0.5  # 样本标准差：s = √s²
+                var_offset = sum((x - mean_delay_ms) ** 2 for x in absolute_delays_ms) / (n - 1)
+                std_offset = var_offset ** 0.5
             else:
-                std_val = 0.0  # 只有一个数据点，无法计算标准差
+                var_offset = 0.0
+                std_offset = 0.0
+
+            # 相对延时的统计量（均值=0，用于正态拟合）
+            mean_val = 0.0  # 相对延时均值=0
+            if n > 1:
+                var_relative = sum((x - 0) ** 2 for x in delays_ms) / (n - 1)
+                std_val = var_relative ** 0.5
+            else:
+                std_val = 0.0
 
             # ========== 步骤2：生成正态拟合曲线 ==========
             if std_val > 0:  # 只有当标准差大于0时才绘制曲线（需要离散性）
@@ -1015,13 +1075,13 @@ class PianoAnalysisBackend:
                     x=xs,  # 200个x坐标（延时值，单位：ms）
                     y=ys,  # 200个对应的概率密度值
                     mode='lines',  # 用线段连接点，形成连续曲线
-                    name=f"正态拟合 (μ={mean_val:.2f}ms, σ={std_val:.2f}ms)",  # 图例显示均值和标准差
+                    name=f"正态拟合 (均值偏移={mean_offset:.2f}ms, 标准差={std_offset:.2f}ms)",  # 显示均值偏移和标准差
                     line=dict(color='#e53935', width=2)  # 红色曲线，线宽2像素
                 ))
 
             fig.update_layout(
                 # 删除title，因为UI区域已有标题
-                xaxis_title='绝对延时 (ms)',
+                xaxis_title='相对延时 (ms)',
                 yaxis_title='概率密度',
                 bargap=0.05,
                 plot_bgcolor='white',
@@ -1417,46 +1477,33 @@ class PianoAnalysisBackend:
         try:
             # 获取偏移对齐分析数据
             alignment_data = self.get_offset_alignment_data()
-            
+
             if not alignment_data:
                 logger.warning("⚠️ 没有偏移对齐分析数据，无法生成柱状图")
                 return self.plot_generator._create_empty_plot("没有偏移对齐分析数据")
-            
-            # 直接从表格数据提取（包括方差）
+
+            # 使用预计算的按键统计信息（已筛选≤50ms的数据）
+            key_stats_data = self.analyzer.note_matcher.get_key_statistics_for_bar_chart()
+
+            if not key_stats_data:
+                logger.warning("⚠️ 没有按键统计数据，无法生成柱状图")
+                return self.plot_generator._create_empty_plot("没有按键统计数据")
+
+            # 直接从预计算数据提取统计信息
             key_ids = []
             median_values = []
             mean_values = []
             std_values = []
             variance_values = []
             status_list = []
-        
-            
-            for item in alignment_data:
-                key_id = item['key_id']
-                status = item['status']
-                
-                try:
-                    # 跳过无效的key_id
-                    if key_id == '无数据' or key_id == '错误' or not str(key_id).isdigit():
-                        continue
-                    
-                    key_id_int = int(key_id)
-                    key_ids.append(key_id_int)
-                    
-                    # 从字符串中提取数值，去除单位
-                    median_str = item['median'].replace('ms', '').replace('N/A', '0') if isinstance(item['median'], str) else str(item['median'])
-                    mean_str = item['mean'].replace('ms', '').replace('N/A', '0') if isinstance(item['mean'], str) else str(item['mean'])
-                    std_str = item['std'].replace('ms', '').replace('N/A', '0') if isinstance(item['std'], str) else str(item['std'])
-                    variance_str = item.get('variance', '0').replace('ms²', '').replace('N/A', '0') if isinstance(item.get('variance', '0'), str) else str(item.get('variance', '0'))
-                    
-                    median_values.append(float(median_str))
-                    mean_values.append(float(mean_str))
-                    std_values.append(float(std_str))
-                    variance_values.append(float(variance_str))
-                    status_list.append(status)
-                except (ValueError, TypeError) as e:
-                    logger.warning(f"⚠️ 跳过无效数据: {e}")
-                    continue
+
+            for item in key_stats_data:
+                key_ids.append(item['key_id'])
+                median_values.append(item['median'])
+                mean_values.append(item['mean'])
+                std_values.append(item['std'])
+                variance_values.append(item['variance'])
+                status_list.append(item['status'])
             
             if not key_ids:
                 logger.warning("⚠️ 没有有效的偏移对齐数据，无法生成柱状图")

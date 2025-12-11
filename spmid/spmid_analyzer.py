@@ -90,7 +90,7 @@ class SPMIDAnalyzer:
         
         # 步骤3：执行按键匹配
         self.matched_pairs = self.note_matcher.find_all_matched_pairs(self.valid_record_data, self.valid_replay_data)
-
+        
         # 保存匹配统计信息
         self.match_statistics = self.note_matcher.match_statistics
         
@@ -234,10 +234,7 @@ class SPMIDAnalyzer:
     def get_data_filter(self) -> Optional[DataFilter]:
         """获取数据过滤器实例"""
         return self.data_filter
-    
-    # def get_time_aligner(self) -> Optional[TimeAligner]:
-    #     """获取时序对齐器实例"""
-    #     return self.time_aligner
+
     
     def get_note_matcher(self) -> Optional[NoteMatcher]:
         """获取音符匹配器实例"""

@@ -14,7 +14,7 @@ SPMID音符匹配器
 
 【核心策略】
 - 贪心匹配：每个录制音符只匹配一个最佳的播放音符
-- 三阶段搜索：精确搜索(≤50ms) → 近似搜索(≤1000ms) → 严重搜索(>1000ms)
+- 三阶段搜索：精确搜索(≤50ms) → 近似搜索(50ms-1000ms) → 严重搜索(>1000ms)
 - 六等级阈值：按误差范围精确分类 (20ms, 30ms, 50ms, 1000ms)
 
 【匹配流程】
@@ -66,6 +66,7 @@ from .spmid_reader import Note
 from typing import List, Tuple, Dict, Union, Optional
 from utils.logger import Logger
 from enum import Enum
+from collections import defaultdict
 
 logger = Logger.get_logger()
 
@@ -117,14 +118,78 @@ class MatchResult:
 # 候选信息类
 class Candidate:
     """候选匹配信息"""
-    def __init__(self, index: int, total_error: float):
+    def __init__(self, index: int, total_error: float, note: Optional[Note] = None):
         self.index = index
         self.total_error = total_error
+        self.note = note
 
     @property
     def error_ms(self) -> float:
         """误差转换为毫秒"""
         return self.total_error / 10.0
+
+# 按键匹配统计类 - 新增：按键级别的统计信息
+class KeyMatchStatistics:
+    """单个按键的匹配统计信息"""
+
+    def __init__(self, key_id: int):
+        self.key_id = key_id
+        self.total_record_notes = 0    # 该按键录制音符总数
+        self.total_replay_notes = 0    # 该按键播放音符总数
+        self.matched_count = 0         # 成功匹配数
+        self.failed_count = 0          # 失败匹配数
+        self.extra_hammers = 0         # 多锤数（未使用的播放音符）
+
+        # 误差统计（只统计成功匹配）
+        self.offsets_ms: List[float] = []  # 校准后偏移（ms）
+        self.median_offset = 0.0
+        self.mean_offset = 0.0
+        self.std_offset = 0.0
+        self.variance_offset = 0.0
+
+        # 匹配质量分布
+        self.excellent_count = 0
+        self.good_count = 0
+        self.fair_count = 0
+        self.poor_count = 0
+        self.severe_count = 0
+
+    def add_match_result(self, match_result: MatchResult, corrected_offset_ms: float):
+        """添加匹配结果"""
+        if match_result.is_success:
+            self.matched_count += 1
+            self.offsets_ms.append(corrected_offset_ms)
+
+            # 统计匹配质量
+            if match_result.match_type == MatchType.EXCELLENT:
+                self.excellent_count += 1
+            elif match_result.match_type == MatchType.GOOD:
+                self.good_count += 1
+            elif match_result.match_type == MatchType.FAIR:
+                self.fair_count += 1
+            elif match_result.match_type == MatchType.POOR:
+                self.poor_count += 1
+            elif match_result.match_type == MatchType.SEVERE:
+                self.severe_count += 1
+        else:
+            self.failed_count += 1
+
+    def calculate_statistics(self):
+        """计算统计信息"""
+        if self.offsets_ms:
+            import statistics
+            self.median_offset = statistics.median(self.offsets_ms)
+            self.mean_offset = statistics.mean(self.offsets_ms)
+
+            if len(self.offsets_ms) > 1:
+                self.std_offset = statistics.stdev(self.offsets_ms)
+                self.variance_offset = statistics.variance(self.offsets_ms)
+            else:
+                self.std_offset = 0.0
+                self.variance_offset = 0.0
+
+    def __str__(self):
+        return f"按键{self.key_id}: 录制{self.total_record_notes}, 播放{self.total_replay_notes}, 匹配{self.matched_count}, 失败{self.failed_count}, 均值{self.mean_offset:.2f}ms"
 
 # 匹配统计类
 class MatchStatistics:
@@ -195,6 +260,9 @@ class NoteMatcher:
         self.approximate_matched_pairs: List[Tuple[int, int, Note, Note]] = []  # 近似搜索阶段匹配 (50-1000ms)
         self.severe_matched_pairs: List[Tuple[int, int, Note, Note]] = []  # 严重误差搜索阶段匹配 (>1000ms)
 
+        # 按键分组统计信息 - 新增：预计算的按键级别统计数据
+        self.key_statistics: Dict[int, KeyMatchStatistics] = {}  # key=key_id, value=该按键的统计信息
+
         # 统计信息
         self.match_statistics = MatchStatistics()
 
@@ -207,10 +275,12 @@ class NoteMatcher:
     
     def find_all_matched_pairs(self, record_data: List[Note], replay_data: List[Note]) -> List[Tuple[int, int, Note, Note]]:
         """
-        查找所有匹配对：将录制数据与播放数据进行匹配
+        查找所有匹配对：按键分组贪心匹配
 
-        使用贪心策略：为每个录制音符找到最佳的播放音符匹配，
-        确保每个播放音符最多被使用一次
+        匹配逻辑：
+        1. 按按键ID分组录制和播放数据
+        2. 对每个按键分别进行贪心匹配（同按键ID的录制音符 vs 同按键ID的播放音符）
+        3. 按键之间完全独立，不允许跨按键配对
 
         Args:
             record_data: 录制数据
@@ -219,53 +289,59 @@ class NoteMatcher:
         Returns:
             List[Tuple[int, int, Note, Note]]: 匹配对列表 (record_index, replay_index, record_note, replay_note)
         """
-        matched_pairs: List[Tuple[int, int, Note, Note]] = []
-        used_replay_indices = set()
-        normal_match_count = 0  # 正常候选匹配数量
-        expanded_match_count = 0  # 扩展候选匹配数量
-
         # 初始化状态
         self._initialize_matching_state()
 
-        logger.info(f"🎯 开始音符匹配: 录制数据{len(record_data)}个音符, 回放数据{len(replay_data)}个音符")
+        logger.info(f"🎯 开始按键分组贪心匹配: 录制数据{len(record_data)}个音符, 回放数据{len(replay_data)}个音符")
 
         # 保存原始数据引用（用于失败匹配详情）
         self._record_data = record_data
         self._replay_data = replay_data
 
-        # 1. 计算全局时间偏移
-        # self.global_time_offset = self._calculate_global_time_offset(record_data, replay_data)
+        # 1. 按按键ID分组数据
+        record_by_key = self._group_notes_by_key(record_data)
+        replay_by_key = self._group_notes_by_key(replay_data)
 
-        # 2. 为每个录制音符寻找匹配
-        for i, record_note in enumerate(record_data):
-            match_result = self._perform_single_note_matching(
-                record_note, i, replay_data, used_replay_indices
+        logger.info(f"📊 按键分组完成: 录制数据{len(record_by_key)}个按键, 播放数据{len(replay_by_key)}个按键")
+
+        # 2. 对每个按键分别进行贪心匹配
+        all_matched_pairs = []
+
+        for key_id in record_by_key.keys():
+            logger.debug(f"🎹 开始匹配按键{key_id}")
+
+            # 获取该按键的所有录制和播放音符
+            key_record_notes = record_by_key[key_id]  # [(original_index, note), ...]
+            key_replay_notes = replay_by_key.get(key_id, [])  # [(original_index, note), ...]
+
+            # 对该按键进行贪心匹配
+            key_matched_pairs, extra_hammers = self._match_notes_for_single_key_group(
+                key_id, key_record_notes, key_replay_notes
             )
 
-            # 更新统计信息
-            self.match_statistics.add_result(match_result)
+            all_matched_pairs.extend(key_matched_pairs)
 
-            # 保存匹配结果
-            self.match_results.append(match_result)
+            # 更新按键统计信息中的多锤数量
+            if key_id not in self.key_statistics:
+                self.key_statistics[key_id] = KeyMatchStatistics(key_id)
+                self.key_statistics[key_id].total_record_notes = len(key_record_notes)
+                self.key_statistics[key_id].total_replay_notes = len(key_replay_notes)
+            self.key_statistics[key_id].extra_hammers = extra_hammers
 
-            # 处理匹配结果
-            if match_result.is_success:
-                matched_pairs.append((
-                    match_result.record_index,
-                    match_result.replay_index,
-                    match_result.pair[0],  # record_note
-                    match_result.pair[1]   # replay_note
-                ))
+            matched_count = len(key_matched_pairs)
+            record_count = len(key_record_notes)
+            replay_count = len(key_replay_notes)
 
-                # 记录匹配日志
-                logger.debug(f"匹配成功: 键ID={record_note.id}, 录制索引{i} -> 播放索引{match_result.replay_index}, "
-                           f"误差={match_result.error_ms:.2f}ms, 类型={match_result.match_type.value}")
-            else:
-                self.failure_reasons[("record", i)] = match_result.reason
-                logger.debug(f"匹配失败: 录制索引{i}, 键ID={record_note.id}, 原因:{match_result.reason}")
-        
-        self.matched_pairs = matched_pairs
-        self._log_matching_statistics(record_data, replay_data, matched_pairs, used_replay_indices)
+            logger.debug(f"🏁 按键{key_id}匹配完成: 录制{record_count}个, 播放{replay_count}个, 匹配{matched_count}个")
+
+        # 保存所有匹配对
+        self.matched_pairs = all_matched_pairs
+
+        # 3. 基于匹配结果计算按键统计信息
+        self._calculate_key_statistics_from_matches(record_by_key, replay_by_key)
+
+        # 记录按键级别的匹配统计
+        self._log_key_matching_statistics()
 
         # 匹配完成后计算并缓存平均误差
         self._mean_error_cached = self._calculate_mean_error()
@@ -275,9 +351,450 @@ class NoteMatcher:
         print(f"[匹配统计] 近似匹配: {self.match_statistics.approximate_matches} 个")
         print(f"[匹配统计] 大误差匹配: {self.match_statistics.large_error_matches} 个")
         print(f"[匹配统计] 失败匹配: {self.match_statistics.failed_matches} 个")
-        print(f"[匹配统计] 总匹配对: {len(matched_pairs)} 个 (准确率分子)")
+        print(f"[匹配统计] 总匹配对: {len(all_matched_pairs)} 个 (准确率分子)")
 
-        return matched_pairs
+        return all_matched_pairs
+
+    def _match_notes_for_single_key_group(self, key_id: int,
+                                        record_notes_with_indices: List[Tuple[int, Note]],
+                                        replay_notes_with_indices: List[Tuple[int, Note]]) -> Tuple[List[Tuple[int, int, Note, Note]], int]:
+        """
+        对单个按键组进行贪心匹配
+
+        匹配策略：
+        1. 精确匹配 (≤50ms)
+        2. 近似匹配 (50ms-1000ms)
+        3. 严重误差匹配 (>1000ms) - 理论上应该匹配所有剩余按键
+
+        匹配完成后统一分析：
+        - 录制中未匹配的：丢锤
+        - 播放中未使用的：多锤
+
+        Args:
+            key_id: 按键ID
+            record_notes_with_indices: 该按键的录制音符列表 [(original_index, note), ...]
+            replay_notes_with_indices: 该按键的播放音符列表 [(original_index, note), ...]
+
+        Returns:
+            List[Tuple[int, int, Note, Note]]: 该按键的匹配对列表
+        """
+        key_matched_pairs = []
+
+        # 初始化状态跟踪 - 使用原始索引作为键，确保唯一性
+        record_match_status = {record_idx: False for record_idx, _ in record_notes_with_indices}  # False=未匹配
+        replay_match_status = {replay_idx: False for replay_idx, _ in replay_notes_with_indices}  # False=未使用
+
+        logger.debug(f"🎹 开始按键{key_id}贪心匹配: 录制{len(record_notes_with_indices)}个, 播放{len(replay_notes_with_indices)}个")
+
+        # 分等级贪心匹配策略
+        match_strategies = [
+            ("precision", "精确匹配", [MatchType.EXCELLENT, MatchType.GOOD, MatchType.FAIR]),
+            ("approximate", "近似匹配", [MatchType.POOR]),
+            ("severe", "严重误差匹配", [MatchType.SEVERE])
+        ]
+
+        # 获取待匹配的录制音符列表（未匹配的）
+        unmatched_record_notes = [(idx, note) for idx, note in record_notes_with_indices]
+
+        # 按等级顺序进行匹配
+        for strategy_name, strategy_desc, allowed_types in match_strategies:
+            if not unmatched_record_notes:
+                logger.debug(f"🎯 按键{key_id}所有录制音符已匹配完成")
+                break
+
+            logger.debug(f"🎪 按键{key_id}开始{strategy_desc}轮: 剩余录制{len(unmatched_record_notes)}个")
+
+            # 本轮成功匹配的录制音符（从列表中移除）
+            matched_in_this_round = []
+
+            # 遍历所有未匹配的录制音符，让它们都尝试当前等级的匹配
+            for record_orig_idx, record_note in unmatched_record_notes:
+                # 获取当前可用的播放音符及其原始索引（未被使用的）
+                available_replay_notes_with_indices = []
+                for replay_orig_idx, replay_note in replay_notes_with_indices:
+                    if not replay_match_status[replay_orig_idx]:  # 未被使用
+                        available_replay_notes_with_indices.append((replay_orig_idx, replay_note))
+
+                # 在该按键的可用播放音符中进行指定等级的匹配
+                match_result = self._perform_single_note_matching_in_strategy(
+                    record_note, record_orig_idx, available_replay_notes_with_indices,
+                    strategy_name, len(replay_notes_with_indices) > 0
+                )
+
+                # 更新全局统计信息
+                self.match_statistics.add_result(match_result)
+                self.match_results.append(match_result)
+
+                # 处理匹配结果
+                if match_result.is_success and match_result.match_type in allowed_types:
+                    # 从MatchResult中直接获取播放音符索引
+                    matched_replay_orig_idx = match_result.replay_index
+                    matched_replay_note = match_result.pair[1]
+
+                    key_matched_pairs.append((
+                        record_orig_idx,
+                        matched_replay_orig_idx,
+                        record_note,
+                        matched_replay_note
+                    ))
+
+                    # 更新匹配状态
+                    record_match_status[record_orig_idx] = True
+                    replay_match_status[matched_replay_orig_idx] = True
+
+                    # 记录按键配对详情日志
+                    logger.debug(f"🔗 按键配对: 录制按键{key_id}(索引{record_orig_idx}) ↔ 播放按键{key_id}(索引{matched_replay_orig_idx}), "
+                               f"误差={match_result.error_ms:.2f}ms, 类型={match_result.match_type.value}")
+
+                    # 记录到对应的分类列表
+                    if match_result.match_type in [MatchType.EXCELLENT, MatchType.GOOD, MatchType.FAIR]:
+                        self.precision_matched_pairs.append(key_matched_pairs[-1])
+                    elif match_result.match_type == MatchType.POOR:
+                        self.approximate_matched_pairs.append(key_matched_pairs[-1])
+                    elif match_result.match_type == MatchType.SEVERE:
+                        self.severe_matched_pairs.append(key_matched_pairs[-1])
+
+                    # 标记本轮成功匹配
+                    matched_in_this_round.append((record_orig_idx, record_note))
+                # else: 匹配失败，继续留在未匹配列表中，等待下一轮
+
+            # 从未匹配列表中移除本轮成功匹配的音符
+            for matched_record in matched_in_this_round:
+                unmatched_record_notes.remove(matched_record)
+
+            logger.debug(f"🏁 按键{key_id}{strategy_desc}轮完成: 本轮匹配{matched_in_this_round.__len__()}个, 剩余{len(unmatched_record_notes)}个")
+
+        # 第二阶段：统一分析丢锤和多锤
+        extra_hammers = self._analyze_key_group_hammer_status(key_id, record_match_status, replay_match_status)
+
+        return key_matched_pairs, extra_hammers
+
+    def _analyze_key_group_hammer_status(self, key_id: int,
+                                        record_match_status: Dict[int, bool],
+                                        replay_match_status: Dict[int, bool]) -> int:
+        """
+        分析按键组的锤子状态（丢锤和多锤）
+
+        Args:
+            key_id: 按键ID
+            record_match_status: 录制音符匹配状态 {record_orig_idx: is_matched}
+            replay_match_status: 播放音符使用状态 {replay_orig_idx: is_used}
+
+        Returns:
+            int: 多锤数量
+        """
+        # 分析丢锤：录制了但未匹配
+        dropped_hammers = [idx for idx, matched in record_match_status.items() if not matched]
+
+        # 分析多锤：播放了但未被使用
+        extra_hammers = [idx for idx, matched in replay_match_status.items() if not matched]
+
+        # 记录分析结果
+        logger.debug(f"🎯 按键{key_id}匹配完成:")
+        logger.debug(f"  📝 录制: {len(record_match_status)}个, 匹配: {sum(record_match_status.values())}个")
+        logger.debug(f"  🎵 播放: {len(replay_match_status)}个, 使用: {sum(replay_match_status.values())}个")
+        logger.debug(f"  🔨 丢锤: {len(dropped_hammers)}个, 多锤: {len(extra_hammers)}个")
+
+        # 为丢锤创建失败记录
+        for record_idx in dropped_hammers:
+            match_result = MatchResult(
+                MatchType.FAILED,
+                record_idx,
+                reason=f"按键{key_id}录制音符未匹配(丢锤)"
+            )
+            self.match_results.append(match_result)
+            self.match_statistics.add_result(match_result)
+
+        # 返回多锤数量，用于更新按键统计
+        return len(extra_hammers)
+
+    def _perform_single_note_matching_in_strategy(self, record_note: Note, record_index: int,
+                                                     replay_notes_with_indices: List[Tuple[int, Note]],
+                                                     strategy_name: str,
+                                                     has_any_replay_notes: bool = True) -> MatchResult:
+        """
+        在按键组内部进行单个音符的指定策略匹配
+
+        Args:
+            record_note: 录制音符
+            record_index: 录制音符的原始索引
+            replay_notes_with_indices: 该按键的播放音符列表（已过滤未使用的）[(orig_idx, note), ...]
+            strategy_name: 匹配策略名称 ("precision", "approximate", "severe")
+            has_any_replay_notes: 是否有播放音符
+
+        Returns:
+            MatchResult: 匹配结果
+        """
+        note_info = self._extract_note_info(record_note, record_index)
+
+        # 只在指定的策略中进行匹配
+        replay_notes_only = [note for _, note in replay_notes_with_indices]
+        candidates, reason = self._find_candidates_in_key_group(
+            replay_notes_only, note_info["keyon"], note_info["keyoff"],
+            note_info["key_id"], search_mode=strategy_name
+        )
+
+        if candidates:
+            # 从候选列表中选择最佳的（第一个，因为已经按误差排序）
+            chosen = candidates[0]  # 贪心选择：选择误差最小的一个
+
+            # 构建匹配对
+            replay_note = chosen.note
+            pair = (record_note, replay_note)
+
+            # 根据实际误差确定匹配类型
+            actual_match_type = self._evaluate_match_quality(chosen.error_ms)
+
+            # 从过滤列表中找到对应的原始索引
+            replay_orig_idx = replay_notes_with_indices[chosen.index][0]
+
+            return self._create_match_result(
+                actual_match_type, record_index, replay_orig_idx, chosen,
+                record_note, replay_note
+            )
+
+        # 当前策略匹配失败
+        return self._create_match_result(
+            MatchType.FAILED, record_index, reason=f"{strategy_name}策略无符合候选"
+        )
+
+    def _perform_single_note_matching_within_key_group(self, record_note: Note, record_index: int,
+                                                     replay_notes_with_indices: List[Tuple[int, Note]],
+                                                     has_any_replay_notes: bool = True) -> MatchResult:
+        """
+        在按键组内部进行单个音符匹配
+
+        Args:
+            record_note: 录制音符
+            record_index: 录制音符的原始索引
+            replay_notes_with_indices: 该按键的播放音符列表（已过滤未使用的）[(orig_idx, note), ...]
+
+        Returns:
+            MatchResult: 匹配结果
+        """
+        note_info = self._extract_note_info(record_note, record_index)
+
+        # 定义匹配策略：分层搜索，确保找到最佳匹配
+        match_strategies = [
+            ("precision", self.precision_matched_pairs),     # 第一优先级: 精确搜索 (≤50ms)
+            ("approximate", self.approximate_matched_pairs), # 第二优先级: 扩展搜索 (50ms-1000ms)
+            ("severe", self.severe_matched_pairs),          # 第三优先级: 严重误差搜索 (>1000ms)
+        ]
+
+        # 按顺序尝试每种匹配策略
+        for search_mode, record_list in match_strategies:
+            # 只传入音符列表给 _find_candidates_in_key_group
+            replay_notes_only = [note for _, note in replay_notes_with_indices]
+            candidates, reason = self._find_candidates_in_key_group(
+                replay_notes_only, note_info["keyon"], note_info["keyoff"],
+                note_info["key_id"], search_mode=search_mode
+            )
+
+            if candidates:
+                # 从候选列表中选择最佳的（第一个，因为已经按误差排序）
+                chosen = candidates[0]  # 贪心选择：选择误差最小的一个
+
+                # 构建匹配对
+                replay_note = chosen.note
+                pair = (record_note, replay_note)
+
+                # 根据实际误差确定匹配类型
+                actual_match_type = self._evaluate_match_quality(chosen.error_ms)
+
+                # 从过滤列表中找到对应的原始索引
+                replay_orig_idx = replay_notes_with_indices[chosen.index][0]
+
+                return self._create_match_result(
+                    actual_match_type, record_index, replay_orig_idx, chosen,
+                    record_note, replay_note
+                )
+
+        # 所有搜索都失败 - 由上级统一分析丢锤多锤
+        return self._create_match_result(
+            MatchType.FAILED, record_index, reason="无符合误差范围的候选"
+        )
+
+    def _find_candidates_in_key_group(self, replay_notes: List[Note], target_keyon: float, target_keyoff: float,
+                                    target_key_id: int, search_mode: str = "precision") -> Tuple[List[Candidate], str]:
+        """
+        在按键组内部寻找候选匹配
+
+        Args:
+            replay_notes: 该按键的播放音符列表
+            target_keyon: 目标按键开始时间
+            target_keyoff: 目标按键结束时间
+            target_key_id: 目标按键ID
+            search_mode: 搜索模式
+
+        Returns:
+            Tuple[List[Candidate], str]: (候选列表, 失败原因)
+        """
+        candidates = []
+
+        for idx, replay_note in enumerate(replay_notes):
+            # 验证按键ID匹配（虽然理论上应该都匹配）
+            if getattr(replay_note, 'id', None) != target_key_id:
+                continue
+
+            # 计算时间误差（只使用keyon_offset）
+            replay_keyon, _ = self._calculate_note_times(replay_note)
+            keyon_offset = replay_keyon - target_keyon
+            total_error = abs(keyon_offset)
+
+            candidates.append(Candidate(idx, total_error, replay_note))
+
+        # 按误差升序排序
+        candidates.sort(key=lambda x: x.total_error)
+
+        # 根据搜索模式应用阈值过滤
+        if search_mode == "precision":
+            filtered = [c for c in candidates if c.total_error <= FAIR_THRESHOLD]
+            if not filtered:
+                best_error = min(c.error_ms for c in candidates) if candidates else 0
+                return [], f"无精确候选(最佳误差:{best_error:.1f}ms, 阈值:{FAIR_THRESHOLD/10:.1f}ms)"
+        elif search_mode == "approximate":
+            filtered = [c for c in candidates if FAIR_THRESHOLD < c.total_error <= POOR_THRESHOLD]
+            if not filtered:
+                return [], f"无近似候选(阈值:{FAIR_THRESHOLD/10:.1f}-{POOR_THRESHOLD/10:.1f}ms)"
+        elif search_mode == "severe":
+            filtered = [c for c in candidates if c.total_error > POOR_THRESHOLD]
+            if not filtered:
+                return [], f"无严重误差候选(阈值:>{POOR_THRESHOLD/10:.1f}ms)"
+        else:
+            filtered = candidates
+
+        return filtered, ""
+
+    def _group_notes_by_key(self, notes: List[Note]) -> Dict[int, List[Tuple[int, Note]]]:
+        """
+        按按键ID分组音符数据
+
+        Args:
+            notes: 音符列表
+
+        Returns:
+            Dict[int, List[Tuple[int, Note]]]: key=按键ID, value=(原始索引, 音符)列表
+        """
+        grouped = defaultdict(list)
+        for i, note in enumerate(notes):
+            grouped[note.id].append((i, note))
+        return dict(grouped)
+
+    def _calculate_global_statistics(self):
+        """计算全局统计信息（兼容性方法）"""
+        # 这个方法主要用于保持向后兼容性
+        # 实际的统计信息已经在_match_notes_for_single_key中计算了
+        pass
+
+    def _calculate_key_statistics_from_matches(self, record_by_key: Dict[int, List[Tuple[int, Note]]],
+                                             replay_by_key: Dict[int, List[Tuple[int, Note]]]):
+        """基于匹配结果计算按键统计信息"""
+        logger.info("📊 开始计算按键统计信息...")
+
+        # 初始化所有按键的统计信息
+        for key_id in set(record_by_key.keys()) | set(replay_by_key.keys()):
+            key_stats = KeyMatchStatistics(key_id)
+            key_stats.total_record_notes = len(record_by_key.get(key_id, []))
+            key_stats.total_replay_notes = len(replay_by_key.get(key_id, []))
+            self.key_statistics[key_id] = key_stats
+
+        # 基于匹配结果更新统计信息
+        for match_result in self.match_results:
+            # 获取录制音符的按键ID
+            record_note = self._record_data[match_result.record_index]
+            key_id = record_note.id
+
+            if key_id not in self.key_statistics:
+                continue
+
+            key_stats = self.key_statistics[key_id]
+
+            if match_result.is_success:
+                # 计算校准后偏移
+                record_keyon, _ = self._calculate_note_times(record_note)
+                replay_keyon, _ = self._calculate_note_times(match_result.pair[1])
+                raw_offset = replay_keyon - record_keyon
+                corrected_offset = raw_offset - self.global_time_offset
+                corrected_offset_ms = corrected_offset / 10.0
+
+                # 只统计误差≤50ms的匹配对用于条形图
+                if abs(corrected_offset_ms) <= 50.0:
+                    key_stats.add_match_result(match_result, corrected_offset_ms)
+            else:
+                # 记录失败匹配
+                key_stats.failed_count += 1
+
+        # 计算每个按键的统计值
+        for key_stats in self.key_statistics.values():
+            if key_stats.matched_count > 0:
+                key_stats.calculate_statistics()
+
+    def _log_key_matching_statistics(self):
+        """记录按键级别的匹配统计日志"""
+        logger.info("📊 按键匹配统计汇总:")
+
+        # 按按键ID排序输出
+        for key_id in sorted(self.key_statistics.keys()):
+            key_stats = self.key_statistics[key_id]
+            match_rate = (key_stats.matched_count / key_stats.total_record_notes * 100) if key_stats.total_record_notes > 0 else 0
+
+            if key_stats.matched_count > 0:
+                logger.info(f"🎹 按键{key_id}: 录制{key_stats.total_record_notes} → 匹配{key_stats.matched_count} → "
+                           f"失败{key_stats.failed_count} (匹配率: {match_rate:.1f}%, "
+                           f"均值: {key_stats.mean_offset:.2f}ms, 标准差: {key_stats.std_offset:.2f}ms)")
+            else:
+                logger.info(f"🎹 按键{key_id}: 录制{key_stats.total_record_notes} → 匹配{key_stats.matched_count} → "
+                           f"失败{key_stats.failed_count} (匹配率: {match_rate:.1f}%)")
+
+        # 总体统计
+        total_keys = len(self.key_statistics)
+        keys_with_matches = sum(1 for stats in self.key_statistics.values() if stats.matched_count > 0)
+        total_record_notes = sum(stats.total_record_notes for stats in self.key_statistics.values())
+        total_matched = sum(stats.matched_count for stats in self.key_statistics.values())
+        total_failed = sum(stats.failed_count for stats in self.key_statistics.values())
+
+        overall_match_rate = (total_matched / total_record_notes * 100) if total_record_notes > 0 else 0
+
+        logger.info(f"📈 总体统计: {total_keys}个按键, {keys_with_matches}个按键有匹配, "
+                   f"总录制音符: {total_record_notes}, 成功匹配: {total_matched}, 失败: {total_failed}, "
+                   f"整体匹配率: {overall_match_rate:.1f}%")
+
+
+    def get_key_statistics_for_bar_chart(self) -> List[Dict[str, Union[int, float]]]:
+        """
+        获取按键统计信息用于条形统计图
+
+        直接使用预计算的按键统计信息，避免重复计算
+
+        Returns:
+            List[Dict[str, Union[int, float]]]: 按键统计数据列表，每个元素包含:
+            - key_id: 按键ID
+            - median: 中位数偏移 (ms)
+            - mean: 均值偏移 (ms)
+            - std: 标准差 (ms)
+            - variance: 方差 (ms²)
+            - count: 该按键成功匹配对数量
+        """
+        result = []
+
+        for key_id, key_stats in self.key_statistics.items():
+            # 只包含有匹配数据的按键
+            if key_stats.matched_count > 0 and key_stats.offsets_ms:
+                result.append({
+                    'key_id': key_id,
+                    'median': key_stats.median_offset,
+                    'mean': key_stats.mean_offset,
+                    'std': key_stats.std_offset,
+                    'variance': key_stats.variance_offset,
+                    'count': key_stats.matched_count,
+                    'status': 'matched'
+                })
+
+        # 按按键ID排序
+        result.sort(key=lambda x: x['key_id'])
+
+        logger.debug(f"📊 条形统计图数据: {len(result)}个按键有统计信息")
+        return result
 
     def _find_candidates(self, notes_list: List[Note], target_keyon: float, target_keyoff: float,
                         target_key_id: int, time_offset: float = 0.0, search_mode: str = "precision") -> Tuple[List[Candidate], str]:
@@ -333,11 +850,11 @@ class NoteMatcher:
                 best_error = min(c.error_ms for c in candidates) if candidates else 0
                 return [], f"无精确候选(最佳误差:{best_error:.1f}ms, 阈值:{FAIR_THRESHOLD/10:.1f}ms)"
         elif search_mode == "approximate":
-            # 近似搜索：当精确搜索失败时，寻找可接受的匹配
-            # 阈值与评级中的poor阈值一致，确保评级逻辑不受影响
-            filtered = [c for c in candidates if c.total_error <= POOR_THRESHOLD]
+            # 近似搜索：当精确搜索失败时，寻找可接受的匹配 (50ms-1000ms)
+            # 避免与precision模式重叠，确保评级逻辑不受影响
+            filtered = [c for c in candidates if FAIR_THRESHOLD < c.total_error <= POOR_THRESHOLD]
             if not filtered:
-                return [], f"无近似候选(阈值:{POOR_THRESHOLD/10:.1f}ms)"
+                return [], f"无近似候选(阈值:{FAIR_THRESHOLD/10:.1f}-{POOR_THRESHOLD/10:.1f}ms)"
         elif search_mode == "severe":
             # 严重误差搜索：只接受误差很大的匹配 (>1000ms)
             # 这些匹配会被评为SEVERE类型
@@ -647,7 +1164,7 @@ class NoteMatcher:
         # 搜索策略与评级逻辑解耦，避免阈值影响评级分布
         match_strategies = [
             ("precision", self.precision_matched_pairs),     # 第一优先级: 精确搜索 (≤50ms)
-            ("approximate", self.approximate_matched_pairs), # 第二优先级: 扩展搜索 (≤1000ms)
+            ("approximate", self.approximate_matched_pairs), # 第二优先级: 扩展搜索 (50ms-1000ms)
             ("severe", self.severe_matched_pairs),          # 第三优先级: 严重误差搜索 (>1000ms)
         ]
 
@@ -681,7 +1198,15 @@ class NoteMatcher:
                     )
 
         # 所有搜索都失败
-        failure_reason = reason if reason else f"录制有，播放无（键ID {note_info['key_id']} 无可用候选）"
+        # 如果有候选但都被过滤掉了，说明误差都不在接受范围内
+        # 如果没有候选，说明按键没有可用的播放音符
+        if candidates:
+            # 有候选但都不满足任何搜索模式，说明误差范围不符合
+            failure_reason = reason if reason else f"按键{note_info['key_id']} 无符合误差范围的候选"
+        else:
+            # 没有候选，说明该按键没有可用的播放音符
+            failure_reason = f"按键{note_info['key_id']} 无可用播放音符"
+
         return self._create_match_result(
             MatchType.FAILED, record_index, reason=failure_reason
         )
@@ -816,10 +1341,12 @@ class NoteMatcher:
     
     def get_matched_pairs(self) -> List[Tuple[int, int, Note, Note]]:
         """
-        获取匹配对列表
-        
+        获取精确匹配对列表（≤50ms）
+
+        只返回精确匹配的配对，用于指标计算和图表显示
+
         Returns:
-            List[Tuple[int, int, Note, Note]]: 匹配对列表
+            List[Tuple[int, int, Note, Note]]: 精确匹配对列表
         """
         return self.matched_pairs.copy()
     
@@ -1003,9 +1530,6 @@ class NoteMatcher:
         Returns:
             Dict: 包含各级别的计数和百分比
         """
-        # 总配对数 = 成功的匹配对数（直接使用self.matched_pairs）
-        total_successful_matches = len(self.matched_pairs)
-
         # 获取所有成功的匹配对数据用于评级
         # 直接从match_results中获取所有成功匹配的数据
         all_matched_data = []
@@ -1014,6 +1538,9 @@ class NoteMatcher:
                 # 为评级统计创建数据项
                 item = self._create_offset_data_item(result)
                 all_matched_data.append(item)
+
+        # 总配对数 = 成功的匹配对数
+        total_successful_matches = len(all_matched_data)
 
         # 初始化统计 - 只统计成功匹配的评级分布
         stats = {

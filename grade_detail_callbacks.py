@@ -113,8 +113,15 @@ def create_table_row(item: Dict, note, data_type: str, grade_key: str) -> Dict[s
         key_off = item['replay_keyoff']
         duration = item['replay_duration']
 
+    # 根据数据类型显示对应的全局索引
+    if data_type == '录制':
+        global_index = item['record_index']
+    else:  # 播放
+        global_index = item['replay_index']
+
     row = {
         'data_type': data_type,
+        'global_index': global_index,
         'keyId': item['key_id'],
         'keyOn': f"{key_on / 10.0:.2f}",
         'keyOff': f"{key_off / 10.0:.2f}",
@@ -480,6 +487,7 @@ def show_single_grade_detail(button_index, session_id, session_manager):
             # 普通匹配的列定义 - 分行显示录制和播放信息，包含锤击时间和锤速
             columns = [
                 {"name": "类型", "id": "data_type"},
+                {"name": "全局索引", "id": "global_index"},
                 {"name": "键位ID", "id": "keyId"},
                 {"name": "按键时间(ms)", "id": "keyOn"},
                 {"name": "释放时间(ms)", "id": "keyOff"},

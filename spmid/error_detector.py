@@ -33,9 +33,6 @@ class ErrorDetector:
         self.multi_hammers: List[ErrorNote] = []
         self.drop_hammers: List[ErrorNote] = []
         self.silent_hammers: List[ErrorNote] = []
-        # 用于防止同一个按键ID被重复标记
-        self._processed_drop_keys: set = set()
-        self._processed_multi_keys: set = set()
     
     def analyze_hammer_issues(self, record_data: List[Note], replay_data: List[Note],
                             matched_pairs: List[Tuple[int, int, Note, Note]],
@@ -122,18 +119,9 @@ class ErrorDetector:
             index: 音符索引
             reason: 失败原因（可选）
         """
-        key_id = getattr(note, 'id', None)
-        if key_id is not None and key_id in self._processed_drop_keys:
-            # 同一个按键ID已经被标记为丢锤，跳过
-            return
-
         note_info = self._extract_note_info(note, index)
         error_note = self._create_error_note_with_stats(note, note_info, "丢锤", reason)
         self.drop_hammers.append(error_note)
-
-        # 记录已处理的按键ID
-        if key_id is not None:
-            self._processed_drop_keys.add(key_id)
     
     def _handle_multi_hammer_case(self, note: Note, index: int, reason: str = None) -> None:
         """
@@ -144,18 +132,9 @@ class ErrorDetector:
             index: 音符索引
             reason: 失败原因（可选）
         """
-        key_id = getattr(note, 'id', None)
-        if key_id is not None and key_id in self._processed_multi_keys:
-            # 同一个按键ID已经被标记为多锤，跳过
-            return
-
         note_info = self._extract_note_info(note, index)
         error_note = self._create_error_note_with_stats(note, note_info, "多锤", reason)
         self.multi_hammers.append(error_note)
-
-        # 记录已处理的按键ID
-        if key_id is not None:
-            self._processed_multi_keys.add(key_id)
     
     def _extract_note_info(self, note: Note, index: int) -> Dict:
         """
