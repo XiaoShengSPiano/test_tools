@@ -3,7 +3,7 @@
 """
 import traceback
 import dash
-from dash import Input, Output, State, html, no_update, dash_table
+from dash import Input, Output, State, html, no_update, dash_table, dcc
 from dash.exceptions import PreventUpdate
 from typing import Dict, List, Optional, Tuple, Any, Union
 from backend.session_manager import SessionManager
@@ -135,8 +135,336 @@ def create_table_row(item: Dict, note, data_type: str, grade_key: str) -> Dict[s
     return row
 
 
+def generate_single_key_curves_comparison(backend, key_id: int, algorithm_name: str, session_id: str, matched_result):
+    """生成单个按键的曲线对比图"""
+    try:
+        # 获取note_matcher
+        note_matcher = get_note_matcher_from_backend(backend, algorithm_name)
+        if not note_matcher:
+            return [html.Div([html.P("无法获取匹配器", className="text-danger text-center")])]
+
+        # 获取录制和播放音符
+        record_note = note_matcher._record_data[matched_result.record_index]
+        replay_note = note_matcher._replay_data[matched_result.replay_index]
+
+        # 为after_touch时间戳加上offset，转换为绝对时间，然后转换为ms
+        record_after_touch_times = (record_note.after_touch.index + record_note.offset) / 10.0  # 转换为ms
+        replay_after_touch_times = (replay_note.after_touch.index + replay_note.offset) / 10.0  # 转换为ms
+
+        # 生成曲线对比图
+        import plotly.graph_objects as go
+
+        # 创建单图布局：触后曲线对比
+        fig = go.Figure()
+
+        # 触后曲线 - 录制和播放在同一个图中
+        if len(record_note.after_touch) > 0:
+            fig.add_trace(
+                go.Scatter(
+                    x=record_after_touch_times,  # 使用加上offset的绝对时间
+                    y=record_note.after_touch.values,
+                    mode='lines',
+                    name='录制触后',
+                    line=dict(color='blue', width=2),
+                    showlegend=True
+                )
+            )
+
+        if len(replay_note.after_touch) > 0:
+            fig.add_trace(
+                go.Scatter(
+                    x=replay_after_touch_times,  # 使用加上offset的绝对时间
+                    y=replay_note.after_touch.values,
+                    mode='lines',
+                    name='播放触后',
+                    line=dict(color='red', width=2),
+                    showlegend=True
+                )
+            )
+
+        # 添加锤击时间点 - 使用hammers的第一个锤速数据
+        # 录制锤击点
+        if len(record_note.hammers) > 0 and len(record_note.hammers.values) > 0:
+            first_hammer_value = record_note.hammers.values[0]
+            hammer_time = (record_note.hammers.index[0] + record_note.offset) / 10.0  # 转换为ms
+
+            # 计算在触后曲线上的对应位置
+            if len(record_note.after_touch) > 0:
+                # 找到触后曲线中最接近锤击时间的时间点
+                time_diffs = abs(record_after_touch_times - hammer_time)
+                closest_idx = time_diffs.argmin()
+                after_touch_value = record_note.after_touch.iloc[closest_idx]
+
+                fig.add_trace(
+                    go.Scatter(
+                        x=[hammer_time],
+                        y=[after_touch_value],
+                        mode='markers',
+                        name='录制锤击时间',
+                        marker=dict(color='blue', size=10, symbol='diamond'),
+                        showlegend=True,
+                        hovertemplate='录制锤击时间<br>时间: %{x:.2f} ms<br>触后值: %{y}<br>锤速: ' + f'{first_hammer_value}<extra></extra>'
+                    )
+                )
+            else:
+                # 如果没有触后曲线数据，在y=0的位置显示锤击点
+                fig.add_trace(
+                    go.Scatter(
+                        x=[hammer_time],
+                        y=[0],
+                        mode='markers',
+                        name='录制锤击时间',
+                        marker=dict(color='blue', size=10, symbol='diamond'),
+                        showlegend=True,
+                        hovertemplate='录制锤击时间<br>时间: %{x:.2f} ms<br>触后值: N/A<br>锤速: ' + f'{first_hammer_value}<extra></extra>'
+                    )
+                )
+
+        # 播放锤击点
+        if len(replay_note.hammers) > 0 and len(replay_note.hammers.values) > 0:
+            first_hammer_value = replay_note.hammers.values[0]
+            hammer_time = (replay_note.hammers.index[0] + replay_note.offset) / 10.0  # 转换为ms
+
+            if len(replay_note.after_touch) > 0:
+                time_diffs = abs(replay_after_touch_times - hammer_time)
+                closest_idx = time_diffs.argmin()
+                after_touch_value = replay_note.after_touch.iloc[closest_idx]
+
+                fig.add_trace(
+                    go.Scatter(
+                        x=[hammer_time],
+                        y=[after_touch_value],
+                        mode='markers',
+                        name='播放锤击时间',
+                        marker=dict(color='red', size=10, symbol='diamond'),
+                        showlegend=True,
+                        hovertemplate='播放锤击时间<br>时间: %{x:.2f} ms<br>触后值: %{y}<br>锤速: ' + f'{first_hammer_value}<extra></extra>'
+                    )
+                )
+            else:
+                # 如果没有触后曲线数据，在y=0的位置显示锤击点
+                fig.add_trace(
+                    go.Scatter(
+                        x=[hammer_time],
+                        y=[0],
+                        mode='markers',
+                        name='播放锤击时间',
+                        marker=dict(color='red', size=10, symbol='diamond'),
+                        showlegend=True,
+                        hovertemplate='播放锤击时间<br>时间: %{x:.2f} ms<br>触后值: N/A<br>锤速: ' + f'{first_hammer_value}<extra></extra>'
+                    )
+                )
+
+        # 更新布局
+        fig.update_layout(
+            height=500,
+            title_text=f"按键 {key_id} 触后曲线对比 - {algorithm_name}",
+            showlegend=True,
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1
+            ),
+            hovermode='x unified'
+        )
+
+        # 更新坐标轴标签
+        fig.update_xaxes(title_text="时间 (ms)")
+        fig.update_yaxes(title_text="触后值")
+
+        # 添加网格线，便于对比
+        fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='lightgray')
+        fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='lightgray')
+
+        return [dcc.Graph(figure=fig)]
+
+    except Exception as e:
+        print(f"[ERROR] 生成单按键曲线对比图失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return [html.Div([html.P(f"生成曲线对比图失败: {str(e)}", className="text-danger text-center")])]
+
+
 def register_grade_detail_callbacks(app, session_manager: SessionManager):
     """注册评级统计详情回调函数"""
+
+    # 评级统计表格点击回调 - 显示曲线对比图（使用专用模态框）
+    @app.callback(
+        [Output('grade-detail-curves-modal', 'style'),
+         Output('grade-detail-curves-comparison-container', 'children'),
+         Output('current-clicked-point-info', 'data')],
+        [Input({'type': 'grade-detail-datatable', 'index': dash.ALL}, 'active_cell'),
+         Input('close-grade-detail-curves-modal', 'n_clicks')],
+        [State({'type': 'grade-detail-datatable', 'index': dash.ALL}, 'data'),
+         State('session-id', 'data'),
+         State('grade-detail-curves-modal', 'style')]
+    )
+    def handle_grade_detail_table_click(active_cells, close_modal_clicks,
+                                       table_data_list, session_id, current_style):
+        """处理评级统计表格点击，显示按键曲线对比图"""
+
+        # 检测触发源
+        ctx = dash.callback_context
+        if not ctx.triggered:
+            return current_style, [], no_update
+
+        trigger_id = ctx.triggered[0]['prop_id']
+
+        # 如果点击了关闭按钮，隐藏模态框
+        if trigger_id == 'close-grade-detail-curves-modal.n_clicks':
+            modal_style = {
+                'display': 'none',
+                'position': 'fixed',
+                'zIndex': '9999',
+                'left': '0',
+                'top': '0',
+                'width': '100%',
+                'height': '100%',
+                'backgroundColor': 'rgba(0,0,0,0.6)',
+                'backdropFilter': 'blur(5px)'
+            }
+            return modal_style, [], no_update
+
+
+        # 检查是否是表格点击
+        if 'grade-detail-datatable' in trigger_id and 'active_cell' in trigger_id:
+            # 在Dash中使用ALL时，参数是列表格式，每个元素对应一个表格
+            active_cell = None
+            table_data = None
+            table_index = None
+
+            # 提取被点击的表格ID
+            # trigger_id格式: '{"index":"pid_11-21-土耳其进行曲","type":"grade-detail-datatable"}.active_cell'
+            try:
+                id_part = trigger_id.split('.')[0]  # 获取ID部分
+                import json
+                table_props = json.loads(id_part)
+                table_index = table_props.get('index')
+
+                # active_cells是列表格式，包含所有表格的active_cell
+                # 我们需要找到对应的active_cell（通常只有一个表格会被点击）
+                if isinstance(active_cells, list):
+                    for cell in active_cells:
+                        if cell and isinstance(cell, dict) and 'row' in cell:
+                            active_cell = cell
+                            break
+
+                # table_data_list也是列表格式
+                if isinstance(table_data_list, list) and len(table_data_list) > 0:
+                    table_data = table_data_list[0]  # 取第一个表格的数据
+
+            except (json.JSONDecodeError, KeyError, ValueError) as e:
+                return current_style, [], no_update
+
+            if not active_cell or not table_data:
+                return current_style, [], no_update
+
+            # 获取点击的行数据
+            row_idx = active_cell.get('row')
+            if row_idx is None or row_idx >= len(table_data):
+                return current_style, [], no_update
+
+            row_data = table_data[row_idx]
+
+            # 从行数据中提取按键ID和全局索引
+            key_id = row_data.get('keyId')
+            global_index = row_data.get('global_index')
+            data_type = row_data.get('data_type')
+
+            if not key_id:
+                return current_style, [], no_update
+
+            # 转换按键ID
+            try:
+                key_id = int(key_id)
+            except (ValueError, TypeError):
+                return current_style, [], no_update
+
+            # 获取后端实例
+            backend = session_manager.get_backend(session_id)
+            if not backend:
+                return current_style, [], no_update
+
+            # 获取note_matcher
+            note_matcher = get_note_matcher_from_backend(backend, table_index)
+            if not note_matcher:
+                return current_style, [], no_update
+
+            # 根据点击的行找到对应的匹配对
+            matched_result = None
+            for result in note_matcher.match_results:
+                if result.is_success:
+                    if data_type == '录制' and result.record_index == global_index:
+                        matched_result = result
+                        break
+                    elif data_type == '播放' and result.replay_index == global_index:
+                        matched_result = result
+                        break
+
+            if not matched_result:
+                modal_style = {
+                    'display': 'block',
+                    'position': 'fixed',
+                    'zIndex': '9999',
+                    'left': '0',
+                    'top': '0',
+                    'width': '100%',
+                    'height': '100%',
+                    'backgroundColor': 'rgba(0,0,0,0.6)',
+                    'backdropFilter': 'blur(5px)'
+                }
+                return modal_style, [html.Div([
+                    html.P(f"未找到按键ID {key_id} 的匹配数据", className="text-muted text-center")
+                ])], no_update
+
+            # 生成曲线对比图
+            try:
+                comparison_content = generate_single_key_curves_comparison(
+                    backend, key_id, table_index, session_id, matched_result
+                )
+
+                modal_style = {
+                    'display': 'block',
+                    'position': 'fixed',
+                    'zIndex': '9999',
+                    'left': '0',
+                    'top': '0',
+                    'width': '100%',
+                    'height': '100%',
+                    'backgroundColor': 'rgba(0,0,0,0.6)',
+                    'backdropFilter': 'blur(5px)'
+                }
+
+                # 存储点击信息
+                clicked_info = {
+                    'key_id': key_id,
+                    'algorithm_name': table_index,
+                    'data_type': data_type,
+                    'global_index': global_index
+                }
+
+                return modal_style, comparison_content, clicked_info
+
+            except Exception as e:
+                modal_style = {
+                    'display': 'block',
+                    'position': 'fixed',
+                    'zIndex': '9999',
+                    'left': '0',
+                    'top': '0',
+                    'width': '100%',
+                    'height': '100%',
+                    'backgroundColor': 'rgba(0,0,0,0.6)',
+                    'backdropFilter': 'blur(5px)'
+                }
+                return modal_style, [html.Div([
+                    html.P(f"生成曲线对比图失败: {str(e)}", className="text-danger text-center")
+                ])], no_update
+
+        return current_style, [], no_update
+
 
     # 统一的回调处理所有评级按钮点击，避免重叠
     @app.callback(
@@ -517,6 +845,7 @@ def show_single_grade_detail(button_index, session_id, session_manager):
                 data=detail_data,
                 page_action='none',
                 fixed_rows={'headers': True},  # 固定表头
+                active_cell=None,  # 启用active_cell功能
                 style_table={
                     'maxHeight': '400px',
                     'overflowY': 'auto',
@@ -551,6 +880,12 @@ def show_single_grade_detail(button_index, session_id, session_manager):
                     {
                         'if': {'row_index': 'odd'},
                         'borderBottom': '1px solid #e0e0e0'
+                    },
+                    # 悬停样式 - 提供视觉反馈
+                    {
+                        'if': {'state': 'active'},
+                        'backgroundColor': 'rgba(0, 116, 217, 0.3)',
+                        'border': '1px solid rgb(0, 116, 217)'
                     }
                 ]
             )

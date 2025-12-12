@@ -91,6 +91,7 @@ def create_grade_statistics_rows(graded_stats, algorithm_name=None):
                 ], width='auto', className="px-2")
             )
 
+
         if grade_cols:
             rows.append(
                 dbc.Row(grade_cols, className="mb-3 justify-content-center")
@@ -673,6 +674,59 @@ def create_main_layout():
                         'backgroundColor': 'rgba(0,0,0,0.6)',
                         'backdropFilter': 'blur(5px)'
             }),
+
+            # 评级统计曲线对比模态框（悬浮窗）
+            html.Div([
+                html.Div([
+                    html.Div([
+                        html.Div([
+                            html.H4("评级统计曲线对比", style={'margin': '0', 'padding': '10px 20px', 'borderBottom': '1px solid #dee2e6'}),
+                            html.Button("×", id="close-grade-detail-curves-modal", className="close", style={
+                                'position': 'absolute',
+                                'right': '15px',
+                                'top': '15px',
+                                'fontSize': '28px',
+                                'fontWeight': 'bold',
+                                'background': 'none',
+                                'border': 'none',
+                                'cursor': 'pointer',
+                                'color': '#aaa'
+                            })
+                        ], style={'position': 'relative', 'borderBottom': '1px solid #dee2e6'}),
+                        html.Div([
+                            html.Div(id='grade-detail-curves-comparison-container', children=[])
+                        ], id='grade-detail-curves-modal-content', className="modal-body", style={
+                            'padding': '10px 20px 20px 20px',
+                            'maxHeight': '90vh',
+                            'overflowY': 'auto'
+                        })
+                    ], className="modal-content", style={
+                        'position': 'relative',
+                        'backgroundColor': '#fff',
+                        'margin': '5% auto',
+                        'padding': '0',
+                        'border': '1px solid #888',
+                        'width': '90%',
+                        'maxWidth': '1200px',
+                        'borderRadius': '8px',
+                        'boxShadow': '0 4px 6px rgba(0,0,0,0.1)'
+                    })
+                ], className="modal-dialog", style={
+                    'margin': '5% auto',
+                    'maxWidth': '1200px'
+                })
+            ], id="grade-detail-curves-modal", className="modal", style={
+                'display': 'none',
+                'position': 'fixed',
+                'zIndex': '9999',
+                'left': '0',
+                'top': '0',
+                'width': '100%',
+                'height': '100%',
+                'backgroundColor': 'rgba(0,0,0,0.6)',
+                'backdropFilter': 'blur(5px)'
+            }),
+
             # 按键曲线对比模态框（悬浮窗）
             html.Div([
                 html.Div([
