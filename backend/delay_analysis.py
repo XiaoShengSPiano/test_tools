@@ -560,9 +560,9 @@ class DelayAnalysis:
             if not self.analyzer or not self.analyzer.note_matcher:
                 logger.warning("⚠️ 分析器或匹配器不存在，无法进行按键-力度交互分析")
                 return self._create_empty_interaction_result("分析器不存在")
-            
+
             matched_pairs = self.analyzer.note_matcher.get_matched_pairs()
-            offset_data = self.analyzer.note_matcher.get_offset_alignment_data()
+            offset_data = self.analyzer.note_matcher.get_precision_offset_alignment_data()
             
             if not matched_pairs or not offset_data:
                 logger.warning("⚠️ 没有匹配数据，无法进行分析")
@@ -1104,9 +1104,14 @@ class DelayAnalysis:
         """
         try:
             from collections import defaultdict
-            
-            # 计算整体平均延时
-            mean_delay = np.mean(delays) if delays else 0
+
+            # 使用预计算的整体平均延时（避免重复计算）
+            if hasattr(self, 'analyzer') and self.analyzer and hasattr(self.analyzer, 'get_mean_error'):
+                mean_delay_0_1ms = self.analyzer.get_mean_error()
+                mean_delay = mean_delay_0_1ms / 10.0  # 转换为毫秒
+            else:
+                # 备用计算（如果预计算不可用）
+                mean_delay = np.mean(delays) if delays else 0
             logger.info(f"📊 整体平均延时: {mean_delay:.2f}ms")
             
             # 计算相对延时（延时 - 平均延时）

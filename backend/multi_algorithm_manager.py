@@ -205,6 +205,26 @@ class AlgorithmDataset:
                           f"多锤数={current_metrics.get('multi_hammers_count', 'N/A')}, "
                           f"已配对数={current_metrics.get('matched_pairs_count', 'N/A')}")
 
+                # 输出详细的丢锤按键信息
+                drop_hammers_count = current_metrics.get('drop_hammers_count', 0)
+                if drop_hammers_count > 0:
+                    logger.info(f"🔍 算法 {self.metadata.algorithm_name} 丢锤按键详情:")
+                    drop_hammers = getattr(self.analyzer, 'drop_hammers', [])
+                    for i, error_note in enumerate(drop_hammers):
+                        if len(error_note.infos) > 0:
+                            rec = error_note.infos[0]
+                            logger.info(f"  🪓 丢锤{i+1}: 按键ID={rec.keyId}, 索引={rec.index}")
+
+                # 输出详细的多锤按键信息
+                multi_hammers_count = current_metrics.get('multi_hammers_count', 0)
+                if multi_hammers_count > 0:
+                    logger.info(f"🔍 算法 {self.metadata.algorithm_name} 多锤按键详情:")
+                    multi_hammers = getattr(self.analyzer, 'multi_hammers', [])
+                    for i, error_note in enumerate(multi_hammers):
+                        if len(error_note.infos) > 0:
+                            play = error_note.infos[0]
+                            logger.info(f"  🔨 多锤{i+1}: 按键ID={play.keyId}, 索引={play.index}")
+
             # 保存当前哈希值和指标供下次比较
             self._last_algorithm_hash = current_hash
             self._last_overview_metrics = current_metrics
@@ -264,6 +284,38 @@ class AlgorithmDataset:
                 'drop_hammers_count': len(getattr(self.analyzer, 'drop_hammers', [])),
                 'silent_hammers_count': len(getattr(self.analyzer, 'silent_hammers', [])),
             }
+
+            # 记录丢锤详细信息
+            drop_hammers = getattr(self.analyzer, 'drop_hammers', [])
+            if drop_hammers:
+                drop_info = []
+                for i, error_note in enumerate(drop_hammers[:10]):  # 只记录前10个
+                    if len(error_note.infos) > 0:
+                        rec = error_note.infos[0]
+                        drop_info.append({
+                            'index': i+1,
+                            'key_id': rec.keyId,
+                            'note_index': rec.index,
+                            'key_on': rec.keyOn / 10.0,
+                            'key_off': rec.keyOff / 10.0
+                        })
+                hash_data['drop_hammers_detail'] = drop_info
+
+            # 记录多锤详细信息
+            multi_hammers = getattr(self.analyzer, 'multi_hammers', [])
+            if multi_hammers:
+                multi_info = []
+                for i, error_note in enumerate(multi_hammers[:10]):  # 只记录前10个
+                    if len(error_note.infos) > 0:
+                        play = error_note.infos[0]
+                        multi_info.append({
+                            'index': i+1,
+                            'key_id': play.keyId,
+                            'note_index': play.index,
+                            'key_on': play.keyOn / 10.0,
+                            'key_off': play.keyOff / 10.0
+                        })
+                hash_data['multi_hammers_detail'] = multi_info
 
             # 添加matched_pairs的详细信息
             if hasattr(self.analyzer, 'matched_pairs') and self.analyzer.matched_pairs:

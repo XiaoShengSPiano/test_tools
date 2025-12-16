@@ -38,16 +38,14 @@ class HistoryManager:
             self.db_path = None
             self._lock = threading.RLock()
             self._memory_storage = []
-            logger.info("⚠️ 数据库功能已禁用，使用内存存储")
 
         # 只在主进程中记录初始化日志（避免Flask debug模式下的重复日志）
         if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
-            logger.info("✅ HistoryManager初始化完成")
+            pass
 
     def init_database(self):
         """初始化数据库表结构 - 根据实际表结构"""
         if self.disable_database:
-            logger.info("⚠️ 数据库功能已禁用，跳过数据库初始化")
             return
 
         with self._lock:
@@ -75,7 +73,6 @@ class HistoryManager:
                         file_size INTEGER DEFAULT 0
                     )
                 ''')
-                logger.info("✅ 创建新的spmid_history表（包含file_content字段）")
             else:
                 # 表已存在，检查列结构是否完整
                 cursor.execute("PRAGMA table_info(spmid_history)")

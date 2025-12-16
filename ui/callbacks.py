@@ -3,6 +3,7 @@
 包含文件上传、历史记录表格交互等回调函数
 """
 import base64
+import json
 import time
 import traceback
 import uuid
@@ -34,8 +35,7 @@ from ui.layout_components import create_report_layout, empty_figure, create_mult
 from backend.session_manager import SessionManager
 from ui.ui_processor import UIProcessor
 from ui.multi_file_upload_handler import MultiFileUploadHandler
-from grade_detail_callbacks import register_grade_detail_callbacks
-from utils.pdf_generator import PDFReportGenerator
+from grade_detail_callbacks import register_all_callbacks
 from utils.logger import Logger
 # 后端类型导入
 from backend.piano_analysis_backend import PianoAnalysisBackend
@@ -234,12 +234,8 @@ def _detect_trigger_from_context(ctx: CallbackContext, current_state: StateDict,
     
     recent_trigger = ctx.triggered[0]['prop_id']
     
-    # 检查文件上传触发
-    if 'upload-spmid-data' in recent_trigger:
-        return _handle_upload_trigger(current_state, previous_state, backend, current_time)
-    
     # 检查历史记录选择触发
-    elif 'history-dropdown' in recent_trigger:
+    if 'history-dropdown' in recent_trigger:
         return _handle_history_trigger(current_state, previous_state, backend, current_time)
     
     return None
@@ -681,120 +677,6 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             logger.error(f"[ERROR] 更新历史记录下拉框失败: {e}")
             return []
 
-    @app.callback(
-        [Output('spmid-filename', 'children'),
-         Output('main-plot', 'figure', allow_duplicate=True),
-         Output('report-content', 'children', allow_duplicate=True),
-         Output('time-filter-slider', 'min', allow_duplicate=True),
-         Output('time-filter-slider', 'max', allow_duplicate=True),
-         Output('time-filter-slider', 'value', allow_duplicate=True),
-         Output('time-filter-slider', 'marks', allow_duplicate=True),
-         Output('time-filter-status', 'children', allow_duplicate=True)],
-        [Input('upload-spmid-data', 'contents'),
-         Input('upload-spmid-data', 'filename'),
-         Input('session-id', 'data')],
-        prevent_initial_call=True
-    )
-    def handle_spmid_upload_and_process(contents, filename, session_id):
-        """处理SPMID文件上传和完整的数据分析流程"""
-        # 获取后端实例
-        backend = session_manager.get_backend(session_id)
-        if not backend:
-            error_fig = _create_empty_figure_for_callback("会话无效，请刷新页面")
-            return "", error_fig, "", 0, 1000, [0, 1000], {}, "会话无效"
-
-        try:
-            # 1. 更新文件名显示
-            filename_display = ""
-            if filename:
-                filename_display = html.Div([
-                    html.I(className="fas fa-file-audio", style={'marginRight': '8px', 'color': '#28a745'}),
-                    html.Span(f"已选择: {filename}", style={'color': '#28a745', 'fontWeight': 'bold'})
-                ])
-
-            # 2. 如果没有文件内容，返回空状态
-            if not contents or not filename:
-                empty_fig = _create_empty_figure_for_callback("请上传SPMID文件")
-                return filename_display, empty_fig, "", 0, 1000, [0, 1000], {}, "等待文件上传"
-
-            # 3. 处理文件上传
-            is_repeat = getattr(backend, '_is_repeat_verification', False)
-            if is_repeat:
-                logger.info(f"[UPLOAD] 🔄 开始重复验证SPMID文件: {filename}")
-                filename_display = html.Div([
-                    html.I(className="fas fa-sync-alt", style={'marginRight': '8px', 'color': '#17a2b8'}),
-                    html.Span(f"重复验证: {filename}", style={'color': '#17a2b8', 'fontWeight': 'bold'}),
-                    html.Br(),
-                    html.Small("正在验证系统计算结果的一致性...", style={'color': '#6c757d'})
-                ])
-            else:
-                logger.info(f"[UPLOAD] 📁 开始处理SPMID文件: {filename}")
-
-            success, result_data, error_msg = backend.process_spmid_upload(contents, filename)
-
-            if not success:
-                error_fig = _create_empty_figure_for_callback(f"文件处理失败: {error_msg}")
-                error_status = f"上传失败: {error_msg}"
-                return filename_display, error_fig, "", 0, 1000, [0, 1000], {}, error_status
-
-            # 4. 生成主图表
-            try:
-                main_figure = backend.generate_waterfall_plot()
-                if not main_figure:
-                    main_figure = _create_empty_figure_for_callback("瀑布图生成失败")
-            except Exception as e:
-                logger.error(f"瀑布图生成失败: {e}")
-                main_figure = _create_empty_figure_for_callback(f"瀑布图生成失败: {str(e)}")
-
-            # 5. 生成报告内容
-            try:
-                report_content = backend.generate_report_content()
-            except Exception as e:
-                logger.error(f"报告生成失败: {e}")
-                report_content = html.Div([
-                    dbc.Alert(f"报告生成失败: {str(e)}", color="danger")
-                ])
-
-            # 6. 设置时间滑块
-            time_min, time_max = 0, 1000
-            time_marks = {}
-            time_status = "时间轴未初始化"
-
-            try:
-                # 获取数据的时间范围
-                if hasattr(backend, 'analyzer') and backend.analyzer:
-                    record_data = backend.analyzer.valid_record_data
-                    replay_data = backend.analyzer.valid_replay_data
-
-                    if record_data and replay_data:
-                        # 计算所有音符的时间范围
-                        all_times = []
-                        for note in record_data + replay_data:
-                            if hasattr(note, 'start_time'):
-                                all_times.extend([note.start_time, note.end_time])
-
-                        if all_times:
-                            time_min = min(all_times)
-                            time_max = max(all_times)
-                            time_marks = {
-                                time_min: f"{time_min:.0f}ms",
-                                time_max: f"{time_max:.0f}ms"
-                            }
-                            time_status = f"时间范围: {time_min:.0f}ms - {time_max:.0f}ms"
-
-            except Exception as e:
-                logger.warning(f"时间滑块初始化失败: {e}")
-
-            time_value = [time_min, time_max]
-
-            logger.info(f"[UPLOAD] SPMID文件处理完成: {filename}")
-            return (filename_display, main_figure, report_content,
-                   time_min, time_max, time_value, time_marks, time_status)
-
-        except Exception as e:
-            logger.error(f"[ERROR] SPMID文件处理异常: {e}")
-            error_fig = _create_empty_figure_for_callback(f"处理异常: {str(e)}")
-            return "", error_fig, "", 0, 1000, [0, 1000], {}, f"处理异常: {str(e)}"
 
     def _validate_zscore_click_data(zscore_scatter_clickData: Dict[str, Any], backend: PianoAnalysisBackend) -> Optional[Dict[str, Any]]:
         """
@@ -1045,9 +927,9 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         }
         return modal_style, [], no_update
 
-    def _handle_zscore_plot_click(zscore_scatter_clickData: Optional[Dict[str, Any]], session_id: str, current_style: Dict[str, Any]) -> Tuple[Dict[str, Any], List[Any], Union[Dict[str, Any], NoUpdate]]:
+    def _handle_zscore_plot_click(zscore_scatter_clickData: Optional[Dict[str, Any]], session_id: str, current_style: Dict[str, Any], source_plot_id: str = 'key-delay-zscore-scatter-plot') -> Tuple[Dict[str, Any], List[Any], Union[Dict[str, Any], NoUpdate]]:
         """处理Z-Score散点图点击的主要逻辑"""
-        logger.info(f"🔍 Z-Score标准化散点图点击回调被触发 - zscore_scatter_clickData: {zscore_scatter_clickData is not None}")
+        logger.info(f"🔍 散点图点击回调被触发 - source_plot_id: {source_plot_id}, clickData: {zscore_scatter_clickData is not None}")
 
         backend = session_manager.get_backend(session_id)
         if not backend:
@@ -1073,7 +955,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             'record_idx': click_data['record_index'],
             'replay_idx': click_data['replay_index'],
             'key_id': click_data['key_id'],
-            'source_plot_id': 'key-delay-zscore-scatter-plot',  # 记录来源图表ID
+            'source_plot_id': source_plot_id,  # 记录来源图表ID
             'center_time_ms': center_time_ms  # 预先计算的时间信息
         }
 
@@ -1121,178 +1003,22 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
 
         # 如果是Z-Score散点图点击
         if trigger_id == 'key-delay-zscore-scatter-plot' and zscore_scatter_clickData:
-            result = _handle_zscore_plot_click(zscore_scatter_clickData, session_id, current_style)
+            result = _handle_zscore_plot_click(zscore_scatter_clickData, session_id, current_style, 'key-delay-zscore-scatter-plot')
             # 保持 clickData 不变 (no_update) 或返回当前值
             return result[0], result[1], result[2], no_update, None
 
         # 如果是按键与相对延时散点图点击
         if trigger_id == 'key-delay-scatter-plot' and raw_scatter_clickData:
             # 复用 Z-Score 图表的点击处理逻辑，因为 customdata 格式应该是一样的
-            result = _handle_zscore_plot_click(raw_scatter_clickData, session_id, current_style)
+            result = _handle_zscore_plot_click(raw_scatter_clickData, session_id, current_style, 'key-delay-scatter-plot')
             return result[0], result[1], result[2], None, no_update
 
         # 其他情况，返回默认值
         return current_style, [], no_update, no_update, no_update
 
 
-    # PDF导出回调，添加加载动画和异常处理
-    # PDF导出 - 第一步：显示加载动画
-    @app.callback(
-        Output('pdf-status', 'children', allow_duplicate=True),
-        [Input('btn-export-pdf', 'n_clicks')],
-        [State('session-id', 'data')],
-        prevent_initial_call=True
-    )
-    def show_pdf_loading(n_clicks, session_id):
-        """第一步：立即显示PDF生成加载动画
-        说明：旧版要求存在 all_error_notes 才允许导出，导致"无异常时无法导出概览"。
-        现在放宽条件：只要存在有效数据（任一轨或有匹配对）即可生成PDF（概览页+可选异常页）。
-        """
-        if not n_clicks:
-            return no_update
 
-        # 检查会话和后端实例
-        backend = session_manager.get_backend(session_id)
-        if not backend:
-            return dbc.Alert("[ERROR] 会话已过期，请刷新页面", color="warning", duration=3000)
-        # 放宽校验：存在任一数据或匹配结果即可导出
-        has_data = False
-        try:
-            dm = getattr(backend, 'data_manager', None)
-            record = dm.get_record_data() if dm else None
-            replay = dm.get_replay_data() if dm else None
-            has_pairs = bool(getattr(backend.analyzer, 'matched_pairs', [])) if hasattr(backend, 'analyzer') else False
-            has_data = bool(record) or bool(replay) or has_pairs
-        except Exception:
-            has_data = False
-        if not has_data:
-            return dbc.Alert("[ERROR] 没有可导出的数据，请先上传SPMID文件并完成分析", color="warning", duration=4000)
 
-        # 显示加载动画
-        return dcc.Loading(
-            children=[
-                dbc.Alert([
-                    html.I(className="fas fa-file-pdf", style={'marginRight': '8px'}),
-                    f"正在生成PDF报告，包含 {len(backend.all_error_notes)} 个异常的完整分析，请稍候..."
-                ], color="info", style={'margin': '0'})
-            ],
-            type="dot",
-            color="#dc3545",
-            style={'textAlign': 'center'}
-        )
-
-    # PDF导出 - 第二步：实际生成PDF
-    @app.callback(
-        Output('download-pdf', 'data'),
-        [Input('pdf-status', 'children')],
-        [State('session-id', 'data'),
-         State('btn-export-pdf', 'n_clicks')],
-        prevent_initial_call=True
-    )
-    def generate_pdf_after_loading(pdf_status, session_id, n_clicks):
-        """第二步：在显示加载动画后实际生成PDF
-        说明：不再依赖 all_error_notes 存在与否；若无异常，仅输出概览页。
-        """
-        # 只有当状态显示为加载中时才执行
-        if not pdf_status or not n_clicks:
-            return no_update
-
-        # 检查是否是加载状态
-        try:
-            if isinstance(pdf_status, dict) and 'props' in pdf_status:
-                # 这是一个Loading组件，表示正在加载
-                pass
-            else:
-                # 不是加载状态，不执行
-                return no_update
-        except:
-            return no_update
-
-        # 检查会话和后端实例
-        backend = session_manager.get_backend(session_id)
-        if not backend:
-            return no_update
-
-        backend = session_manager.get_backend(session_id)
-        if not backend:
-            return no_update
-        # 只要有有效数据即可生成（概览为主，异常页可为空）
-        try:
-            dm = getattr(backend, 'data_manager', None)
-            record = dm.get_record_data() if dm else None
-            replay = dm.get_replay_data() if dm else None
-            has_pairs = bool(getattr(backend.analyzer, 'matched_pairs', [])) if hasattr(backend, 'analyzer') else False
-            has_data = bool(record) or bool(replay) or has_pairs
-        except Exception:
-            has_data = False
-        if not has_data:
-            return no_update
-
-        try:
-            # 添加延迟确保加载动画显示
-            time.sleep(0.3)
-
-            # 生成PDF报告
-            source_info = backend.get_data_source_info() 
-            current_filename = source_info.get('filename') or "未知文件"
-            pdf_generator = PDFReportGenerator(backend)
-            pdf_data = pdf_generator.generate_pdf_report(current_filename)
-
-            if not pdf_data:
-                return no_update
-
-            # 生成安全的文件名
-            import re
-            safe_filename = re.sub(r'[<>:"/\\|?*]', '_', current_filename or "未知文件")
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            filename = f"SPMID_完整分析报告_{safe_filename}_{timestamp}.pdf"
-
-            # 确保PDF数据是base64编码的字符串
-            if isinstance(pdf_data, bytes):
-                pdf_data_b64 = base64.b64encode(pdf_data).decode('utf-8')
-            else:
-                pdf_data_b64 = pdf_data
-
-            # 构建下载数据
-            download_data = {
-                'content': pdf_data_b64,
-                'filename': filename,
-                'type': 'application/pdf',
-                'base64': True
-            }
-
-            return download_data
-
-        except Exception as e:
-            logger.error(f"PDF生成失败: {e}")
-            logger.error(traceback.format_exc())
-            return no_update
-
-    # PDF导出 - 第三步：显示完成状态
-    @app.callback(
-        [Output('pdf-status', 'children', allow_duplicate=True)],
-        [Input('download-pdf', 'data')],
-        [State('session-id', 'data')],
-        prevent_initial_call=True
-    )
-    def show_pdf_completion(download_data, session_id):
-        """第三步：显示PDF生成完成状态"""
-        if not download_data:
-            return [no_update]
-
-        # 检查会话
-        backend = session_manager.get_backend(session_id)
-        if not backend:
-            return [no_update]
-
-        # 显示成功状态
-        success_alert = dbc.Alert([
-            html.I(className="fas fa-check-circle", style={'marginRight': '8px'}),
-            # 成功提示说明：根据实际异常数量提示；若为0则提示生成概览
-            f"[OK] PDF报告生成成功！异常条目: {len(getattr(backend, 'all_error_notes', []) or [])}，已开始下载（如无异常则仅包含概览）"
-        ], color="success", duration=5000)
-
-        return [success_alert]
 
     # TODO
     # 时间轴筛选回调函数
@@ -3638,9 +3364,10 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             logger.error(traceback.format_exc())
         return current_style, [], no_update
 
-    # 延时时间序列图回调 - 报告内容加载时自动生成
+    # 延时时间序列图回调 - 报告内容加载时自动生成（分离为两个图表）
     @app.callback(
-        Output('delay-time-series-plot', 'figure'),
+        [Output('raw-delay-time-series-plot', 'figure'),
+         Output('relative-delay-time-series-plot', 'figure')],
         [Input('report-content', 'children')],
         [State('session-id', 'data')],
         prevent_initial_call=True
@@ -3649,50 +3376,61 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         """处理延时时间序列图自动生成 - 当报告内容更新时触发"""
         backend = session_manager.get_backend(session_id)
         if not backend:
-            return no_update
-        
+            return no_update, no_update
+
         try:
             # 检查是否在多算法模式
             # 检查是否有激活的算法
             active_algorithms = backend.get_active_algorithms()
             if not active_algorithms:
                 logger.warning("[WARNING] 没有激活的算法，无法生成延时时间序列图")
-                return backend.plot_generator._create_empty_plot("没有激活的算法")
-            
-            fig = backend.generate_delay_time_series_plot()
-            logger.info("[OK] 延时时间序列图生成成功")
-            return fig
+                empty_plot = backend.plot_generator._create_empty_plot("没有激活的算法")
+                return empty_plot, empty_plot
+
+            result = backend.generate_delay_time_series_plot()
+
+            # 检查返回的是否是字典（两个图表）还是单个图表
+            if isinstance(result, dict) and 'raw_delay_plot' in result and 'relative_delay_plot' in result:
+                logger.info("[OK] 延时时间序列图生成成功（分离模式）")
+                return result['raw_delay_plot'], result['relative_delay_plot']
+            else:
+                # 向后兼容：如果是单个图表，则两个输出都返回同一个图表
+                logger.info("[OK] 延时时间序列图生成成功（兼容模式）")
+                return result, result
+
         except Exception as e:
             logger.error(f"[ERROR] 生成延时时间序列图失败: {e}")
-            
             logger.error(traceback.format_exc())
-            return backend.plot_generator._create_empty_plot(f"生成时间序列图失败: {str(e)}")
+            empty_plot = backend.plot_generator._create_empty_plot(f"生成时间序列图失败: {str(e)}")
+            return empty_plot, empty_plot
     
-    # 延时时间序列图点击回调 - 显示音符分析曲线
+    # 延时时间序列图点击回调 - 显示音符分析曲线（支持两个图表）
     @app.callback(
         [Output('key-curves-modal', 'style', allow_duplicate=True),
          Output('key-curves-comparison-container', 'children', allow_duplicate=True),
          Output('current-clicked-point-info', 'data', allow_duplicate=True),
-         Output('delay-time-series-plot', 'clickData', allow_duplicate=True)],
-        [Input('delay-time-series-plot', 'clickData'),
+         Output('raw-delay-time-series-plot', 'clickData', allow_duplicate=True),
+         Output('relative-delay-time-series-plot', 'clickData', allow_duplicate=True)],
+        [Input('raw-delay-time-series-plot', 'clickData'),
+         Input('relative-delay-time-series-plot', 'clickData'),
          Input('close-key-curves-modal', 'n_clicks'),
          Input('close-key-curves-modal-btn', 'n_clicks')],
         [State('session-id', 'data'),
          State('key-curves-modal', 'style')],
         prevent_initial_call=True
     )
-    def handle_delay_time_series_click(click_data, close_modal_clicks, close_btn_clicks, session_id, current_style):
+    def handle_delay_time_series_click(raw_click_data, relative_click_data, close_modal_clicks, close_btn_clicks, session_id, current_style):
         """处理延时时间序列图点击，显示音符分析曲线（悬浮窗）并支持跳转到瀑布图"""
         logger.info("[START] handle_delay_time_series_click 回调被触发")
-        
+
         # 检测触发源
         ctx = callback_context
         if not ctx.triggered:
-            return current_style, [], no_update, no_update
-        
+            return current_style, [], no_update, no_update, no_update
+
         trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
         logger.info(f"🔍 触发ID: {trigger_id}")
-        
+
         # 如果点击了关闭按钮，隐藏模态框
         if trigger_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
             modal_style = {
@@ -3706,26 +3444,36 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 'backgroundColor': 'rgba(0,0,0,0.6)',
                 'backdropFilter': 'blur(5px)'
             }
-            return modal_style, [], no_update, None
+            return modal_style, [], no_update, no_update, no_update
+
+        # 确定使用哪个点击数据
+        if trigger_id == 'raw-delay-time-series-plot':
+            click_data = raw_click_data
+            source_plot_id = 'raw-delay-time-series-plot'
+        elif trigger_id == 'relative-delay-time-series-plot':
+            click_data = relative_click_data
+            source_plot_id = 'relative-delay-time-series-plot'
+        else:
+            return current_style, [], no_update, no_update, no_update
         
         # 如果是时间序列图点击
-        if trigger_id == 'delay-time-series-plot' and click_data:
-            logger.info("[TARGET] 检测到延时时间序列图点击")
+        if trigger_id in ['raw-delay-time-series-plot', 'relative-delay-time-series-plot'] and click_data:
+            logger.info(f"[TARGET] 检测到{trigger_id}点击")
             
             backend = session_manager.get_backend(session_id)
             if not backend:
                 logger.warning("[WARNING] backend为空")
-                return current_style, [], no_update, no_update
-            
+                return current_style, [], no_update, no_update, no_update
+
             try:
                 if 'points' not in click_data or len(click_data['points']) == 0:
                     logger.warning("[WARNING] clickData中没有points")
-                    return current_style, [], no_update, no_update
-                
+                    return current_style, [], no_update, no_update, no_update
+
                 point = click_data['points'][0]
                 if not point.get('customdata'):
                     logger.warning("[WARNING] point中没有customdata")
-                    return current_style, [], no_update, no_update
+                    return current_style, [], no_update, no_update, no_update
                 
                 # 提取customdata: [key_id, record_index, replay_index] 或 [key_id, record_index, replay_index, algorithm_name, ...]
                 # 多算法模式可能包含更多信息: [key_id, record_index, replay_index, algorithm_name, delay, mean_delay, replay_time, record_time]
@@ -3734,7 +3482,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 
                 if not isinstance(customdata, list) or len(customdata) < 3:
                     logger.warning(f"[WARNING] customdata格式错误: {customdata}")
-                    return current_style, [], no_update, no_update
+                    return current_style, [], no_update, no_update, no_update
                 
                 key_id = customdata[0]
                 record_index = customdata[1]
@@ -3923,15 +3671,15 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 rendered_row = dcc.Graph(figure=detail_figure_combined, style={'height': '600px'})
                 
                 logger.info("[OK] 延时时间序列图点击处理成功")
-                return modal_style, [rendered_row], point_info, no_update
+                return modal_style, [rendered_row], point_info, no_update, no_update
                 
             except Exception as e:
                 logger.error(f"[ERROR] 处理延时时间序列图点击失败: {e}")
                 
                 logger.error(traceback.format_exc())
-                return current_style, [], no_update, no_update
-        
-        return current_style, [], no_update, no_update
+                return current_style, [], no_update, no_update, no_update
+
+        return current_style, [], no_update, no_update, no_update
     
     # 处理最大/最小延迟字段点击，显示对应按键的曲线对比图
     @app.callback(
@@ -6396,14 +6144,14 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 
                 print(f"[TARGET] 匹配结果: has_matched_pair={has_matched_pair}")
                 
-                # 步骤2：根据判断结果生成曲线
+                # 步骤2：根据匹配结果生成曲线
                 import spmid
                 if has_matched_pair:
                     # 获取当前算法的display_name，用于判断是否是同种算法的不同曲子
                     current_display_name = None
                     if algorithm and algorithm.metadata:
                         current_display_name = algorithm.metadata.display_name
-                    
+
                     # 在多算法模式下，查找所有算法中匹配到同一个录制音符的播放音符
                     # 但是，对于同种算法的不同曲子（相同display_name），不添加其他算法的曲线
                     other_algorithm_notes = []  # [(algorithm_name, play_note), ...]
@@ -6412,15 +6160,15 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                         for alg in active_algorithms:
                             if alg.metadata.algorithm_name == algorithm_name:
                                 continue  # 跳过当前算法（已经绘制）
-                            
+
                             # 如果是同种算法的不同曲子（相同display_name），跳过
                             if current_display_name and alg.metadata.display_name == current_display_name:
                                 logger.info(f"[SKIP] 跳过同种算法的不同曲子: {alg.metadata.algorithm_name} (display_name={alg.metadata.display_name})")
                                 continue
-                            
+
                             if not alg.analyzer or not hasattr(alg.analyzer, 'matched_pairs'):
                                 continue
-                            
+
                             alg_matched_pairs = alg.analyzer.matched_pairs
                             # 查找匹配到同一个record_index的播放音符
                             for r_idx, p_idx, r_note, p_note in alg_matched_pairs:
@@ -6428,7 +6176,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                                     other_algorithm_notes.append((alg.metadata.algorithm_name, p_note))
                                     logger.info(f"[OK] 找到算法 '{alg.metadata.algorithm_name}' 的匹配播放音符")
                                     break
-                    
+
                     # 有匹配对：绘制录制+播放对比曲线
                     # 对于同种算法的不同曲子，other_algorithm_notes为空，只显示录制和播放曲线
 
@@ -6457,8 +6205,8 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                                 return current_style, []
 
                     detail_figure_combined = spmid.plot_note_comparison_plotly(
-                        record_note, 
-                        replay_note, 
+                        record_note,
+                        replay_note,
                         algorithm_name=algorithm_name,
                         other_algorithm_notes=other_algorithm_notes,  # 对于同种算法的不同曲子，这是空列表
                         mean_delays=mean_delays
@@ -6472,7 +6220,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                     elif data_type == 'play' and index >= 0 and index < len(valid_replay_data):
                         record_note = None
                         replay_note = valid_replay_data[index]
-                    
+
                     # 计算平均延时
                     mean_delays = {}
                     if not algorithm or not algorithm.analyzer:
@@ -6594,7 +6342,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 'backgroundColor': 'rgba(0,0,0,0.6)',
                 'backdropFilter': 'blur(5px)'
             }
-            return modal_style, [], no_update, no_update, None
+            return modal_style, [], no_update, no_update, no_update
         
         # 如果是散点图点击
         if trigger_id == 'key-force-interaction-plot':
@@ -6943,9 +6691,19 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             record_idx = point_info.get('record_idx')
             replay_idx = point_info.get('replay_idx')
             key_id = point_info.get('key_id')
+            source_plot_id = point_info.get('source_plot_id', '')
             
-            if record_idx is None or replay_idx is None:
+            # 对于丢锤和多锤问题，可能只有record_idx或只有replay_idx
+            # 检查是否来自错误表格（丢锤/多锤）
+            is_error_table = source_plot_id and 'error-table' in source_plot_id
+            
+            if not is_error_table and (record_idx is None or replay_idx is None):
+                # 非错误表格需要完整的record_idx和replay_idx
                 logger.warning(f"[WARNING] 数据点信息不完整: {point_info}")
+                return no_update, no_update, no_update, no_update
+            elif is_error_table and record_idx is None and replay_idx is None:
+                # 错误表格至少需要一个索引
+                logger.warning(f"[WARNING] 错误表格数据点信息不完整: {point_info}")
                 return no_update, no_update, no_update, no_update
             
             logger.info(f"[PROCESS] 跳转到瀑布图: 算法={algorithm_name}, record_idx={record_idx}, replay_idx={replay_idx}, 按键={key_id}")
@@ -6960,8 +6718,11 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             # 优先使用 point_info 中预先计算的时间信息
             center_time_ms = point_info.get('center_time_ms')
             
+            # 对于错误表格（丢锤/多锤），如果已经有center_time_ms，直接使用
+            if is_error_table and center_time_ms is not None:
+                logger.info(f"[OK] 使用错误表格预先计算的时间信息: center_time_ms={center_time_ms:.1f}ms")
             # 如果没有预先计算的时间信息，则重新计算
-            if center_time_ms is None:
+            elif center_time_ms is None:
                 try:
                     logger.info(f"🔍 开始计算跳转点时间: algorithm_name={algorithm_name}, record_idx={record_idx}, replay_idx={replay_idx}, key_id={key_id}")
                     
@@ -6982,8 +6743,30 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                                         break
                                 if center_time_ms is None:
                                     logger.warning(f"[WARNING] 多算法模式: 未找到匹配的 matched_pairs (record_idx={record_idx}, replay_idx={replay_idx})")
-                                    # 备用方案：从 offset_data 获取时间信息
-                                    if algorithm and algorithm.analyzer and algorithm.analyzer.note_matcher:
+                                    # 备用方案1：对于错误表格，直接从initial_valid_data获取时间信息
+                                    if is_error_table:
+                                        if record_idx is not None:
+                                            # 丢锤：从录制数据获取时间
+                                            initial_data = getattr(algorithm.analyzer, 'initial_valid_record_data', [])
+                                            if record_idx < len(initial_data):
+                                                note = initial_data[record_idx]
+                                                if hasattr(note, 'after_touch') and not note.after_touch.empty:
+                                                    center_time_ms = (note.after_touch.index[0] + note.offset) / 10.0
+                                                elif hasattr(note, 'offset'):
+                                                    center_time_ms = note.offset / 10.0
+                                                logger.info(f"[OK] 多算法模式(丢锤): 从录制数据获取时间，center_time_ms={center_time_ms:.1f}ms")
+                                        elif replay_idx is not None:
+                                            # 多锤：从播放数据获取时间
+                                            initial_data = getattr(algorithm.analyzer, 'initial_valid_replay_data', [])
+                                            if replay_idx < len(initial_data):
+                                                note = initial_data[replay_idx]
+                                                if hasattr(note, 'after_touch') and not note.after_touch.empty:
+                                                    center_time_ms = (note.after_touch.index[0] + note.offset) / 10.0
+                                                elif hasattr(note, 'offset'):
+                                                    center_time_ms = note.offset / 10.0
+                                                logger.info(f"[OK] 多算法模式(多锤): 从播放数据获取时间，center_time_ms={center_time_ms:.1f}ms")
+                                    # 备用方案2：从 offset_data 获取时间信息
+                                    if center_time_ms is None and algorithm and algorithm.analyzer and algorithm.analyzer.note_matcher:
                                         offset_data = algorithm.analyzer.note_matcher.get_offset_alignment_data()
                                         if offset_data:
                                             for item in offset_data:
@@ -7009,8 +6792,34 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                                     break
                             if center_time_ms is None:
                                 logger.warning(f"[WARNING] 单算法模式: 未找到匹配的 matched_pairs (record_idx={record_idx}, replay_idx={replay_idx})")
-                                # 备用方案：从 offset_data 获取时间信息
-                                if backend.analyzer and backend.analyzer.note_matcher:
+                                # 备用方案1：对于错误表格，直接从initial_valid_data获取时间信息
+                                if is_error_table:
+                                    if record_idx is not None:
+                                        # 丢锤：从录制数据获取时间
+                                        initial_data = getattr(backend.analyzer, 'initial_valid_record_data', [])
+                                        if record_idx < len(initial_data):
+                                            note = initial_data[record_idx]
+                                            if hasattr(note, 'after_touch') and not note.after_touch.empty:
+                                                center_time_ms = (note.after_touch.index[0] + note.offset) / 10.0
+                                            elif hasattr(note, 'hammers') and not note.hammers.empty:
+                                                center_time_ms = (note.hammers.index[0] + note.offset) / 10.0
+                                            elif hasattr(note, 'offset'):
+                                                center_time_ms = note.offset / 10.0
+                                            logger.info(f"[OK] 单算法模式(丢锤): 从录制数据获取时间，center_time_ms={center_time_ms:.1f}ms")
+                                    elif replay_idx is not None:
+                                        # 多锤：从播放数据获取时间
+                                        initial_data = getattr(backend.analyzer, 'initial_valid_replay_data', [])
+                                        if replay_idx < len(initial_data):
+                                            note = initial_data[replay_idx]
+                                            if hasattr(note, 'after_touch') and not note.after_touch.empty:
+                                                center_time_ms = (note.after_touch.index[0] + note.offset) / 10.0
+                                            elif hasattr(note, 'hammers') and not note.hammers.empty:
+                                                center_time_ms = (note.hammers.index[0] + note.offset) / 10.0
+                                            elif hasattr(note, 'offset'):
+                                                center_time_ms = note.offset / 10.0
+                                            logger.info(f"[OK] 单算法模式(多锤): 从播放数据获取时间，center_time_ms={center_time_ms:.1f}ms")
+                                # 备用方案2：从 offset_data 获取时间信息
+                                if center_time_ms is None and backend.analyzer and backend.analyzer.note_matcher:
                                     offset_data = backend.analyzer.note_matcher.get_offset_alignment_data()
                                     if offset_data:
                                         for item in offset_data:
@@ -7028,13 +6837,35 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             else:
                 logger.info(f"[OK] 使用预先计算的时间信息: center_time_ms={center_time_ms:.1f}ms")
             
-            logger.info(f"🔍 最终结果: center_time_ms={center_time_ms}, key_id={key_id}")
+            logger.info(f"🔍 最终结果: center_time_ms={center_time_ms}, key_id={key_id}, source_plot_id={source_plot_id}")
             
             if center_time_ms is not None and key_id is not None:
                 # 在瀑布图中添加高亮标记（使用annotation和marker）
                 
                 # 计算标记的y位置（使用实际的按键ID，如果是多算法模式需要考虑偏移）
-                marker_y = float(key_id)
+                # 对于丢锤（record类型），y坐标是 key_id + y_offset
+                # 对于多锤（replay类型），y坐标是 key_id + y_offset + 0.2
+                try:
+                    marker_y = float(key_id)
+                    logger.info(f"🔍 初始marker_y={marker_y} (key_id={key_id})")
+                except (ValueError, TypeError):
+                    logger.warning(f"[WARNING] 无法转换key_id为float: {key_id}")
+                    marker_y = 0.0
+                
+                # 检查是否是错误表格（丢锤/多锤）
+                is_error_table = source_plot_id and 'error-table' in str(source_plot_id)
+                logger.info(f"🔍 is_error_table={is_error_table}, source_plot_id={source_plot_id}")
+                
+                if is_error_table:
+                    # 错误表格：根据表格类型决定是否添加0.2偏移
+                    if source_plot_id == 'error-table-multi' or (isinstance(source_plot_id, str) and 'error-table-multi' in source_plot_id):
+                        # 多锤：replay类型，需要添加0.2偏移
+                        marker_y += 0.2
+                        logger.info(f"🔍 多锤：添加0.2偏移，marker_y={marker_y}")
+                    else:
+                        # 丢锤：record类型，不需要添加0.2偏移
+                        logger.info(f"🔍 丢锤：不添加0.2偏移，marker_y={marker_y}")
+                
                 if algorithm_name and backend.multi_algorithm_mode and backend.multi_algorithm_manager:
                     # 多算法模式：需要找到该算法对应的y偏移
                     active_algorithms = backend.multi_algorithm_manager.get_active_algorithms()
@@ -7044,7 +6875,12 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                         if alg.metadata.algorithm_name == algorithm_name:
                             algorithm_y_offset = idx * algorithm_y_range
                             break
-                    marker_y = float(key_id) + algorithm_y_offset
+                    marker_y = marker_y + algorithm_y_offset
+                    logger.info(f"🔍 多算法模式：添加algorithm_y_offset={algorithm_y_offset}，最终marker_y={marker_y}")
+                else:
+                    logger.info(f"🔍 单算法模式或无算法名称，marker_y={marker_y}")
+                
+                logger.info(f"🔍 最终标记位置: x={center_time_ms:.2f}ms, y={marker_y:.2f}, key_id={key_id}")
                 
                 # 添加垂直参考线标记跳转的数据点（贯穿整个y轴）
                 waterfall_fig.add_vline(
@@ -7116,7 +6952,8 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
     # 返回报告界面按钮回调
     @app.callback(
         [Output('main-tabs', 'value', allow_duplicate=True),
-         Output('scroll-to-plot-trigger', 'data', allow_duplicate=True)],
+         Output('scroll-to-plot-trigger', 'data', allow_duplicate=True),
+         Output('grade-detail-section-scroll-trigger', 'data', allow_duplicate=True)],
         [Input('btn-return-to-report', 'n_clicks')],
         [State('jump-source-plot-id', 'data')],
         prevent_initial_call=True
@@ -7138,9 +6975,9 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                             'plot_type': 'relative-delay-distribution',
                             'subplot_index': int(subplot_idx)  # 确保是整数
                         }
-                        return 'report-tab', scroll_data
+                        return 'report-tab', scroll_data, no_update
                 # 其他情况，返回原始数据（但需要确保是JSON可序列化的）
-                return 'report-tab', source_plot_id
+                return 'report-tab', source_plot_id, no_update
             elif isinstance(source_plot_id, str) and source_plot_id == 'relative-delay-distribution-plot':
                 # 需要从point_info中获取子图索引
                 # 但由于这里没有point_info，我们需要通过其他方式获取
@@ -7149,15 +6986,30 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                     'plot_type': 'relative-delay-distribution',
                     'subplot_index': None  # 客户端会尝试找到第一个可见的子图
                 }
-                return 'report-tab', scroll_data
+                return 'report-tab', scroll_data, no_update
+            elif source_plot_id == 'grade-detail-curves-modal':
+                # 从评级统计模态框跳转回来，滚动到评级统计区域
+                section_scroll_data = {'scroll_to': 'grade_detail_section'}
+                logger.info("[PROCESS] 从评级统计跳转回来，触发区域滚动")
+                return 'report-tab', no_update, section_scroll_data
+            elif source_plot_id in ['error-table-drop', 'error-table-multi']:
+                # 从错误表格模态框跳转回来，滚动到对应的错误表格区域
+                error_table_scroll_data = {'scroll_to': 'error_table_section', 'table_type': source_plot_id.split('-')[-1]}
+                logger.info(f"[PROCESS] 从{source_plot_id}跳转回来，触发错误表格区域滚动")
+                return 'report-tab', no_update, error_table_scroll_data
+            elif source_plot_id in ['raw-delay-time-series-plot', 'relative-delay-time-series-plot']:
+                # 从延时时间序列图跳转回来，滚动到对应的时间序列图区域
+                time_series_scroll_data = {'scroll_to': 'delay_time_series_section', 'plot_type': source_plot_id}
+                logger.info(f"[PROCESS] 从{source_plot_id}跳转回来，触发时间序列图区域滚动")
+                return 'report-tab', no_update, time_series_scroll_data
             else:
                 # 普通图表，直接返回ID（字符串）
                 if source_plot_id:
-                    return 'report-tab', str(source_plot_id)
+                    return 'report-tab', str(source_plot_id), no_update
                 else:
-                    return 'report-tab', None
-        
-            return no_update, no_update
+                    return 'report-tab', None, no_update
+
+            return no_update, no_update, no_update
     
     # 客户端回调：滚动到指定图表
     app.clientside_callback(
@@ -7309,7 +7161,248 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         Input('relative-delay-distribution-scroll-trigger', 'data'),
         prevent_initial_call=True
     )
-    
+
+    # 客户端回调：评级统计返回时滚动到对应行
+    app.clientside_callback(
+        """
+        function(scroll_data) {
+            if (!scroll_data || !scroll_data.table_index || scroll_data.row_index === undefined) {
+                return window.dash_clientside.no_update;
+            }
+
+            const tableIndex = scroll_data.table_index;
+            const rowIndex = scroll_data.row_index;
+
+            // 查找对应的表格
+            const tableSelector = `[data-dash-component-id*="grade-detail-datatable"][data-dash-component-id*="${tableIndex}"]`;
+            const tableElement = document.querySelector(tableSelector);
+
+            if (!tableElement) {
+                console.warn('Grade detail table not found:', tableSelector);
+                return window.dash_clientside.no_update;
+            }
+
+            // 模拟点击对应行来激活它
+            setTimeout(function() {
+                try {
+                    // 构造表格行的选择器
+                    // Dash表格的行通常有特定的类名和结构
+                    const tableBody = tableElement.querySelector('.dash-table-body');
+                    if (tableBody) {
+                        const rows = tableBody.querySelectorAll('.dash-table-row');
+                        if (rows && rows.length > rowIndex) {
+                            const targetRow = rows[rowIndex];
+
+                            // 滚动到目标行
+                            targetRow.scrollIntoView({
+                                behavior: 'smooth',
+                                block: 'center'
+                            });
+
+                            // 触发行的点击事件来激活它
+                            // 注意：这可能需要根据Dash表格的具体实现进行调整
+                            setTimeout(function() {
+                                // 尝试设置active_cell（如果可能的话）
+                                // 这是一个简化的实现，实际可能需要更复杂的逻辑
+                                console.log('Scrolled to grade detail table row:', rowIndex);
+                            }, 300);
+                        } else {
+                            console.warn('Target row not found in grade detail table:', rowIndex);
+                        }
+                    }
+                } catch (error) {
+                    console.error('Error scrolling to grade detail table row:', error);
+                }
+            }, 500);  // 等待模态框显示后再滚动
+
+            return window.dash_clientside.no_update;
+        }
+        """,
+        Output('grade-detail-return-scroll-trigger', 'data', allow_duplicate=True),
+        Input('grade-detail-return-scroll-trigger', 'data'),
+        prevent_initial_call=True
+    )
+
+    # 客户端回调：滚动到评级统计区域
+    app.clientside_callback(
+        """
+        function(scroll_data) {
+            if (!scroll_data) {
+                return window.dash_clientside.no_update;
+            }
+
+            if (scroll_data.scroll_to === 'grade_detail_section') {
+                // 查找评级统计区域
+                // 优先查找有特定ID的卡片
+                let targetElement = document.getElementById('grade-statistics-card');
+
+                if (!targetElement) {
+                    // 如果没找到特定ID，查找所有卡片，寻找包含"匹配质量评级统计"的标题
+                    const allCards = document.querySelectorAll('.card');
+                    for (let card of allCards) {
+                        const header = card.querySelector('h4');
+                        if (header && header.textContent && header.textContent.includes('匹配质量评级统计')) {
+                            targetElement = card;
+                            console.log('Found grade detail card by title:', header.textContent);
+                            break;
+                        }
+                    }
+                }
+
+                // 如果还是没找到，尝试查找包含grade-detail的元素
+                if (!targetElement) {
+                    const gradeDetailElements = document.querySelectorAll('[id*="grade-detail"]');
+                    if (gradeDetailElements.length > 0) {
+                        // 向上查找最近的卡片容器
+                        targetElement = gradeDetailElements[0].closest('.card') || gradeDetailElements[0];
+                        console.log('Found grade detail element by fallback');
+                    }
+                }
+
+                if (targetElement) {
+                    setTimeout(function() {
+                        try {
+                            // 滚动到评级统计区域
+                            targetElement.scrollIntoView({
+                                behavior: 'smooth',
+                                block: 'start',
+                                inline: 'nearest'
+                            });
+
+                            console.log('Scrolled to grade detail section successfully');
+                        } catch (error) {
+                            console.error('Error scrolling to grade detail section:', error);
+                        }
+                    }, 500);  // 等待更长时间让页面完全加载
+                } else {
+                    console.warn('Grade detail section not found. Available cards:');
+                    const cards = document.querySelectorAll('.card');
+                    for (let card of cards) {
+                        const header = card.querySelector('h4');
+                        if (header) {
+                            console.warn('Card header:', header.textContent);
+                        }
+                    }
+                }
+            } else if (scroll_data.scroll_to === 'error_table_section') {
+                // 查找错误表格区域
+                const tableType = scroll_data.table_type; // 'drop' 或 'multi'
+                let targetElement = null;
+
+                if (tableType === 'drop') {
+                    // 查找丢锤表格
+                    const dropTables = document.querySelectorAll('[id*="drop-hammers-table"]');
+                    if (dropTables.length > 0) {
+                        targetElement = dropTables[0].closest('.card') || dropTables[0];
+                        console.log('Found drop hammers table');
+                    }
+                } else if (tableType === 'multi') {
+                    // 查找多锤表格
+                    const multiTables = document.querySelectorAll('[id*="multi-hammers-table"]');
+                    if (multiTables.length > 0) {
+                        targetElement = multiTables[0].closest('.card') || multiTables[0];
+                        console.log('Found multi hammers table');
+                    }
+                }
+
+                if (targetElement) {
+                    setTimeout(function() {
+                        try {
+                            // 滚动到错误表格区域
+                            targetElement.scrollIntoView({
+                                behavior: 'smooth',
+                                block: 'start',
+                                inline: 'nearest'
+                            });
+
+                            console.log(`Scrolled to ${tableType} hammers table section successfully`);
+                        } catch (error) {
+                            console.error(`Error scrolling to ${tableType} hammers table section:`, error);
+                        }
+                    }, 500);
+                } else {
+                    console.warn(`${tableType} hammers table section not found`);
+                }
+            } else if (scroll_data.scroll_to === 'delay_time_series_section') {
+                // 查找延时时间序列图区域
+                const plotType = scroll_data.plot_type; // 'raw-delay-time-series-plot' 或 'relative-delay-time-series-plot'
+                let targetElement = null;
+
+                // 根据图表类型查找对应的图表
+                if (plotType === 'raw-delay-time-series-plot') {
+                    // 查找原始延时时间序列图
+                    targetElement = document.getElementById('raw-delay-time-series-plot');
+                    if (targetElement) {
+                        // 向上查找最近的卡片容器
+                        targetElement = targetElement.closest('.card') || targetElement;
+                        console.log('Found raw delay time series plot');
+                    }
+                } else if (plotType === 'relative-delay-time-series-plot') {
+                    // 查找相对延时时间序列图
+                    targetElement = document.getElementById('relative-delay-time-series-plot');
+                    if (targetElement) {
+                        // 向上查找最近的卡片容器
+                        targetElement = targetElement.closest('.card') || targetElement;
+                        console.log('Found relative delay time series plot');
+                    }
+                }
+
+                // 如果没找到特定图表，尝试查找包含时间序列图标题的卡片
+                if (!targetElement) {
+                    const allCards = document.querySelectorAll('.card');
+                    for (let card of allCards) {
+                        const header = card.querySelector('h6');
+                        if (header && header.textContent) {
+                            if (plotType === 'raw-delay-time-series-plot' &&
+                                header.textContent.includes('原始延时时间序列图')) {
+                                targetElement = card;
+                                console.log('Found raw delay time series card by title');
+                                break;
+                            } else if (plotType === 'relative-delay-time-series-plot' &&
+                                     header.textContent.includes('相对延时时间序列图')) {
+                                targetElement = card;
+                                console.log('Found relative delay time series card by title');
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (targetElement) {
+                    setTimeout(function() {
+                        try {
+                            // 滚动到时间序列图区域
+                            targetElement.scrollIntoView({
+                                behavior: 'smooth',
+                                block: 'start',
+                                inline: 'nearest'
+                            });
+
+                            console.log(`Scrolled to ${plotType} successfully`);
+                        } catch (error) {
+                            console.error(`Error scrolling to ${plotType}:`, error);
+                        }
+                    }, 500);  // 等待页面完全加载
+                } else {
+                    console.warn(`${plotType} not found. Available cards:`);
+                    const cards = document.querySelectorAll('.card');
+                    for (let card of cards) {
+                        const header = card.querySelector('h6');
+                        if (header) {
+                            console.warn('Card header:', header.textContent);
+                        }
+                    }
+                }
+            }
+
+            return window.dash_clientside.no_update;
+        }
+        """,
+        Output('grade-detail-section-scroll-trigger', 'data', allow_duplicate=True),
+        Input('grade-detail-section-scroll-trigger', 'data'),
+        prevent_initial_call=True
+    )
+
     # 锤速与延时散点图点击回调 - 显示曲线对比（悬浮窗）并调整瀑布图
     @app.callback(
         [Output('key-curves-modal', 'style', allow_duplicate=True),
@@ -7351,7 +7444,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 'backgroundColor': 'rgba(0,0,0,0.6)',
                 'backdropFilter': 'blur(5px)'
             }
-            return modal_style, [], no_update, no_update, None
+            return modal_style, [], no_update, no_update, no_update
         
         # 如果是散点图点击
         if trigger_id == 'hammer-velocity-delay-scatter-plot':
@@ -7629,7 +7722,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 'backgroundColor': 'rgba(0,0,0,0.6)',
                 'backdropFilter': 'blur(5px)'
             }
-            return modal_style, [], no_update, no_update, None
+            return modal_style, [], no_update, no_update, no_update
 
         # 如果是锤速对比图点击
         if trigger_id == 'hammer-velocity-comparison-plot' and click_data:
@@ -8046,7 +8139,359 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             logger.error(traceback.format_exc())
             return no_update, no_update
 
+    # 丢锤和多锤表格点击回调 - 显示曲线对比（悬浮窗）并支持跳转到瀑布图
+    @app.callback(
+        [Output('key-curves-modal', 'style', allow_duplicate=True),
+         Output('key-curves-comparison-container', 'children', allow_duplicate=True),
+         Output('current-clicked-point-info', 'data', allow_duplicate=True)],
+        [Input({'type': 'drop-hammers-table', 'index': dash.ALL}, 'active_cell'),
+         Input({'type': 'multi-hammers-table', 'index': dash.ALL}, 'active_cell'),
+         Input('close-key-curves-modal', 'n_clicks'),
+         Input('close-key-curves-modal-btn', 'n_clicks')],
+        [State({'type': 'drop-hammers-table', 'index': dash.ALL}, 'data'),
+         State({'type': 'multi-hammers-table', 'index': dash.ALL}, 'data'),
+         State('session-id', 'data'),
+         State('key-curves-modal', 'style')],
+        prevent_initial_call=True
+    )
+    def handle_error_tables_click(active_cells_multi_drop, active_cells_multi_multi, close_modal_clicks, close_btn_clicks,
+                                 data_multi_drop, data_multi_multi, session_id, current_style):
+        """处理丢锤和多锤表格点击，显示曲线对比（悬浮窗）并支持跳转到瀑布图"""
+        # 检测触发源
+        ctx = callback_context
+        if not ctx.triggered:
+            return current_style, [], no_update
+
+        trigger_id = ctx.triggered[0]['prop_id']
+        trigger_value = ctx.triggered[0].get('value')
+
+        # 如果点击了关闭按钮，隐藏模态框
+        if trigger_id in ['close-key-curves-modal.n_clicks', 'close-key-curves-modal-btn.n_clicks']:
+            return {'display': 'none'}, [], no_update
+
+        # 处理表格点击
+        table_type = None
+        active_cell = None
+        table_data = None
+        algorithm_name = None
+
+        # 解析触发源
+        if 'drop-hammers-table' in trigger_id:
+            table_type = 'drop'
+        elif 'multi-hammers-table' in trigger_id:
+            table_type = 'multi'
+
+        if not table_type:
+            return current_style, [], no_update
+
+        # 获取对应的数据和active_cell
+        try:
+            # 解析ID
+            id_parts = json.loads(trigger_id.split('.')[0])
+            algorithm_name = id_parts.get('index', 'single')  # 默认单算法模式
+
+            # 根据表格类型获取对应的数据
+            if table_type == 'drop':
+                # 找到对应的active_cell和data
+                table_index = None
+                for i, cell in enumerate(active_cells_multi_drop):
+                    if cell is not None:
+                        table_index = i
+                        active_cell = cell
+                        table_data = data_multi_drop[i] if i < len(data_multi_drop) else None
+                        break
+            else:  # multi
+                # 找到对应的active_cell和data
+                table_index = None
+                for i, cell in enumerate(active_cells_multi_multi):
+                    if cell is not None:
+                        table_index = i
+                        active_cell = cell
+                        table_data = data_multi_multi[i] if i < len(data_multi_multi) else None
+                        break
+
+        except (json.JSONDecodeError, KeyError, IndexError):
+            return current_style, [], no_update
+
+        if not active_cell or not table_data:
+            return current_style, [], no_update
+
+        # 获取后端实例
+        backend = session_manager.get_backend(session_id)
+        if not backend:
+            return current_style, [], no_update
+
+        try:
+            # 获取点击的行数据
+            row_idx = active_cell.get('row')
+            if row_idx is None or row_idx >= len(table_data):
+                return current_style, [], no_update
+
+            row_data = table_data[row_idx]
+
+            # 获取音符信息
+            data_type = row_data.get('data_type')
+            key_id_str = row_data.get('keyId')
+            global_index = row_data.get('index')
+
+            if key_id_str == '无匹配':
+                # 这是没有数据的行，跳过
+                return current_style, [], no_update
+            
+            # 转换key_id为整数
+            try:
+                key_id = int(key_id_str) if isinstance(key_id_str, (int, float, str)) and str(key_id_str).isdigit() else None
+                if key_id is None:
+                    logger.warning(f"[WARNING] 无法转换keyId为整数: {key_id_str}")
+                    return current_style, [], no_update
+            except (ValueError, TypeError):
+                logger.warning(f"[WARNING] keyId转换失败: {key_id_str}")
+                return current_style, [], no_update
+
+            # 根据表格类型确定数据类型
+            if table_type == 'drop':
+                # 丢锤：只有录制数据
+                available_data = 'record'
+                data_label = '录制'
+            else:  # multi
+                # 多锤：只有播放数据
+                available_data = 'replay'
+                data_label = '播放'
+
+            # 查找对应的音符数据
+            # 对于丢锤/多锤，应该使用initial_valid_record_data/initial_valid_replay_data
+            # 并且使用global_index（即表格中的index字段）作为数组索引
+            note_data = None
+            
+            # 确保global_index是整数类型
+            try:
+                if isinstance(global_index, str):
+                    # 如果是字符串，尝试转换
+                    if global_index == '无匹配':
+                        return current_style, [], no_update
+                    global_index = int(global_index)
+            except (ValueError, TypeError):
+                logger.warning(f"[WARNING] 无法转换global_index: {global_index}")
+                return current_style, [], no_update
+            
+            if algorithm_name == 'single':
+                # 单算法模式
+                if available_data == 'record':
+                    # 丢锤：使用initial_valid_record_data
+                    initial_data = getattr(backend.analyzer, 'initial_valid_record_data', None)
+                    if initial_data and global_index < len(initial_data):
+                        note_data = initial_data[global_index]
+                else:
+                    # 多锤：使用initial_valid_replay_data
+                    initial_data = getattr(backend.analyzer, 'initial_valid_replay_data', None)
+                    if initial_data and global_index < len(initial_data):
+                        note_data = initial_data[global_index]
+            else:
+                # 多算法模式
+                active_algorithms = backend.get_active_algorithms() if hasattr(backend, 'get_active_algorithms') else []
+                target_algorithm = next((alg for alg in active_algorithms if alg.metadata.algorithm_name == algorithm_name), None)
+                if target_algorithm and target_algorithm.analyzer:
+                    if available_data == 'record':
+                        # 丢锤：使用initial_valid_record_data
+                        initial_data = getattr(target_algorithm.analyzer, 'initial_valid_record_data', None)
+                        if initial_data and global_index < len(initial_data):
+                            note_data = initial_data[global_index]
+                    else:
+                        # 多锤：使用initial_valid_replay_data
+                        initial_data = getattr(target_algorithm.analyzer, 'initial_valid_replay_data', None)
+                        if initial_data and global_index < len(initial_data):
+                            note_data = initial_data[global_index]
+
+            if not note_data:
+                return current_style, [], no_update
+
+            # 确保key_id与note_data中的id一致
+            actual_key_id = getattr(note_data, 'id', key_id)
+            if actual_key_id != key_id:
+                logger.info(f"🔍 key_id不一致: 表格中={key_id}, note_data中={actual_key_id}, 使用note_data中的值")
+                key_id = actual_key_id
+
+            # 生成曲线图（只显示有数据的部分）
+            fig = _create_single_data_curve_figure(note_data, key_id, data_label, algorithm_name)
+
+            # 计算时间信息，用于跳转到瀑布图
+            center_time_ms = None
+            record_idx = None
+            replay_idx = None
+            
+            try:
+                # 对于丢锤：只有录制数据，record_idx就是global_index（在initial_valid_record_data中的索引）
+                # 对于多锤：只有播放数据，replay_idx就是global_index（在initial_valid_replay_data中的索引）
+                if table_type == 'drop':
+                    # 丢锤：只有录制数据
+                    record_idx = global_index  # 在initial_valid_record_data中的索引
+                    replay_idx = None  # 丢锤没有播放数据
+                    
+                    # 从表格数据中获取keyOn时间（已经是ms单位）
+                    try:
+                        key_on_str = row_data.get('keyOn', '')
+                        if key_on_str and key_on_str != '无匹配':
+                            center_time_ms = float(key_on_str)
+                        else:
+                            # 备用方案：从note_data计算
+                            if note_data and hasattr(note_data, 'after_touch') and not note_data.after_touch.empty:
+                                center_time_ms = (note_data.after_touch.index[0] + note_data.offset) / 10.0
+                            elif note_data and hasattr(note_data, 'hammers') and not note_data.hammers.empty:
+                                center_time_ms = (note_data.hammers.index[0] + note_data.offset) / 10.0
+                            elif note_data and hasattr(note_data, 'offset'):
+                                center_time_ms = note_data.offset / 10.0
+                    except (ValueError, TypeError):
+                        # 如果转换失败，使用备用方案
+                        if note_data and hasattr(note_data, 'after_touch') and not note_data.after_touch.empty:
+                            center_time_ms = (note_data.after_touch.index[0] + note_data.offset) / 10.0
+                        elif note_data and hasattr(note_data, 'hammers') and not note_data.hammers.empty:
+                            center_time_ms = (note_data.hammers.index[0] + note_data.offset) / 10.0
+                        elif note_data and hasattr(note_data, 'offset'):
+                            center_time_ms = note_data.offset / 10.0
+                else:  # multi
+                    # 多锤：只有播放数据
+                    record_idx = None  # 多锤没有录制数据
+                    replay_idx = global_index  # 在initial_valid_replay_data中的索引
+                    
+                    # 从表格数据中获取keyOn时间（已经是ms单位）
+                    try:
+                        key_on_str = row_data.get('keyOn', '')
+                        if key_on_str and key_on_str != '无匹配':
+                            center_time_ms = float(key_on_str)
+                        else:
+                            # 备用方案：从note_data计算
+                            if note_data and hasattr(note_data, 'after_touch') and not note_data.after_touch.empty:
+                                center_time_ms = (note_data.after_touch.index[0] + note_data.offset) / 10.0
+                            elif note_data and hasattr(note_data, 'hammers') and not note_data.hammers.empty:
+                                center_time_ms = (note_data.hammers.index[0] + note_data.offset) / 10.0
+                            elif note_data and hasattr(note_data, 'offset'):
+                                center_time_ms = note_data.offset / 10.0
+                    except (ValueError, TypeError):
+                        # 如果转换失败，使用备用方案
+                        if note_data and hasattr(note_data, 'after_touch') and not note_data.after_touch.empty:
+                            center_time_ms = (note_data.after_touch.index[0] + note_data.offset) / 10.0
+                        elif note_data and hasattr(note_data, 'hammers') and not note_data.hammers.empty:
+                            center_time_ms = (note_data.hammers.index[0] + note_data.offset) / 10.0
+                        elif note_data and hasattr(note_data, 'offset'):
+                            center_time_ms = note_data.offset / 10.0
+            except Exception as e:
+                logger.warning(f"[WARNING] 计算时间信息失败: {e}")
+                logger.error(traceback.format_exc())
+
+            # 准备跳转信息
+            clicked_info = {
+                'key_id': key_id,
+                'algorithm_name': algorithm_name,
+                'data_type': data_type,
+                'global_index': global_index,
+                'available_data': available_data,  # 标记有哪些数据可用
+                'source_plot_id': f'error-table-{table_type}',  # 标识来源是错误表格
+                'record_idx': record_idx,  # 录制数据索引
+                'replay_idx': replay_idx,  # 播放数据索引
+                'center_time_ms': center_time_ms  # 预先计算的时间信息
+            }
+
+            # 显示模态框 - 使用与其他回调函数一致的样式，避免嵌套
+            modal_style = {
+                'display': 'block',
+                'position': 'fixed',
+                'zIndex': '9999',
+                'left': '0',
+                'top': '0',
+                'width': '100%',
+                'height': '100%',
+                'backgroundColor': 'rgba(0,0,0,0.6)',
+                'backdropFilter': 'blur(5px)'
+            }
+
+            # 直接返回图形，不添加额外的容器包裹，避免多余的框
+            return modal_style, [dcc.Graph(figure=fig, style={'height': '500px'})], clicked_info
+
+        except Exception as e:
+            logger.error(f"[ERROR] 处理错误表格点击失败: {e}")
+            return current_style, [], no_update
+
+    def _create_single_data_curve_figure(note_data, key_id, data_label, algorithm_name):
+        """创建只显示单侧数据的曲线图"""
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+
+        try:
+            # 创建子图
+            fig = make_subplots(
+                rows=1, cols=1,
+                subplot_titles=[f'按键 {key_id} - {data_label}数据曲线 ({algorithm_name})']
+            )
+
+            # 提取数据
+            if hasattr(note_data, 'after_touch') and note_data.after_touch is not None and len(note_data.after_touch.index) > 0:
+                # 使用after_touch数据
+                time_data = note_data.after_touch.index
+                value_data = note_data.after_touch.values if hasattr(note_data.after_touch, 'values') else [0] * len(time_data)
+            elif hasattr(note_data, 'hammers') and note_data.hammers is not None and len(note_data.hammers.index) > 0:
+                # 使用hammers数据
+                time_data = note_data.hammers.index
+                value_data = note_data.hammers.values if hasattr(note_data.hammers, 'values') else [0] * len(time_data)
+            else:
+                # 没有可用数据
+                fig.add_annotation(
+                    text="无可用数据",
+                    xref="paper", yref="paper",
+                    x=0.5, y=0.5,
+                    showarrow=False
+                )
+                return fig
+
+            # 转换为毫秒
+            time_ms = [t / 10.0 for t in time_data]
+
+            # 添加曲线
+            fig.add_trace(
+                go.Scatter(
+                    x=time_ms,
+                    y=value_data,
+                    mode='lines+markers',
+                    name=f'{data_label}数据',
+                    line=dict(color='blue', width=2),
+                    marker=dict(size=6, color='blue')
+                ),
+                row=1, col=1
+            )
+
+            # 更新布局
+            fig.update_layout(
+                height=400,
+                showlegend=True,
+                legend=dict(
+                    orientation="h",
+                    yanchor="bottom",
+                    y=1.02,
+                    xanchor="right",
+                    x=1
+                ),
+                hovermode='x unified'
+            )
+
+            # 更新坐标轴标签
+            fig.update_xaxes(title_text="时间 (ms)", row=1, col=1)
+            fig.update_yaxes(title_text="触后值", row=1, col=1)
+
+            return fig
+
+        except Exception as e:
+            logger.error(f"[ERROR] 创建单侧数据曲线图失败: {e}")
+            # 返回错误图表
+            error_fig = go.Figure()
+            error_fig.add_annotation(
+                text=f"生成曲线图失败: {str(e)}",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5,
+                showarrow=False
+            )
+            return error_fig
+
+    # 单算法模式错误表格数据填充回调
     # 注册评级统计详情回调
-    register_grade_detail_callbacks(app, session_manager)
+    register_all_callbacks(app, session_manager)
 
 

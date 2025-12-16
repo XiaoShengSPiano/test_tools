@@ -158,6 +158,50 @@ class AlgorithmStatistics:
         drop_hammers = getattr(self.algorithm.analyzer, 'drop_hammers', [])
         multi_hammers = getattr(self.algorithm.analyzer, 'multi_hammers', [])
 
+        logger.info(f"📊 统计数据源检查: analyzer.drop_hammers={len(drop_hammers)}, analyzer.multi_hammers={len(multi_hammers)}")
+
+        # 获取原始数据用于详细信息显示
+        initial_valid_record_data = getattr(self.algorithm.analyzer, 'initial_valid_record_data', [])
+        initial_valid_replay_data = getattr(self.algorithm.analyzer, 'initial_valid_replay_data', [])
+
+        # 详细记录丢锤按键信息
+        if drop_hammers:
+            logger.info("🔍 🪓 丢锤按键详细信息:")
+            for i, error_note in enumerate(drop_hammers):
+                if len(error_note.infos) > 0:
+                    rec = error_note.infos[0]
+
+                    # 获取实际音符数据用于时间信息
+                    time_info = f"keyOn={rec.keyOn/10:.2f}ms, keyOff={rec.keyOff/10:.2f}ms"
+                    if rec.index < len(initial_valid_record_data):
+                        record_note = initial_valid_record_data[rec.index]
+                        if hasattr(record_note, 'after_touch') and record_note.after_touch is not None and len(record_note.after_touch.index) > 0:
+                            key_on = (record_note.after_touch.index[0] + record_note.offset) / 10.0
+                            key_off = (record_note.after_touch.index[-1] + record_note.offset) / 10.0
+                            time_info = f"按下={key_on:.2f}ms, 释放={key_off:.2f}ms"
+
+                    logger.info(f"  🪓 丢锤{i+1}: 按键ID={rec.keyId}, 索引={rec.index}, {time_info}")
+
+        # 详细记录多锤按键信息
+        if multi_hammers:
+            logger.info("🔍 🔨 多锤按键详细信息:")
+            for i, error_note in enumerate(multi_hammers):
+                if len(error_note.infos) > 0:
+                    play = error_note.infos[0]
+
+                    # 获取实际音符数据用于时间信息
+                    time_info = f"keyOn={play.keyOn/10:.2f}ms, keyOff={play.keyOff/10:.2f}ms"
+                    if play.index < len(initial_valid_replay_data):
+                        replay_note = initial_valid_replay_data[play.index]
+                        if hasattr(replay_note, 'after_touch') and replay_note.after_touch is not None and len(replay_note.after_touch.index) > 0:
+                            key_on = (replay_note.after_touch.index[0] + replay_note.offset) / 10.0
+                            key_off = (replay_note.after_touch.index[-1] + replay_note.offset) / 10.0
+                            time_info = f"按下={key_on:.2f}ms, 释放={key_off:.2f}ms"
+
+                    logger.info(f"  🔨 多锤{i+1}: 按键ID={play.keyId}, 索引={play.index}, {time_info}")
+
+        logger.info(f"📈 统计概览: 丢锤={len(drop_hammers)}个, 多锤={len(multi_hammers)}个")
+
         return {
             'drop_hammers': drop_hammers,
             'multi_hammers': multi_hammers,
@@ -543,12 +587,25 @@ class PianoAnalysisBackend:
             return
         
         try:
-            # 获取分析结果
+            # 获取分析结果（如果没有，则尝试从_error_info中获取）
             multi_hammers = getattr(self.analyzer, 'multi_hammers', [])
             drop_hammers = getattr(self.analyzer, 'drop_hammers', [])
             silent_hammers = getattr(self.analyzer, 'silent_hammers', [])
             invalid_notes_table_data = getattr(self.analyzer, 'invalid_notes_table_data', {})
             matched_pairs = getattr(self.analyzer, 'matched_pairs', [])
+
+            # 如果没有错误数据，尝试从_error_info中获取
+            if not drop_hammers and hasattr(self.analyzer, '_error_info'):
+                drop_hammers = self.analyzer._error_info.get('drop_hammers', [])
+                multi_hammers = self.analyzer._error_info.get('multi_hammers', [])
+                silent_hammers = self.analyzer._error_info.get('silent_hammers', [])
+                logger.info(f"📊 从_error_info获取错误数据: 丢锤={len(drop_hammers)}, 多锤={len(multi_hammers)}")
+
+            # 确保analyzer对象有这些属性（供瀑布图生成器使用）
+            self.analyzer.drop_hammers = drop_hammers
+            self.analyzer.multi_hammers = multi_hammers
+            self.analyzer.silent_hammers = silent_hammers
+            logger.info(f"✅ 设置analyzer错误数据: 丢锤={len(drop_hammers)}, 多锤={len(multi_hammers)}")
             
             # 合并所有错误音符
             all_error_notes = multi_hammers + drop_hammers + silent_hammers
@@ -570,6 +627,8 @@ class PianoAnalysisBackend:
             # 同步到TimeFilter
             self.time_filter.set_data(valid_record_data, valid_replay_data)
             
+            logger.info(f"🔄 同步错误数据到table_generator: 丢锤={len(drop_hammers)}, 多锤={len(multi_hammers)}")
+
             self.table_generator.set_data(
                 valid_record_data=valid_record_data,
                 valid_replay_data=valid_replay_data,
@@ -581,13 +640,66 @@ class PianoAnalysisBackend:
                 matched_pairs=matched_pairs,
                 analyzer=self.analyzer
             )
+
+            # 验证数据同步是否成功
+            if hasattr(self.analyzer, 'drop_hammers'):
+                drop_hammers_count = len(self.analyzer.drop_hammers)
+                multi_hammers_count = len(getattr(self.analyzer, 'multi_hammers', []))
+                logger.info(f"✅ analyzer错误数据同步验证: 丢锤={drop_hammers_count}, 多锤={multi_hammers_count}")
+
+                # 获取原始数据用于详细信息显示
+                initial_valid_record_data = getattr(self.analyzer, 'initial_valid_record_data', [])
+                initial_valid_replay_data = getattr(self.analyzer, 'initial_valid_replay_data', [])
+
+                # 详细记录同步后的丢锤按键信息
+                if drop_hammers_count > 0:
+                    logger.info("🔍 📊 数据同步后丢锤按键详细信息:")
+                    for i, error_note in enumerate(self.analyzer.drop_hammers):  # 显示所有丢锤
+                        if len(error_note.infos) > 0:
+                            rec = error_note.infos[0]
+
+                            # 获取实际音符数据用于时间信息
+                            time_info = "时间信息不可用"
+                            if rec.index < len(initial_valid_record_data):
+                                record_note = initial_valid_record_data[rec.index]
+                                if hasattr(record_note, 'after_touch') and record_note.after_touch is not None and len(record_note.after_touch.index) > 0:
+                                    key_on = (record_note.after_touch.index[0] + record_note.offset) / 10.0
+                                    key_off = (record_note.after_touch.index[-1] + record_note.offset) / 10.0
+                                    time_info = f"按下={key_on:.2f}ms, 释放={key_off:.2f}ms"
+
+                            logger.info(f"  🪓 丢锤{i+1}: 按键ID={rec.keyId}, 索引={rec.index}, {time_info}")
+
+                # 详细记录同步后的多锤按键信息
+                if multi_hammers_count > 0:
+                    logger.info("🔍 📊 数据同步后多锤按键详细信息:")
+                    for i, error_note in enumerate(self.analyzer.multi_hammers):  # 显示所有多锤
+                        if len(error_note.infos) > 0:
+                            play = error_note.infos[0]
+
+                            # 获取实际音符数据用于时间信息
+                            time_info = "时间信息不可用"
+                            if play.index < len(initial_valid_replay_data):
+                                replay_note = initial_valid_replay_data[play.index]
+                                if hasattr(replay_note, 'after_touch') and replay_note.after_touch is not None and len(replay_note.after_touch.index) > 0:
+                                    key_on = (replay_note.after_touch.index[0] + replay_note.offset) / 10.0
+                                    key_off = (replay_note.after_touch.index[-1] + replay_note.offset) / 10.0
+                                    time_info = f"按下={key_on:.2f}ms, 释放={key_off:.2f}ms"
+
+                            logger.info(f"  🔨 多锤{i+1}: 按键ID={play.keyId}, 索引={play.index}, {time_info}")
+
+                # 输出最终统计汇总
+                logger.info("📈 🎯 最终错误统计汇总:")
+                logger.info(f"   总丢锤数量: {drop_hammers_count} 个")
+                logger.info(f"   总多锤数量: {multi_hammers_count} 个")
+                logger.info(f"   总错误数量: {drop_hammers_count + multi_hammers_count} 个")
+            else:
+                logger.warning("⚠️ analyzer错误数据同步失败：drop_hammers属性不存在")
             
             logger.info("✅ 分析结果同步完成")
 
         except Exception as e:
             logger.error(f"同步分析结果失败: {e}")
     
-    # TODO
     def get_global_average_delay(self) -> float:
         """
         获取整首曲子的平均时延（基于已配对数据）
@@ -716,32 +828,37 @@ class PianoAnalysisBackend:
         # 单算法模式
         try:
             if not self.analyzer or not self.analyzer.note_matcher:
-                return self.plot_generator._create_empty_plot("没有分析器")
-            
-            offset_data = self.analyzer.get_offset_alignment_data()
+                return {
+                    'raw_delay_plot': self.plot_generator._create_empty_plot("没有分析器"),
+                    'relative_delay_plot': self.plot_generator._create_empty_plot("没有分析器")
+                }
+
+            offset_data = self.analyzer.note_matcher.get_precision_offset_alignment_data()
             if not offset_data:
-                return self.plot_generator._create_empty_plot("无匹配数据")
-            
+                return {
+                    'raw_delay_plot': self.plot_generator._create_empty_plot("无精确匹配数据（≤50ms）"),
+                    'relative_delay_plot': self.plot_generator._create_empty_plot("无精确匹配数据（≤50ms）")
+                }
+
             import plotly.graph_objects as go
-            fig = go.Figure()
-            
+
             # 提取时间和延时数据
             data_points = []  # 存储所有数据点，用于排序
-            
+
             for item in offset_data:
                 record_keyon = item.get('record_keyon', 0)  # 单位：0.1ms
                 keyon_offset = item.get('keyon_offset', 0.0)  # 单位：0.1ms
                 key_id = item.get('key_id')
                 record_index = item.get('record_index')
                 replay_index = item.get('replay_index')
-                
+
                 if record_keyon is None or keyon_offset is None:
                     continue
-                
+
                 # 转换为ms单位
                 time_ms = record_keyon / 10.0
                 delay_ms = keyon_offset / 10.0
-                
+
                 data_points.append({
                     'time': time_ms,
                     'delay': delay_ms,
@@ -749,17 +866,20 @@ class PianoAnalysisBackend:
                     'record_index': record_index,
                     'replay_index': replay_index
                 })
-            
+
             if not data_points:
-                return self.plot_generator._create_empty_plot("无有效时间序列数据")
-            
+                return {
+                    'raw_delay_plot': self.plot_generator._create_empty_plot("无有效时间序列数据"),
+                    'relative_delay_plot': self.plot_generator._create_empty_plot("无有效时间序列数据")
+                }
+
             # 按时间排序，确保按时间顺序显示
             data_points.sort(key=lambda x: x['time'])
-            
+
             # 计算平均延时（用于计算相对延时）
             me_0_1ms = self.get_mean_error()  # 平均延时（0.1ms单位，带符号）
             mean_delay = me_0_1ms / 10.0  # 平均延时（ms，带符号）
-            
+
             # 计算相对延时：每个点的延时减去平均延时
             # 标准公式：相对延时 = 延时 - 平均延时（对所有点统一适用）
             relative_delays_ms = []
@@ -767,27 +887,58 @@ class PianoAnalysisBackend:
                 delay_ms = point['delay']
                 relative_delay = delay_ms - mean_delay
                 relative_delays_ms.append(relative_delay)
-            
+
             # 提取排序后的数据
             times_ms = [point['time'] for point in data_points]
             delays_ms = [point['delay'] for point in data_points]  # 保留原始延时用于hover显示
             # customdata 包含 [key_id, record_index, replay_index, 原始延时, 平均延时]，用于点击时查找匹配对和显示原始值
-            customdata_list = [[point['key_id'], point['record_index'], point['replay_index'], point['delay'], mean_delay] 
+            customdata_list = [[point['key_id'], point['record_index'], point['replay_index'], point['delay'], mean_delay]
                               for point in data_points]
-            
-            # 添加散点图（使用相对延时）
-            fig.add_trace(go.Scatter(
+
+            # 创建偏移之前的时间序列图
+            raw_delay_fig = go.Figure()
+            raw_delay_fig.add_trace(go.Scatter(
+                x=times_ms,  # X轴使用录制时间
+                y=delays_ms,  # Y轴使用原始延时
+                mode='markers+lines',
+                name=f'原始延时时间序列',
+                marker=dict(
+                    size=6,
+                    color='#FF9800',  # 橙色
+                    symbol='circle'  # 实心圆点
+                ),
+                line=dict(color='#FF9800', width=1.5),
+                hovertemplate='<b>录制时间</b>: %{x:.2f}ms<br>' +
+                             '<b>原始延时</b>: %{y:.2f}ms<br>' +
+                             '<b>按键ID</b>: %{customdata[0]}<br>' +
+                             '<extra></extra>',
+                customdata=customdata_list
+            ))
+
+            # 配置偏移前图表的布局
+            raw_delay_fig.update_layout(
+                xaxis_title='录制时间 (ms)',
+                yaxis_title='原始延时 (ms)',
+                showlegend=True,
+                template='plotly_white',
+                height=400,
+                hovermode='closest'
+            )
+
+            # 创建偏移之后的时间序列图
+            relative_delay_fig = go.Figure()
+            relative_delay_fig.add_trace(go.Scatter(
                 x=times_ms,
                 y=relative_delays_ms,
                 mode='markers+lines',  # 同时显示点和线，便于观察趋势
                 name=f'相对延时时间序列 (平均延时: {mean_delay:.2f}ms)',
                 marker=dict(
                     size=6,
-                    color='#2196F3',
+                    color='#2196F3',  # 蓝色
                     line=dict(width=0.5, color='#1976D2')
                 ),
-                line=dict(color='#2196F3', width=1),
-                hovertemplate='<b>时间</b>: %{x:.2f}ms<br>' +
+                line=dict(color='#2196F3', width=1.5),
+                hovertemplate='<b>录制时间</b>: %{x:.2f}ms<br>' +
                              '<b>相对延时</b>: %{y:.2f}ms<br>' +
                              '<b>原始延时</b>: %{customdata[3]:.2f}ms<br>' +
                              '<b>平均延时</b>: %{customdata[4]:.2f}ms<br>' +
@@ -795,17 +946,24 @@ class PianoAnalysisBackend:
                              '<extra></extra>',
                 customdata=customdata_list
             ))
+
+            # 配置偏移后图表的布局
+            relative_delay_fig.update_layout(
+                xaxis_title='录制时间 (ms)',
+                yaxis_title='相对延时 (ms)',
+                showlegend=True,
+                template='plotly_white',
+                height=400,
+                hovermode='closest'
+            )
             
-            # 计算统计量，用于添加参考线
-            # 使用与数据概览界面相同的方法，确保一致性
+            # 为相对延时图添加参考线
             if delays_ms:
                 std_0_1ms = self.get_standard_deviation()  # 标准差（0.1ms单位）
-                
-                # 转换为ms单位
                 std_delay = std_0_1ms / 10.0  # 标准差（ms）
-                
+
                 # 添加零线参考线（相对延时的均值应该为0）
-                fig.add_trace(go.Scatter(
+                relative_delay_fig.add_trace(go.Scatter(
                     x=[times_ms[0], times_ms[-1]] if times_ms else [0, 1],
                     y=[0, 0],
                     mode='lines',
@@ -814,10 +972,10 @@ class PianoAnalysisBackend:
                     hovertemplate=f'<b>平均延时（零线）</b>: 0.00ms<extra></extra>',
                     showlegend=False
                 ))
-                
+
                 # 添加±3σ参考线（相对延时的±3σ，以0为中心）
                 if std_delay > 0:
-                    fig.add_trace(go.Scatter(
+                    relative_delay_fig.add_trace(go.Scatter(
                         x=[times_ms[0], times_ms[-1]] if times_ms else [0, 1],
                         y=[3 * std_delay, 3 * std_delay],
                         mode='lines',
@@ -826,7 +984,7 @@ class PianoAnalysisBackend:
                         hovertemplate=f'<b>+3σ</b>: {3 * std_delay:.2f}ms<extra></extra>',
                         showlegend=False
                     ))
-                    fig.add_trace(go.Scatter(
+                    relative_delay_fig.add_trace(go.Scatter(
                         x=[times_ms[0], times_ms[-1]] if times_ms else [0, 1],
                         y=[-3 * std_delay, -3 * std_delay],
                         mode='lines',
@@ -835,27 +993,11 @@ class PianoAnalysisBackend:
                         hovertemplate=f'<b>-3σ</b>: {-3 * std_delay:.2f}ms<extra></extra>',
                         showlegend=False
                     ))
-            
-            fig.update_layout(
-                # 删除title，因为UI区域已有标题
-                xaxis_title='时间 (ms)',
-                yaxis_title='相对延时 (ms)',
-                plot_bgcolor='white',
-                paper_bgcolor='white',
-                font=dict(size=12),
-                height=500,
-                hovermode='closest',
-                legend=dict(
-                    orientation='h',
-                    yanchor='bottom',
-                    y=1.02,
-                    xanchor='right',
-                    x=1
-                ),
-                margin=dict(t=80, b=60, l=60, r=60)
-            )
-            
-            return fig
+
+            return {
+                'raw_delay_plot': raw_delay_fig,
+                'relative_delay_plot': relative_delay_fig
+            }
         except Exception as e:
             logger.error(f"生成延时时间序列图失败: {e}")
             
@@ -977,22 +1119,12 @@ class PianoAnalysisBackend:
             if not self.analyzer or not self.analyzer.note_matcher:
                 return self.plot_generator._create_empty_plot("没有分析器")
 
-            offset_data = self.analyzer.get_offset_alignment_data()
+            offset_data = self.analyzer.note_matcher.get_precision_offset_alignment_data()
             if not offset_data:
-                return self.plot_generator._create_empty_plot("无匹配数据")
+                return self.plot_generator._create_empty_plot("无精确匹配数据（≤50ms）")
 
-            # 步骤1：筛选误差<=50ms的数据
-            # 误差 = abs(keyon_offset) / 10.0 <= 50.0
-            filtered_offset_data = [
-                item for item in offset_data
-                if abs(item.get('keyon_offset', 0.0)) / 10.0 <= 50.0
-            ]
-
-            if not filtered_offset_data:
-                return self.plot_generator._create_empty_plot("无误差≤50ms的有效匹配数据")
-
-            # 步骤2：提取筛选后的绝对延时数据（带符号的keyon_offset）
-            absolute_delays_ms = [item.get('keyon_offset', 0.0) / 10.0 for item in filtered_offset_data]
+            # 步骤2：提取精确匹配的绝对延时数据（带符号的keyon_offset）
+            absolute_delays_ms = [item.get('keyon_offset', 0.0) / 10.0 for item in offset_data]
             if not absolute_delays_ms:
                 return self.plot_generator._create_empty_plot("无有效延时数据")
 
@@ -1138,8 +1270,8 @@ class PianoAnalysisBackend:
                     if not algorithm.analyzer or not algorithm.analyzer.note_matcher:
                         continue
                     
-                    # 从算法获取原始偏移数据
-                    offset_data = algorithm.analyzer.get_offset_alignment_data()
+                    # 从算法获取精确偏移数据（误差 ≤ 50ms）
+                    offset_data = algorithm.analyzer.note_matcher.get_precision_offset_alignment_data()
                     if not offset_data:
                         continue
                     
@@ -1172,8 +1304,8 @@ class PianoAnalysisBackend:
             # 单算法模式
             if not self.analyzer or not self.analyzer.note_matcher:
                 return []
-            
-            offset_data = self.analyzer.get_offset_alignment_data()
+
+            offset_data = self.analyzer.note_matcher.get_precision_offset_alignment_data()
             if not offset_data:
                 return []
             
@@ -1242,8 +1374,8 @@ class PianoAnalysisBackend:
                     continue
                 
                 try:
-                    # 从analyzer获取偏移数据
-                    offset_data = algorithm.analyzer.get_offset_alignment_data()
+                    # 从analyzer获取精确偏移数据（误差 ≤ 50ms）
+                    offset_data = algorithm.analyzer.note_matcher.get_precision_offset_alignment_data()
                     invalid_offset_data = algorithm.analyzer.get_invalid_notes_offset_analysis()
                     
                     # 按按键ID分组有效匹配的偏移数据（使用带符号的keyon_offset，保留正负值）
@@ -1357,8 +1489,8 @@ class PianoAnalysisBackend:
         
         # 向后兼容：使用原有逻辑（已废弃）
         try:
-            # 从分析器获取偏移数据
-            offset_data = self.analyzer.get_offset_alignment_data()
+            # 从分析器获取精确偏移数据（误差 ≤ 50ms）
+            offset_data = self.analyzer.note_matcher.get_precision_offset_alignment_data()
             invalid_offset_data = self.analyzer.get_invalid_notes_offset_analysis()
             
             # 按按键ID分组并计算统计信息
@@ -1803,12 +1935,12 @@ class PianoAnalysisBackend:
         
         # 向后兼容：使用原有逻辑（已废弃）
         try:
-            # 从分析器获取原始偏移对齐数据（包含每个匹配对的详细信息）
+            # 从分析器获取精确搜索阶段的偏移对齐数据（误差 ≤ 50ms）
             if not self.analyzer or not self.analyzer.note_matcher:
                 logger.warning("⚠️ 分析器或匹配器不存在，无法生成散点图")
                 return self.plot_generator._create_empty_plot("分析器或匹配器不存在")
-            
-            offset_data = self.analyzer.note_matcher.get_offset_alignment_data()
+
+            offset_data = self.analyzer.note_matcher.get_precision_offset_alignment_data()
             
             if not offset_data:
                 logger.warning("⚠️ 没有匹配数据，无法生成散点图")
@@ -2425,41 +2557,52 @@ class PianoAnalysisBackend:
     # ==================== 绘图相关方法 ====================
     
     def generate_waterfall_plot(self) -> Any:
-        """生成瀑布图（支持单算法和多算法模式）"""
-        # 检查是否在多算法模式
+        """生成瀑布图（统一单算法和多算法模式）"""
+
+        # 确定数据源
         if self.multi_algorithm_mode and self.multi_algorithm_manager:
-            # 多算法模式：生成多算法对比瀑布图
+            # 多算法模式：使用多个算法的数据
+            analyzers = []
             active_algorithms = self.multi_algorithm_manager.get_active_algorithms()
             if not active_algorithms:
                 logger.warning("⚠️ 多算法模式下没有激活的算法，返回空图表")
                 return self.plot_generator._create_empty_plot("没有激活的算法")
-            
-            # 使用多算法图表生成器
-            return self.multi_algorithm_plot_generator.generate_multi_algorithm_waterfall_plot(
-                active_algorithms,
-                self.time_filter
-            )
-        
-        # 向后兼容：使用原有逻辑（已废弃）
-        # 检查是否有分析结果
-        if not self.analyzer:
-            logger.error("分析器不存在，无法生成瀑布图")
-            return self.plot_generator._create_empty_plot("分析器不存在")
-        
-        # 检查是否有有效数据
-        has_valid_data = (hasattr(self.analyzer, 'valid_record_data') and self.analyzer.valid_record_data and
-                         hasattr(self.analyzer, 'valid_replay_data') and self.analyzer.valid_replay_data)
-        
-        if not has_valid_data:
-            logger.error("没有有效的分析数据，无法生成瀑布图")
-            return self.plot_generator._create_empty_plot("没有有效的分析数据")
-        
-        # 确保数据已同步到PlotGenerator
-        if not self.plot_generator.valid_record_data or not self.plot_generator.valid_replay_data:
-            logger.info("🔄 同步数据到PlotGenerator")
-            self._sync_analysis_results()
-        
-        return self.plot_generator.generate_waterfall_plot(self.time_filter)
+
+            analyzers = [alg.analyzer for alg in active_algorithms if alg.analyzer]
+            algorithm_names = [alg.metadata.algorithm_name for alg in active_algorithms]
+            is_multi_algorithm = True
+        else:
+            # 单算法模式：使用单个分析器
+            if not self.analyzer:
+                logger.error("分析器不存在，无法生成瀑布图")
+                return self.plot_generator._create_empty_plot("分析器不存在")
+
+            # 检查是否有有效数据
+            has_valid_data = (hasattr(self.analyzer, 'valid_record_data') and self.analyzer.valid_record_data and
+                             hasattr(self.analyzer, 'valid_replay_data') and self.analyzer.valid_replay_data)
+
+            if not has_valid_data:
+                logger.error("没有有效的分析数据，无法生成瀑布图")
+                return self.plot_generator._create_empty_plot("没有有效的分析数据")
+
+            # 确保数据已同步到PlotGenerator
+            if not self.plot_generator.valid_record_data or not self.plot_generator.valid_replay_data:
+                logger.info("🔄 同步数据到PlotGenerator")
+                self._sync_analysis_results()
+
+            analyzers = [self.analyzer]
+            algorithm_names = ["single"]
+            is_multi_algorithm = False
+
+        # 使用统一的瀑布图生成器
+        return self.multi_algorithm_plot_generator.generate_unified_waterfall_plot(
+            self,                # 后端实例
+            analyzers,           # 分析器列表
+            algorithm_names,     # 算法名称列表
+            is_multi_algorithm,  # 是否多算法模式
+            self.time_filter,    # 时间过滤器
+            self.data_filter.key_filter if self.data_filter else None  # 按键过滤器
+        )
     
     def generate_watefall_conbine_plot(self, key_on: float, key_off: float, key_id: int) -> Tuple[Any, Any, Any]:
         """生成瀑布图对比图"""
@@ -3495,20 +3638,101 @@ class PianoAnalysisBackend:
                     error_notes = algorithm.analyzer.multi_hammers if hasattr(algorithm.analyzer, 'multi_hammers') else []
                 else:
                     continue
-                
+
+                # 记录该算法的错误数据详情
+                if error_notes:
+                    logger.info(f"📊 算法 '{algorithm_name}' {error_type}数据详情 ({len(error_notes)}个):")
+                    for i, note in enumerate(error_notes[:3]):  # 只显示前3个
+                        if len(note.infos) > 0:
+                            info = note.infos[0]
+                            logger.info(f"  {error_type}{i+1}: 按键ID={info.keyId}, 索引={info.index}, keyOn={info.keyOn/10:.2f}ms")
+                    if len(error_notes) > 3:
+                        logger.info(f"  ...还有{len(error_notes)-3}个{error_type}按键")
+
                 # 转换为表格数据格式，添加算法名称
                 for note in error_notes:
                     row = {
                         'algorithm_name': algorithm_name,
                         'data_type': 'record' if error_type == '丢锤' else 'play',
                         'keyId': note.keyId if hasattr(note, 'keyId') else 'N/A',
-                        'keyOn': f"{note.keyOn:.2f}" if hasattr(note, 'keyOn') and note.keyOn is not None else 'N/A',
-                        'keyOff': f"{note.keyOff:.2f}" if hasattr(note, 'keyOff') and note.keyOff is not None else 'N/A',
-                        'index': note.index if hasattr(note, 'index') else 'N/A',
-                        'analysis_reason': getattr(note, 'analysis_reason', '未匹配')
                     }
+
+                    # 添加时间和索引信息
+                    if error_type == '丢锤':
+                        row.update({
+                            'keyOn': f"{note.keyOn/10:.2f}" if hasattr(note, 'keyOn') else 'N/A',
+                            'keyOff': f"{note.keyOff/10:.2f}" if hasattr(note, 'keyOff') else 'N/A',
+                            'index': note.index if hasattr(note, 'index') else 'N/A',
+                            'analysis_reason': '丢锤（录制有，播放无）'
+                        })
+                    else:  # 多锤
+                        row.update({
+                            'keyOn': f"{note.keyOn/10:.2f}" if hasattr(note, 'keyOn') else 'N/A',
+                            'keyOff': f"{note.keyOff/10:.2f}" if hasattr(note, 'keyOff') else 'N/A',
+                            'index': note.index if hasattr(note, 'index') else 'N/A',
+                            'analysis_reason': '多锤（播放有，录制无）'
+                        })
+
                     table_data.append(row)
-            
+
+            return table_data
+
+        else:
+            # 单算法模式：从self.analyzer获取数据
+            logger.info(f"🔍 单算法模式get_error_table_data: error_type={error_type}, self.analyzer存在={self.analyzer is not None}")
+
+            if not self.analyzer:
+                logger.warning("⚠️ 单算法模式下analyzer不存在")
+                return []
+
+            # 获取该算法的错误数据
+            if error_type == '丢锤':
+                error_notes = self.analyzer.drop_hammers if hasattr(self.analyzer, 'drop_hammers') else []
+                logger.info(f"📊 单算法模式丢锤数据: len={len(error_notes)}, hasattr={hasattr(self.analyzer, 'drop_hammers')}")
+                if hasattr(self.analyzer, 'drop_hammers'):
+                    logger.info(f"📊 drop_hammers类型: {type(self.analyzer.drop_hammers)}")
+                    logger.info(f"📊 drop_hammers内容: {self.analyzer.drop_hammers}")
+            elif error_type == '多锤':
+                error_notes = self.analyzer.multi_hammers if hasattr(self.analyzer, 'multi_hammers') else []
+                logger.info(f"📊 单算法模式多锤数据: len={len(error_notes)}, hasattr={hasattr(self.analyzer, 'multi_hammers')}")
+            else:
+                logger.warning(f"⚠️ 未知错误类型: {error_type}")
+                return []
+
+            # 转换为表格数据格式（单算法模式不添加算法名称列）
+            table_data = []
+            logger.info(f"📊 单算法模式转换数据: error_notes长度={len(error_notes)}, error_type={error_type}")
+
+            for i, note in enumerate(error_notes):
+                if len(note.infos) > 0:
+                    info = note.infos[0]
+                    logger.info(f"📊 处理第{i+1}个{error_type}: keyId={info.keyId}, index={info.index}, keyOn={info.keyOn/10:.2f}ms, keyOff={info.keyOff/10:.2f}ms")
+
+                row = {
+                    'data_type': 'record' if error_type == '丢锤' else 'play',
+                    'keyId': note.keyId if hasattr(note, 'keyId') else 'N/A',
+                }
+
+                # 添加时间和索引信息
+                if error_type == '丢锤':
+                    row.update({
+                        'keyOn': f"{note.keyOn/10:.2f}" if hasattr(note, 'keyOn') else 'N/A',
+                        'keyOff': f"{note.keyOff/10:.2f}" if hasattr(note, 'keyOff') else 'N/A',
+                        'index': note.index if hasattr(note, 'index') else 'N/A',
+                        'analysis_reason': '丢锤（录制有，播放无）'
+                    })
+                else:  # 多锤
+                    row.update({
+                        'keyOn': f"{note.keyOn/10:.2f}" if hasattr(note, 'keyOn') else 'N/A',
+                        'keyOff': f"{note.keyOff/10:.2f}" if hasattr(note, 'keyOff') else 'N/A',
+                        'index': note.index if hasattr(note, 'index') else 'N/A',
+                        'analysis_reason': '多锤（播放有，录制无）'
+                    })
+
+                table_data.append(row)
+                logger.info(f"📊 添加行到table_data: {row}")
+
+            logger.info(f"📊 单算法模式最终返回: table_data长度={len(table_data)}")
             return table_data
         
         # 单算法模式：直接从analyzer获取数据
@@ -3880,8 +4104,19 @@ class PianoAnalysisBackend:
             algorithm.analyzer = self.analyzer
             algorithm.record_data = record_data
             algorithm.replay_data = replay_data
+
+            # 确保错误数据也同步到analyzer对象
+            # 从table_generator获取当前的错误数据并同步
+            if hasattr(self, 'table_generator') and self.table_generator:
+                analyzer = self.table_generator.analyzer
+                if analyzer and hasattr(analyzer, 'drop_hammers') and hasattr(analyzer, 'multi_hammers'):
+                    algorithm.analyzer.drop_hammers = analyzer.drop_hammers
+                    algorithm.analyzer.multi_hammers = analyzer.multi_hammers
+                    algorithm.analyzer.silent_hammers = getattr(analyzer, 'silent_hammers', [])
+                    logger.info(f"✅ 迁移时同步错误数据: 丢锤={len(algorithm.analyzer.drop_hammers)}, 多锤={len(algorithm.analyzer.multi_hammers)}")
+
             algorithm.metadata.status = AlgorithmStatus.READY
-            
+
             # 添加到管理器
             self.multi_algorithm_manager.algorithms[unique_algorithm_name] = algorithm
             
@@ -4160,8 +4395,8 @@ class PianoAnalysisBackend:
                     if not algorithm.analyzer or not algorithm.analyzer.note_matcher:
                         continue
                     
-                    # 获取该曲子的偏移数据
-                    offset_data = algorithm.analyzer.note_matcher.get_offset_alignment_data()
+                    # 获取该曲子的精确偏移数据（误差 ≤ 50ms）
+                    offset_data = algorithm.analyzer.note_matcher.get_precision_offset_alignment_data()
                     if not offset_data:
                         continue
                     
@@ -4637,7 +4872,6 @@ class PianoAnalysisBackend:
                     'moderate': {'count': 0, 'percent': 0.0},
                     'large': {'count': 0, 'percent': 0.0},
                     'severe': {'count': 0, 'percent': 0.0}
-                    # 注意：不再汇总失败匹配，因为评级统计不包含失败匹配
                 }
 
                 total_count = 0
@@ -4650,10 +4884,28 @@ class PianoAnalysisBackend:
                                     total_stats[level]['count'] += alg_stats[level].get('count', 0)
                                     total_count += alg_stats[level].get('count', 0)
 
-                # 计算百分比
+                # 计算百分比，确保总和为100%（保留4位小数）
                 if total_count > 0:
+                    # 先计算原始百分比
+                    raw_percentages = {}
                     for level in ['correct', 'minor', 'moderate', 'large', 'severe']:
-                        total_stats[level]['percent'] = (total_stats[level]['count'] / total_count) * 100.0
+                        raw_percentages[level] = (total_stats[level]['count'] / total_count) * 100.0
+
+                    # 保留4位小数并四舍五入
+                    rounded_percentages = {}
+                    for level in ['correct', 'minor', 'moderate', 'large', 'severe']:
+                        rounded_percentages[level] = round(raw_percentages[level], 4)
+
+                    # 调整最后一个百分比以确保总和为100%
+                    total_rounded = sum(rounded_percentages.values())
+                    if total_rounded != 100.0:
+                        # 找出最大的百分比进行调整
+                        max_level = max(rounded_percentages.keys(), key=lambda x: rounded_percentages[x])
+                        rounded_percentages[max_level] += (100.0 - total_rounded)
+
+                    # 设置最终百分比
+                    for level in ['correct', 'minor', 'moderate', 'large', 'severe']:
+                        total_stats[level]['percent'] = rounded_percentages[level]
 
                 return total_stats
 

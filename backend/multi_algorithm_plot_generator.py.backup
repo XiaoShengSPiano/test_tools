@@ -62,6 +62,231 @@ class MultiAlgorithmPlotGenerator:
         key_filter=None
     ) -> Any:
         """
+        生成瀑布图的主入口方法，根据模式分发到对应的处理方法
+
+        Args:
+            analyzers: 分析器列表
+            algorithm_names: 算法名称列表
+            is_multi_algorithm: 是否多算法模式
+            time_filter: 时间过滤器（暂未使用）
+            key_filter: 按键过滤器（暂未使用）
+
+        Returns:
+            go.Figure: Plotly图表对象
+        """
+        if not analyzers:
+            logger.warning("⚠️ 没有分析器，无法生成瀑布图")
+            return self._create_empty_plot("没有分析器")
+
+        if is_multi_algorithm:
+            return self._generate_multi_algorithm_waterfall_plot(backend, analyzers, algorithm_names)
+        else:
+            return self._generate_single_algorithm_waterfall_plot(backend, analyzers[0], algorithm_names[0])
+
+    def _generate_single_algorithm_waterfall_plot(self, backend, analyzer, algorithm_name: str) -> Any:
+        """
+        生成单算法模式的瀑布图
+
+        Args:
+            backend: 后端实例
+            analyzer: 单个分析器
+            algorithm_name: 算法名称
+
+        Returns:
+            go.Figure: Plotly图表对象
+        """
+        try:
+            logger.info(f"📊 开始生成单算法瀑布图，算法: {algorithm_name}")
+
+            if not analyzer:
+                logger.warning(f"⚠️ 分析器 '{algorithm_name}' 为空")
+                return self._create_empty_plot("分析器为空")
+
+            # 获取平均延时
+            avg_delay_ms = 0.0
+            try:
+                avg_delay_0_1ms = backend.get_global_average_delay()
+                avg_delay_ms = avg_delay_0_1ms / 10.0
+            except Exception as e:
+                logger.warning(f"⚠️ 获取平均延时失败: {e}")
+
+            # 收集单算法数据（y_offset=0）
+            algorithm_bars = self._collect_algorithm_comprehensive_data(
+                analyzer, 0, algorithm_name, 0, avg_delay_ms
+            )
+
+            if not algorithm_bars:
+                logger.warning("⚠️ 没有有效的数据点")
+                return self._create_empty_plot("没有有效的数据点")
+
+            # 创建单算法图表
+            fig = self._create_waterfall_figure_from_bars(
+                [{'analyzer': analyzer, 'bars': algorithm_bars, 'algorithm_name': algorithm_name, 'y_offset': 0}],
+                is_multi_algorithm=False
+            )
+
+            logger.info(f"✅ 单算法瀑布图生成成功: {len(algorithm_bars)} 个数据点")
+            return fig
+
+        except Exception as e:
+            logger.error(f"❌ 生成单算法瀑布图失败: {e}")
+            return self._create_empty_plot(f"生成失败: {str(e)}")
+
+    def _generate_multi_algorithm_waterfall_plot(self, backend, analyzers: List[Any], algorithm_names: List[str]) -> Any:
+        """
+        生成多算法模式的瀑布图
+
+        Args:
+            backend: 后端实例
+            analyzers: 分析器列表
+            algorithm_names: 算法名称列表
+
+        Returns:
+            go.Figure: Plotly图表对象
+        """
+        try:
+            logger.info(f"📊 开始生成多算法瀑布图，共 {len(analyzers)} 个算法")
+
+            # 获取平均延时（使用第一个算法）
+            avg_delay_ms = 0.0
+            try:
+                active_algorithms = backend.get_active_algorithms() if hasattr(backend, 'get_active_algorithms') else []
+                target_algorithm = next((alg for alg in active_algorithms if alg.metadata.algorithm_name == algorithm_names[0]), None)
+                if target_algorithm and target_algorithm.analyzer and hasattr(target_algorithm.analyzer, 'get_global_average_delay'):
+                    avg_delay_0_1ms = target_algorithm.analyzer.get_global_average_delay()
+                    avg_delay_ms = avg_delay_0_1ms / 10.0
+            except Exception as e:
+                logger.warning(f"⚠️ 获取平均延时失败: {e}")
+
+            # 处理每个算法（y_offset = 算法索引 * 100）
+            all_bars_by_algorithm = []
+            for alg_idx, (analyzer, algorithm_name) in enumerate(zip(analyzers, algorithm_names)):
+                if not analyzer:
+                    logger.warning(f"⚠️ 分析器 '{algorithm_name}' 为空，跳过")
+                    continue
+
+                current_y_offset = alg_idx * 100
+                algorithm_bars = self._collect_algorithm_comprehensive_data(
+                    analyzer, current_y_offset, algorithm_name, alg_idx, avg_delay_ms
+                )
+
+                all_bars_by_algorithm.append({
+                    'analyzer': analyzer,
+                    'bars': algorithm_bars,
+                    'algorithm_name': algorithm_name,
+                    'y_offset': current_y_offset
+                })
+
+            if not all_bars_by_algorithm:
+                logger.warning("⚠️ 没有有效的数据点")
+                return self._create_empty_plot("没有有效的数据点")
+
+            # 创建多算法图表
+            fig = self._create_waterfall_figure_from_bars(all_bars_by_algorithm, is_multi_algorithm=True)
+
+            total_bars = sum(len(alg_data['bars']) for alg_data in all_bars_by_algorithm)
+            logger.info(f"✅ 多算法瀑布图生成成功: {total_bars} 个数据点")
+            return fig
+
+        except Exception as e:
+            logger.error(f"❌ 生成多算法瀑布图失败: {e}")
+            return self._create_empty_plot(f"生成失败: {str(e)}")
+
+    def _create_waterfall_figure_from_bars(self, all_bars_by_algorithm: List[Dict], is_multi_algorithm: bool) -> Any:
+        """
+        从bars数据创建瀑布图
+
+        Args:
+            all_bars_by_algorithm: 按算法分组的bars数据
+            is_multi_algorithm: 是否多算法模式
+
+        Returns:
+            go.Figure: Plotly图表对象
+        """
+        # 收集所有力度值用于全局颜色归一化
+        all_values = []
+        for alg_data in all_bars_by_algorithm:
+            for bar in alg_data['bars']:
+                all_values.append(bar.get('velocity', 0.5))
+
+        # 全局归一化力度值
+        if all_values:
+            vmin = min(all_values)
+            vmax = max(all_values)
+        else:
+            vmin, vmax = 0, 1
+
+        # 使用colormap
+        import matplotlib.pyplot as plt
+        cmap = plt.colormaps['tab20b']
+        norm = lambda v: (v - vmin) / (vmax - vmin) if vmax > vmin else 0.5
+
+        # 创建图表
+        fig = go.Figure()
+
+        # 统计信息
+        total_bars = 0
+        drop_hammer_bars = 0
+        multi_hammer_bars = 0
+        matched_bars = 0
+
+        # 为每个条形段添加trace
+        for alg_data in all_bars_by_algorithm:
+            bars = alg_data['bars']
+            algorithm_name = alg_data['algorithm_name']
+
+            for bar in bars:
+                total_bars += 1
+                data_type = bar.get('data_type', '')
+                if data_type == 'drop_hammer':
+                    drop_hammer_bars += 1
+                elif data_type == 'multi_hammer':
+                    multi_hammer_bars += 1
+                else:
+                    matched_bars += 1
+
+                # 计算颜色
+                velocity = bar.get('velocity', 0.5)
+                color = 'rgba' + str(tuple(int(255*x) for x in cmap(norm(velocity))[:3]) + (0.9,))
+
+                # 创建trace名称
+                if data_type == 'drop_hammer':
+                    trace_name = f"{algorithm_name} - 丢锤"
+                elif data_type == 'multi_hammer':
+                    trace_name = f"{algorithm_name} - 多锤"
+                else:
+                    trace_name = f"{algorithm_name} - {bar['label']}"
+
+                # 添加水平线段
+                fig.add_trace(go.Scatter(
+                    x=[bar['t_on']/10, bar['t_off']/10],
+                    y=[bar['key_id'], bar['key_id']],
+                    mode='lines',
+                    line=dict(color=color, width=3),
+                    name=trace_name,
+                    showlegend=False,
+                    legendgroup=algorithm_name,
+                    hoverinfo='text' if bar.get('text') else 'skip',
+                    text=bar.get('text', ''),
+                    customdata=[[
+                        bar['t_on']/10,
+                        bar['t_off']/10,
+                        int(bar.get('original_key_id', bar.get('key_id', 0))),
+                        bar.get('raw_velocity', 0),
+                        bar.get('label', 'unknown'),
+                        bar.get('source_index', 0),
+                        algorithm_name
+                    ]]
+                ))
+
+        # 配置图表布局
+        self._configure_unified_waterfall_layout(fig, all_bars_by_algorithm, is_multi_algorithm)
+
+        logger.info(f"✅ 瀑布图创建完成: 总计 {total_bars} 个bars (匹配对: {matched_bars}, 丢锤: {drop_hammer_bars}, 多锤: {multi_hammer_bars})")
+        return fig
+
+    def _collect_algorithm_comprehensive_data(self, analyzer, y_offset: float, algorithm_name: str, alg_idx: int, avg_delay_ms: float = 0.0) -> List[Dict]:
+        """
         生成统一的瀑布图（支持单算法和多算法模式）
         
         单算法模式：analyzers包含1个分析器
@@ -119,7 +344,6 @@ class MultiAlgorithmPlotGenerator:
                     logger.warning(f"⚠️ 分析器 '{algorithm_name}' 为空，跳过")
                     continue
                 
-                logger.info(f"📊 处理分析器 '{algorithm_name}': 生成包含所有数据的瀑布图")
 
                 # 计算当前算法的y_offset
                 current_y_offset = alg_idx * algorithm_y_range if is_multi_algorithm else 0
@@ -128,9 +352,6 @@ class MultiAlgorithmPlotGenerator:
                 algorithm_bars = self._collect_algorithm_comprehensive_data(
                     analyzer, current_y_offset, algorithm_name, alg_idx, avg_delay_ms
                 )
-
-                # 注意：丢锤和多锤数据不应该被过滤器过滤，应该始终显示
-                # 过滤器只应该影响匹配对数据的显示，但这里我们选择显示所有数据
 
                 # 收集力度值用于全局颜色归一化
                 for bar in algorithm_bars:
@@ -249,307 +470,150 @@ class MultiAlgorithmPlotGenerator:
         """
         收集单个算法的完整瀑布图数据：匹配对 + 丢锤 + 多锤
 
-        这个方法作为统一入口，协调各个子模块的数据收集工作。
-
         Args:
             analyzer: SPMIDAnalyzer实例
             y_offset: Y轴偏移量
             algorithm_name: 算法名称
             alg_idx: 算法索引
-            avg_delay_ms: 平均延时（用于相对延时计算）
 
         Returns:
             List[Dict]: 该算法的所有瀑布图数据
         """
         algorithm_bars = []
 
-        logger.info(f"📊 开始收集算法 '{algorithm_name}' 的瀑布图数据")
-
-        # 1. 收集匹配对数据（成功和失败的匹配）
-        matched_bars = self._collect_matched_pair_data(analyzer, y_offset, algorithm_name, avg_delay_ms)
-        algorithm_bars.extend(matched_bars)
-        logger.info(f"📊 匹配对数据: {len(matched_bars)} 个bars")
-
-        # 2. 收集丢锤数据
-        drop_hammer_bars = self._collect_drop_hammer_data(analyzer, y_offset, algorithm_name)
-        algorithm_bars.extend(drop_hammer_bars)
-        logger.info(f"📊 丢锤数据: {len(drop_hammer_bars)} 个bars")
-
-        # 3. 收集多锤数据
-        multi_hammer_bars = self._collect_multi_hammer_data(analyzer, y_offset, algorithm_name)
-        algorithm_bars.extend(multi_hammer_bars)
-        logger.info(f"📊 多锤数据: {len(multi_hammer_bars)} 个bars")
-
-        total_bars = len(algorithm_bars)
-        logger.info(f"✅ 算法 '{algorithm_name}' 数据收集完成: 总计 {total_bars} 个瀑布图条形")
-
-        return algorithm_bars
-
-    def _collect_matched_pair_data(self, analyzer, y_offset: float, algorithm_name: str, avg_delay_ms: float) -> List[Dict]:
-        """
-        收集匹配对数据（成功匹配和失败匹配）
-
-        Args:
-            analyzer: SPMIDAnalyzer实例
-            y_offset: Y轴偏移量
-            algorithm_name: 算法名称
-            avg_delay_ms: 平均延时
-
-        Returns:
-            List[Dict]: 匹配对的瀑布图数据
-        """
-        bars = []
-
-        if not hasattr(analyzer, 'note_matcher') or not analyzer.note_matcher:
-            logger.info("ℹ️ 没有note_matcher，跳过匹配对数据收集")
-            return bars
-
-        note_matcher = analyzer.note_matcher
-        if not hasattr(note_matcher, 'match_results'):
-            logger.info("ℹ️ 没有match_results，跳过匹配对数据收集")
-            return bars
-
-        logger.info(f"🎯 开始收集匹配对数据，共 {len(note_matcher.match_results)} 个匹配结果")
-
-        for result in note_matcher.match_results:
-            try:
-                # 获取录制和播放音符
-                record_note = note_matcher._record_data[result.record_index]
-                replay_note = note_matcher._replay_data[result.replay_index] if result.replay_index is not None else None
-
-                # 计算延时和评级
-                grade_name, color_intensity, delay_ms, relative_delay_ms = self._calculate_match_grading(
-                    result, record_note, replay_note, avg_delay_ms
-                )
-
-                record_match_index = getattr(result, 'record_index', 'N/A')
-                replay_match_index = getattr(result, 'replay_index', 'N/A')
-
-                # 处理录制数据
-                if hasattr(record_note, 'after_touch') and record_note.after_touch is not None:
-                    record_bars = self._extract_note_bars_for_multi(
-                        record_note, 'record', y_offset, color_intensity,
-                        algorithm_name, grade_name, record_match_index, delay_ms, relative_delay_ms
-                    )
-                    bars.extend(record_bars)
-
-                    # 处理播放数据（如果存在）
-                    if replay_note is not None and hasattr(replay_note, 'after_touch') and replay_note.after_touch is not None:
-                        replay_bars = self._extract_note_bars_for_multi(
-                            replay_note, 'replay', y_offset, color_intensity,
-                            algorithm_name, grade_name, replay_match_index, delay_ms, relative_delay_ms
-                        )
-
-                        # 合并hover信息
-                        if record_bars and replay_bars:
-                            self._merge_matched_hover_info(record_bars, replay_bars, avg_delay_ms)
-
-                        bars.extend(replay_bars)
-
-            except (IndexError, AttributeError, TypeError) as e:
-                logger.warning(f"⚠️ 处理匹配结果失败: {e}")
-                continue
-
-        logger.info(f"✅ 匹配对数据收集完成: {len(bars)} 个bars")
-        return bars
-
-    def _collect_drop_hammer_data(self, analyzer, y_offset: float, algorithm_name: str) -> List[Dict]:
-        """
-        收集丢锤错误数据
-
-        Args:
-            analyzer: SPMIDAnalyzer实例
-            y_offset: Y轴偏移量
-            algorithm_name: 算法名称
-
-        Returns:
-            List[Dict]: 丢锤的瀑布图数据
-        """
-        bars = []
-        drop_hammers = getattr(analyzer, 'drop_hammers', [])
+        # 获取原始数据用于提取丢锤和多锤的音符对象
         initial_valid_record_data = getattr(analyzer, 'initial_valid_record_data', [])
-
-        if not drop_hammers:
-            logger.info("ℹ️ 没有丢锤数据")
-            return bars
-
-        logger.info(f"🪓 开始收集丢锤数据: {len(drop_hammers)} 个")
-
-        for idx, error_note in enumerate(drop_hammers):
-            try:
-                # 获取音符索引
-                note_index = self._get_error_note_index(error_note)
-
-                # 验证索引并获取note对象
-                if not self._is_valid_index(note_index, len(initial_valid_record_data)):
-                    continue
-
-                note = initial_valid_record_data[note_index] or self._create_default_note(error_note, note_index)
-
-                # 只处理有after_touch数据的note
-                if hasattr(note, 'after_touch') and note.after_touch is not None and len(note.after_touch.index) > 0:
-                    bars.extend(self._extract_note_bars_for_multi(
-                        note, 'record', y_offset, 0.1, algorithm_name,
-                        "失败", note_index, 0.0, 0.0, 'drop_hammer'
-                    ))
-
-                    # 为丢锤数据创建悬停信息
-                    for bar in bars[-1:]:  # 只处理刚添加的bar
-                        # 丢锤数据：录制存在但播放缺失
-                        bar['text'] = '<b>丢锤错误 (录制数据):</b><br>' + \
-                                     f'类型: record<br>' + \
-                                     f'键位: {getattr(note, "id", "N/A")}<br>' + \
-                                     f'锤速: {getattr(note, "hammers", ["N/A"])[0] if hasattr(note, "hammers") and note.hammers else "N/A"}<br>' + \
-                                     f'等级: 失败 (丢锤)<br>' + \
-                                     f'索引: {note_index}<br>' + \
-                                     f'按键按下: {bar["t_on"]/10:.2f}ms<br>' + \
-                                     f'按键释放: {bar["t_off"]/10:.2f}ms<br>' + \
-                                     f'错误类型: 丢锤 (播放数据缺失)<br>'
-
-                    logger.info(f"✅ 丢锤 #{idx} 处理完成")
-                else:
-                    logger.warning(f"⚠️ 丢锤 #{idx} 缺少after_touch数据，跳过")
-
-            except Exception as e:
-                logger.error(f"❌ 处理丢锤 #{idx} 失败: {e}")
-                continue
-
-        logger.info(f"✅ 丢锤数据收集完成: {len(bars)} 个bars")
-        return bars
-
-    def _collect_multi_hammer_data(self, analyzer, y_offset: float, algorithm_name: str) -> List[Dict]:
-        """
-        收集多锤错误数据
-
-        Args:
-            analyzer: SPMIDAnalyzer实例
-            y_offset: Y轴偏移量
-            algorithm_name: 算法名称
-
-        Returns:
-            List[Dict]: 多锤的瀑布图数据
-        """
-        bars = []
-        multi_hammers = getattr(analyzer, 'multi_hammers', [])
         initial_valid_replay_data = getattr(analyzer, 'initial_valid_replay_data', [])
 
-        if not multi_hammers:
-            logger.info("ℹ️ 没有多锤数据")
-            return bars
+        # 1. 处理配对数据（从match_results）
+        # avg_delay_ms 现在作为参数传入
 
-        logger.info(f"🔨 开始收集多锤数据: {len(multi_hammers)} 个")
+        if hasattr(analyzer, 'note_matcher') and analyzer.note_matcher:
+            note_matcher = analyzer.note_matcher
+            if hasattr(note_matcher, 'match_results'):
+                for result in note_matcher.match_results:
+                    # 获取对应的音符对象
+                    try:
+                        record_note = note_matcher._record_data[result.record_index]
+                        # 检查 replay_index 是否为 None
+                        if result.replay_index is None:
+                            replay_note = None
+                        else:
+                            replay_note = note_matcher._replay_data[result.replay_index]
+                    except (IndexError, AttributeError, TypeError):
+                        continue
 
-        for idx, error_note in enumerate(multi_hammers):
-            try:
-                # 获取音符索引
-                note_index = self._get_error_note_index(error_note)
+                    # 根据匹配结果确定颜色、评级和数据类型
+                    grade_name = "未知"
+                    match_index = getattr(result, 'record_index', 'N/A')
+                    delay_ms = 0.0
+                    relative_delay_ms = 0.0
 
-                # 验证索引并获取note对象
-                if not self._is_valid_index(note_index, len(initial_valid_replay_data)):
+                    if result.is_success:
+                        # 成功匹配：计算绝对延时（录制与播放按键keyon相减）
+                        if record_note is not None and replay_note is not None:
+                            # 计算录制和播放音符的keyon时间
+                            record_keyon = self._calculate_note_keyon_time(record_note)
+                            replay_keyon = self._calculate_note_keyon_time(replay_note)
+                            # 绝对延时 = 播放keyon - 录制keyon（转换为毫秒）
+                            delay_ms = (replay_keyon - record_keyon) / 10.0
+                            # 相对延时 = 绝对延时 - 平均延时
+                            relative_delay_ms = delay_ms - avg_delay_ms
+                        else:
+                            delay_ms = 0.0
+                            relative_delay_ms = 0.0 - avg_delay_ms
+
+                        if delay_ms <= 20:
+                            color_intensity = 0.8  # 优秀 - 深绿
+                            grade_name = "优秀"
+                        elif delay_ms <= 30:
+                            color_intensity = 0.6  # 良好 - 中绿
+                            grade_name = "良好"
+                        elif delay_ms <= 50:
+                            color_intensity = 0.4  # 一般 - 浅绿
+                            grade_name = "一般"
+                        elif delay_ms <= 1000:
+                            color_intensity = 0.3  # 较差 - 黄绿
+                            grade_name = "较差"
+                        else:
+                            color_intensity = 0.2  # 严重 - 黄
+                            grade_name = "严重"
+                    else:
+                        color_intensity = 0.1  # 失败 - 红
+                        grade_name = "失败"
+
+                    # 添加录制数据的条形
+                    logger.info(f"🎹 提取录制数据: 键位={getattr(record_note, 'id', 'N/A')}, 有锤子={hasattr(record_note, 'hammers') and record_note.hammers is not None}")
+                    if hasattr(record_note, 'hammers') and record_note.hammers is not None:
+                        logger.info(f"🎹 录制锤子详情: 长度={len(record_note.hammers) if hasattr(record_note.hammers, '__len__') else 'N/A'}, 有index={hasattr(record_note.hammers, 'index')}, 有values={hasattr(record_note.hammers, 'values')}")
+
+                    record_bars = self._extract_note_bars_for_multi(record_note, 'record', y_offset, color_intensity, algorithm_name, grade_name, match_index, delay_ms, relative_delay_ms)
+                    logger.info(f"🎹 录制条形提取结果: {len(record_bars)} 个条形")
+                    algorithm_bars.extend(record_bars)
+
+                    # 添加播放数据的条形（如果存在）
+                    if replay_note is not None:
+                        logger.info(f"🎵 提取播放数据: 键位={getattr(replay_note, 'id', 'N/A')}, 有锤子={hasattr(replay_note, 'hammers') and replay_note.hammers is not None}")
+                        if hasattr(replay_note, 'hammers') and replay_note.hammers is not None:
+                            logger.info(f"🎵 播放锤子详情: 长度={len(replay_note.hammers) if hasattr(replay_note.hammers, '__len__') else 'N/A'}, 有index={hasattr(replay_note.hammers, 'index')}, 有values={hasattr(replay_note.hammers, 'values')}")
+
+                        replay_bars = self._extract_note_bars_for_multi(replay_note, 'replay', y_offset, color_intensity, algorithm_name, grade_name, match_index, delay_ms, relative_delay_ms)
+                        logger.info(f"🎵 播放条形提取结果: {len(replay_bars)} 个条形")
+
+                        # 如果有匹配的replay数据，更新record bars的hover文本以包含replay信息
+                        if record_bars and replay_bars:
+                            logger.info(f"🔗 开始合并匹配对信息: {len(record_bars)} 个录制条形, {len(replay_bars)} 个播放条形")
+                            self._merge_matched_hover_info(record_bars, replay_bars, avg_delay_ms)
+                            logger.info(f"✅ 合并完成，检查结果...")
+                            # 检查合并后的结果
+                            merged_count = 0
+                            for bar in record_bars:
+                                if '播放数据:' in bar.get('text', ''):
+                                    merged_count += 1
+                                    logger.info(f"✅ 合并成功 - 键位 {bar.get('original_key_id')}: 包含播放数据")
+                            logger.info(f"📊 合并统计: {merged_count}/{len(record_bars)} 个录制条形包含播放数据")
+                        else:
+                            logger.debug(f"⚠️ 跳过合并: record_bars={bool(record_bars)}, replay_bars={bool(replay_bars)}")
+                        algorithm_bars.extend(replay_bars)
+
+        # 2. 处理丢锤数据
+        drop_hammers = getattr(analyzer, 'drop_hammers', [])
+        if drop_hammers:
+            for error_note in drop_hammers:
+                try:
+                    note_index = error_note.global_index if hasattr(error_note, 'global_index') and error_note.global_index >= 0 else error_note.infos[0].index
+                    if 0 <= note_index < len(initial_valid_record_data):
+                        note = initial_valid_record_data[note_index]
+                        if note and hasattr(note, 'hammers') and note.hammers:
+                            bars = self._extract_note_bars_for_multi(note, 'record', y_offset, 0.1, algorithm_name, "失败", note_index, 0.0, 0.0, 'drop_hammer')
+                            for bar in bars:
+                                bar['text'] = ''
+                            algorithm_bars.extend(bars)
+                except:
                     continue
-
-                note = initial_valid_replay_data[note_index] or self._create_default_note(error_note, note_index)
-
-                # 只处理有after_touch数据的note
-                if hasattr(note, 'after_touch') and note.after_touch is not None and len(note.after_touch.index) > 0:
-                    bars.extend(self._extract_note_bars_for_multi(
-                        note, 'replay', y_offset, 0.1, algorithm_name,
-                        "失败", note_index, 0.0, 0.0, 'multi_hammer'
-                    ))
-
-                    # 为多锤数据创建悬停信息
-                    for bar in bars[-1:]:  # 只处理刚添加的bar
-                        # 多锤数据：播放存在但录制缺失
-                        bar['text'] = '<b>多锤错误 (播放数据):</b><br>' + \
-                                     f'类型: replay<br>' + \
-                                     f'键位: {getattr(note, "id", "N/A")}<br>' + \
-                                     f'锤速: {getattr(note, "hammers", ["N/A"])[0] if hasattr(note, "hammers") and note.hammers else "N/A"}<br>' + \
-                                     f'等级: 失败 (多锤)<br>' + \
-                                     f'索引: {note_index}<br>' + \
-                                     f'按键按下: {bar["t_on"]/10:.2f}ms<br>' + \
-                                     f'按键释放: {bar["t_off"]/10:.2f}ms<br>' + \
-                                     f'错误类型: 多锤 (录制数据缺失)<br>'
-
-                    logger.info(f"✅ 多锤 #{idx} 处理完成")
-                else:
-                    logger.warning(f"⚠️ 多锤 #{idx} 缺少after_touch数据，跳过")
-
-            except Exception as e:
-                logger.error(f"❌ 处理多锤 #{idx} 失败: {e}")
-                continue
-
-        logger.info(f"✅ 多锤数据收集完成: {len(bars)} 个bars")
-        return bars
-
-    def _calculate_match_grading(self, result, record_note, replay_note, avg_delay_ms: float):
-        """
-        计算匹配结果的评级和延时信息
-
-        Returns:
-            tuple: (grade_name, color_intensity, delay_ms, relative_delay_ms)
-        """
-        grade_name = "未知"
-        delay_ms = 0.0
-        relative_delay_ms = 0.0
-
-        if result.is_success and record_note and replay_note:
-            # 计算延时
-            record_keyon = self._calculate_note_keyon_time(record_note)
-            replay_keyon = self._calculate_note_keyon_time(replay_note)
-            delay_ms = (replay_keyon - record_keyon) / 10.0
-            relative_delay_ms = delay_ms - avg_delay_ms
-
-            # 评级
-            if delay_ms <= 20:
-                color_intensity, grade_name = 0.8, "优秀"
-            elif delay_ms <= 30:
-                color_intensity, grade_name = 0.6, "良好"
-            elif delay_ms <= 50:
-                color_intensity, grade_name = 0.4, "一般"
-            elif delay_ms <= 1000:
-                color_intensity, grade_name = 0.3, "较差"
-            else:
-                color_intensity, grade_name = 0.2, "严重"
         else:
-            color_intensity, grade_name = 0.1, "失败"
-            relative_delay_ms = 0.0 - avg_delay_ms
+            logger.info(f"📊 没有丢锤数据")
 
-        return grade_name, color_intensity, delay_ms, relative_delay_ms
+        # 3. 处理多锤数据
+        multi_hammers = getattr(analyzer, 'multi_hammers', [])
+        if multi_hammers:
+            for error_note in multi_hammers:
+                try:
+                    note_index = error_note.global_index if hasattr(error_note, 'global_index') and error_note.global_index >= 0 else error_note.infos[0].index
+                    if 0 <= note_index < len(initial_valid_replay_data):
+                        note = initial_valid_replay_data[note_index]
+                        if note and hasattr(note, 'hammers') and note.hammers:
+                            bars = self._extract_note_bars_for_multi(note, 'replay', y_offset, 0.1, algorithm_name, "失败", note_index, 0.0, 0.0, 'multi_hammer')
+                            for bar in bars:
+                                bar['text'] = ''
+                            algorithm_bars.extend(bars)
+                except:
+                    continue
+        else:
+            logger.info(f"📊 没有多锤数据")
 
-    def _get_error_note_index(self, error_note) -> int:
-        """
-        从错误note中获取音符索引
-        """
-        note_index = error_note.global_index if hasattr(error_note, 'global_index') and error_note.global_index >= 0 else None
-        if note_index is None and error_note.infos and len(error_note.infos) > 0:
-            note_index = error_note.infos[0].index
-        return note_index
-
-    def _is_valid_index(self, index: int, data_length: int) -> bool:
-        """
-        验证索引是否有效
-        """
-        if index is None or index < 0:
-            return False
-        if index >= data_length:
-            logger.warning(f"🚫 索引超出范围: {index} >= {data_length}")
-            return False
-        return True
-
-    def _create_default_note(self, error_note, index: int):
-        """
-        创建默认的note对象用于显示
-        """
-        class DefaultNote:
-            def __init__(self, key_id, index):
-                self.id = key_id
-                self.offset = 0
-                # 为默认note创建基本的after_touch数据
-                self.after_touch = type('AfterTouch', (), {
-                    'index': [index * 10, (index + 1) * 10]  # 简单的开始和结束时间
-                })()
-
-        return DefaultNote(error_note.keyId if hasattr(error_note, 'keyId') else 60, index)
+        logger.info(f"📊 算法 '{algorithm_name}': 收集到 {len(algorithm_bars)} 个瀑布图条形")
+        return algorithm_bars
 
     def _merge_matched_hover_info(self, record_bars: List[Dict], replay_bars: List[Dict], avg_delay_ms: float) -> None:
         """
@@ -583,7 +647,6 @@ class MultiAlgorithmPlotGenerator:
                 replay_key_press = replay_info.get('t_on', 0) / 10
                 replay_key_release = replay_info.get('t_off', 0) / 10
                 replay_grade = replay_info.get('grade_name', '未知')
-                replay_match_index = replay_info.get('match_index', 'N/A')
                 replay_delay_ms = replay_info.get('delay_ms', 0.0)
                 replay_relative_delay_ms = replay_info.get('relative_delay_ms', 0.0)
                 replay_first_hammer = replay_info.get('first_hammer_time', 'N/A')
@@ -596,7 +659,6 @@ class MultiAlgorithmPlotGenerator:
                             f'键位: {record_key_id}<br>' + \
                             f'锤速: {replay_velocity}<br>' + \
                             f'等级: {replay_grade}<br>' + \
-                            f'索引: {replay_match_index}<br>' + \
                             f'绝对延时: {replay_delay_ms:.2f}ms<br>' + \
                             f'相对延时: {replay_relative_delay_ms:+.2f}ms<br>' + \
                             f'平均延时: {avg_delay_ms:.2f}ms<br>' + \
@@ -609,20 +671,8 @@ class MultiAlgorithmPlotGenerator:
                 record_bar['text'] = merged_text
                 logger.debug(f"🎯 合并完成 - 最终文本长度: {len(merged_text)}, 包含播放数据: {'播放数据:' in merged_text}")
 
-                # 为replay bar创建独立的悬停信息
-                replay_text = '<b>播放数据:</b><br>' + \
-                             f'类型: replay<br>' + \
-                             f'键位: {record_key_id}<br>' + \
-                             f'锤速: {replay_velocity}<br>' + \
-                             f'等级: {replay_grade}<br>' + \
-                             f'索引: {replay_match_index}<br>' + \
-                             f'绝对延时: {replay_delay_ms:.2f}ms<br>' + \
-                             f'相对延时: {replay_relative_delay_ms:+.2f}ms<br>' + \
-                             f'平均延时: {avg_delay_ms:.2f}ms<br>' + \
-                             f'首锤时间: {replay_first_hammer} ({replay_first_hammer/10:.2f}ms)<br>' + \
-                             f'按键按下: {replay_key_press:.2f}ms<br>' + \
-                             f'按键释放: {replay_key_release:.2f}ms<br>'
-                replay_info['text'] = replay_text
+                # 为replay bar设置空的hover（避免重复显示）
+                replay_info['text'] = ''
             else:
                 logger.warning(f"⚠️ 键位 {record_key_id}: 未找到对应的播放数据，无法合并hover信息")
                 # 为没有匹配播放数据的record bar添加提示
@@ -681,99 +731,98 @@ class MultiAlgorithmPlotGenerator:
 
         # 力度值将在每个锤子的循环中单独处理
 
-        # 为每个note创建一个基于after_touch事件的bar
-        bars = []
-        key_id = getattr(note, 'id', 1)
+        # 为每个锤击创建bar段
+        if hasattr(note, 'hammers') and len(note.hammers) > 0 and hasattr(note.hammers, 'index') and len(note.hammers.index) > 0:
+            # 获取按键ID
+            key_id = getattr(note, 'id', 1)
 
-        # 计算基于after_touch的事件时间
-        try:
+            # 计算第一个锤子的锤击时间
+            first_hammer_time = "N/A"
+            if hasattr(note, 'hammers') and len(note.hammers) > 0 and hasattr(note.hammers, 'index') and len(note.hammers.index) > 0:
+                first_hammer_time = note.hammers.index[0] + getattr(note, 'offset', 0)
+
+            # 计算键的结束时间
             if hasattr(note, 'after_touch') and note.after_touch is not None and len(note.after_touch) > 0 and hasattr(note.after_touch, 'index') and len(note.after_touch.index) > 0:
-                # 使用after_touch的开始和结束时间
-                key_on_time = note.after_touch.index[0] + getattr(note, 'offset', 0)
-                key_off_time = note.after_touch.index[-1] + getattr(note, 'offset', 0)
-                logger.info(f"🔧 使用after_touch创建bar: key_id={key_id}, 时间范围=[{key_on_time/10:.1f}, {key_off_time/10:.1f}]ms")
+                key_off = note.after_touch.index[-1] + getattr(note, 'offset', 0)
             else:
-                logger.warning(f"⚠️ note缺少after_touch数据: key_id={key_id}")
-                return bars
+                key_off = note.hammers.index[-1] + getattr(note, 'offset', 0) + 100
 
-            # 应用Y轴偏移
-            actual_key_id = key_id + y_offset
-            if label == 'replay':
-                actual_key_id += 0.2  # 播放数据稍微偏移
+            # 为每个锤击创建bar段
+            for i in range(len(note.hammers)):
+                t_hammer = note.hammers.index[i] + getattr(note, 'offset', 0)
 
-            # 使用第一个锤击的力度作为代表力度
-            hammer_velocity = "N/A"
-            hammer_velocity_norm = 0.5
-            if hasattr(note, 'hammers') and note.hammers is not None and hasattr(note.hammers, 'values') and len(note.hammers.values) > 0:
-                hammer_velocity = note.hammers.values[0]  # 使用第一个锤击的力度
-                try:
-                    hammer_velocity_norm = float(hammer_velocity) / 127.0
-                except (ValueError, TypeError):
-                    hammer_velocity_norm = 0.5
+                # 提取当前锤子的力度
+                hammer_velocity = "N/A"
+                hammer_velocity_norm = 0.5
+                if hasattr(note.hammers, 'values') and i < len(note.hammers.values):
+                    hammer_velocity = note.hammers.values[i]
+                    try:
+                        hammer_velocity_norm = float(hammer_velocity) / 127.0
+                    except (ValueError, TypeError):
+                        hammer_velocity_norm = 0.5
 
-            # 调试：检查坐标值是否在合理范围内
-            logger.info(f"📍 绘制数据点: key_id={key_id}, y_offset={y_offset}, label={label}, actual_key_id={actual_key_id:.2f}, 时间范围=[{key_on_time/10:.1f}, {key_off_time/10:.1f}]ms")
+                # 应用Y轴偏移
+                actual_key_id = key_id + y_offset
+                if label == 'replay':
+                    actual_key_id += 0.2  # 播放数据稍微偏移
 
-            bar = {
-                't_on': float(key_on_time),
-                't_off': float(key_off_time),
-                'key_id': actual_key_id,           # 用于绘图的实际键位ID（包含偏移）
-                'original_key_id': key_id,         # 原始整数键位ID（用于显示）
-                'velocity': hammer_velocity_norm,  # 标准化力度 (0.0-1.0) 用于颜色映射
-                'raw_velocity': hammer_velocity,   # 原始力度 用于显示
-                'color_intensity': color_intensity,
-                'algorithm_name': algorithm_name,
-                'label': label,
-                'data_type': data_type,
-                'hammer_index': 0,                # 固定为0，因为只有一个bar
-                'grade_name': grade_name,         # 评价等级
-                'match_index': match_index,       # 匹配系统评级时的索引
-                'delay_ms': delay_ms,             # 延时（毫秒）
-                'relative_delay_ms': relative_delay_ms,  # 相对延时（延时 - 平均延时）
-                'first_hammer_time': key_on_time  # 第一个锤子的锤击时间
-            }
 
-            # 为bar生成hover文本
-            bar_type_suffix = ""
-            if data_type == "drop_hammer":
-                bar_type_suffix = " (丢锤)"
-            elif data_type == "multi_hammer":
-                bar_type_suffix = " (多锤)"
+                bar = {
+                    't_on': t_hammer,
+                    't_off': key_off,
+                    'key_id': actual_key_id,           # 用于绘图的实际键位ID（包含偏移）
+                    'original_key_id': key_id,         # 原始整数键位ID（用于显示）
+                    'velocity': hammer_velocity_norm,  # 标准化力度 (0.0-1.0) 用于颜色映射
+                    'raw_velocity': hammer_velocity,   # 原始力度 用于显示
+                    'color_intensity': color_intensity,
+                    'algorithm_name': algorithm_name,
+                    'label': label,
+                    'data_type': data_type,
+                    'hammer_index': i,                # 锤子索引
+                    'grade_name': grade_name,         # 评价等级
+                    'match_index': match_index,       # 匹配系统评级时的索引
+                    'delay_ms': delay_ms,             # 延时（毫秒）
+                    'relative_delay_ms': relative_delay_ms,  # 相对延时（延时 - 平均延时）
+                    'first_hammer_time': first_hammer_time  # 第一个锤子的锤击时间
+                }
 
-            # 根据数据类型构建不同的hover文本
-            if label == 'record':
-                # 录制数据不显示延时信息
-                bar['text'] = (
-                    f'算法: {algorithm_name}<br>'
-                    f'类型: {label}{bar_type_suffix}<br>'
-                    f'键位: {key_id}<br>'
-                    f'锤速: {hammer_velocity}<br>'
-                    f'等级: {grade_name}<br>'
-                    f'索引: {match_index}<br>'
-                    f'按键按下: {key_on_time/10:.2f}ms<br>'
-                    f'按键释放: {key_off_time/10:.2f}ms<br>'
-                )
-            else:
-                # 播放数据显示延时信息（会在合并时添加平均延时）
-                bar['text'] = (
-                    f'算法: {algorithm_name}<br>'
-                    f'类型: {label}{bar_type_suffix}<br>'
-                    f'键位: {key_id}<br>'
-                    f'锤速: {hammer_velocity}<br>'
-                    f'等级: {grade_name}<br>'
-                    f'索引: {match_index}<br>'
-                    f'绝对延时: {delay_ms:.2f}ms<br>'
-                    f'相对延时: {relative_delay_ms:+.2f}ms<br>'
-                    f'按键按下: {key_on_time/10:.2f}ms<br>'
-                    f'按键释放: {key_off_time/10:.2f}ms<br>'
-                )
+                # 为每个bar生成hover文本
+                bar_type_suffix = ""
+                if data_type == "drop_hammer":
+                    bar_type_suffix = " (丢锤)"
+                elif data_type == "multi_hammer":
+                    bar_type_suffix = " (多锤)"
 
-            bars.append(bar)
-            logger.info(f"✅ 为 {data_type} 成功创建了 1 个bar (基于after_touch事件)")
-
-        except (TypeError, ValueError, AttributeError) as e:
-            logger.warning(f"🚫 创建 {data_type} bar失败: {e}")
-            return bars
+                # 根据数据类型构建不同的hover文本
+                if label == 'record':
+                    # 录制数据不显示延时信息
+                    bar['text'] = (
+                        f'算法: {algorithm_name}<br>'
+                        f'类型: {label}{bar_type_suffix}<br>'
+                        f'键位: {key_id}<br>'
+                        f'锤速: {hammer_velocity}<br>'
+                        f'等级: {grade_name}<br>'
+                        f'索引: {match_index}<br>'
+                        f'首锤时间: {first_hammer_time} ({first_hammer_time/10:.2f}ms)<br>'
+                        f'按键按下: {t_hammer/10:.2f}ms<br>'
+                        f'按键释放: {key_off/10:.2f}ms<br>'
+                    )
+                else:
+                    # 播放数据显示延时信息（会在合并时添加平均延时）
+                    bar['text'] = (
+                        f'算法: {algorithm_name}<br>'
+                        f'类型: {label}{bar_type_suffix}<br>'
+                        f'键位: {key_id}<br>'
+                        f'锤速: {hammer_velocity}<br>'
+                        f'等级: {grade_name}<br>'
+                        f'索引: {match_index}<br>'
+                        f'绝对延时: {delay_ms:.2f}ms<br>'
+                        f'相对延时: {relative_delay_ms:+.2f}ms<br>'
+                        f'首锤时间: {first_hammer_time} ({first_hammer_time/10:.2f}ms)<br>'
+                        f'按键按下: {t_hammer/10:.2f}ms<br>'
+                        f'按键释放: {key_off/10:.2f}ms<br>'
+                    )
+                bars.append(bar)
 
         return bars
     
@@ -871,10 +920,10 @@ class MultiAlgorithmPlotGenerator:
                     logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有分析器，跳过")
                     continue
                 
-                # 获取精确偏移对齐数据（误差 ≤ 50ms）
+                # 获取偏移对齐数据（需要从analyzer中获取）
                 try:
-                    # 从analyzer获取精确偏移数据
-                    offset_data = algorithm.analyzer.note_matcher.get_precision_offset_alignment_data()
+                    # 从analyzer获取偏移数据
+                    offset_data = algorithm.analyzer.get_offset_alignment_data()
                     
                     # 按按键ID分组并计算统计信息
                     from collections import defaultdict
@@ -1104,8 +1153,8 @@ class MultiAlgorithmPlotGenerator:
                     continue
 
                 try:
-                    # 从analyzer获取精确偏移数据（误差 ≤ 50ms）
-                    offset_data = algorithm.analyzer.note_matcher.get_precision_offset_alignment_data()
+                    # 从analyzer获取偏移数据
+                    offset_data = algorithm.analyzer.get_offset_alignment_data()
 
                     if not offset_data:
                         logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有匹配数据，跳过")
@@ -1423,15 +1472,26 @@ class MultiAlgorithmPlotGenerator:
                     continue
                 
                 try:
-                    # 从analyzer获取精确偏移数据（误差 ≤ 50ms）
-                    offset_data = algorithm.analyzer.note_matcher.get_precision_offset_alignment_data()
+                    # 从analyzer获取偏移数据
+                    offset_data = algorithm.analyzer.get_offset_alignment_data()
 
                     if not offset_data:
-                        logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有精确匹配数据（≤50ms），跳过")
+                        logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有匹配数据，跳过")
                         continue
 
-                    # 提取精确匹配的原始延时数据（带符号的keyon_offset）
-                    absolute_delays_ms = [item.get('keyon_offset', 0.0) / 10.0 for item in offset_data]
+                    # 步骤1：筛选误差<=50ms的数据
+                    # 误差 = abs(keyon_offset) / 10.0 <= 50.0
+                    filtered_offset_data = [
+                        item for item in offset_data
+                        if abs(item.get('keyon_offset', 0.0)) / 10.0 <= 50.0
+                    ]
+
+                    if not filtered_offset_data:
+                        logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有误差≤50ms的有效匹配数据，跳过")
+                        continue
+
+                    # 步骤2：提取筛选后的原始延时数据（带符号的keyon_offset）
+                    absolute_delays_ms = [item.get('keyon_offset', 0.0) / 10.0 for item in filtered_offset_data]
 
                     if not absolute_delays_ms:
                         logger.warning(f"⚠️ 算法 '{algorithm_name}' 筛选后没有有效延时数据，跳过")
@@ -1596,7 +1656,7 @@ class MultiAlgorithmPlotGenerator:
                 key_sets = []
                 for alg in ready_algorithms:
                     if alg.analyzer and alg.analyzer.note_matcher:
-                        offset_data = alg.analyzer.note_matcher.get_precision_offset_alignment_data()
+                        offset_data = alg.analyzer.note_matcher.get_offset_alignment_data()
                         if offset_data:
                             keys = set(item.get('key_id') for item in offset_data if item.get('key_id') is not None)
                             key_sets.append(keys)
@@ -1640,17 +1700,12 @@ class MultiAlgorithmPlotGenerator:
                     continue
 
                 try:
-                    offset_data = algorithm.analyzer.note_matcher.get_precision_offset_alignment_data()
+                    offset_data = algorithm.analyzer.note_matcher.get_offset_alignment_data()
 
                     if not offset_data:
-                        logger.warning(f"⚠️ 算法 '{descriptive_name}' 没有精确匹配数据（≤50ms），跳过")
+                        logger.warning(f"⚠️ 算法 '{descriptive_name}' 没有匹配数据，跳过")
                         continue
                     
-                    # 获取matched_pairs以便查找时间信息
-                    matched_pairs = algorithm.analyzer.matched_pairs
-                    record_note_dict = {r_idx: r_note for r_idx, _, r_note, _ in matched_pairs}
-                    replay_note_dict = {p_idx: p_note for _, p_idx, _, p_note in matched_pairs}
-
                     # 提取按键ID和延时数据（带符号值）
                     key_ids = []
                     delays_ms = []  # 带符号，用于显示和计算阈值
@@ -1673,27 +1728,11 @@ class MultiAlgorithmPlotGenerator:
                         try:
                             key_id_int = int(key_id)
                             delay_ms = keyon_offset / 10.0  # 带符号，保留原始值
-
-                            # 获取录制和播放按键的时间信息
-                            record_hammer_time_ms = 0.0
-                            replay_hammer_time_ms = 0.0
-
-                            # 获取录制音符的锤子时间
-                            if record_index in record_note_dict:
-                                record_note = record_note_dict[record_index]
-                                if hasattr(record_note, 'hammers') and record_note.hammers is not None and not record_note.hammers.empty:
-                                    record_hammer_time_ms = (record_note.hammers.index[0] + record_note.offset) / 10.0
-
-                            # 获取播放音符的锤子时间
-                            if replay_index in replay_note_dict:
-                                replay_note = replay_note_dict[replay_index]
-                                if hasattr(replay_note, 'hammers') and replay_note.hammers is not None and not replay_note.hammers.empty:
-                                    replay_hammer_time_ms = (replay_note.hammers.index[0] + replay_note.offset) / 10.0
-
+                            
                             key_ids.append(key_id_int)
                             delays_ms.append(delay_ms)
                             # 添加customdata：包含record_index、replay_index、算法名称，用于点击时查找匹配对
-                            customdata_list.append([record_index, replay_index, key_id_int, delay_ms, algorithm_name, record_hammer_time_ms, replay_hammer_time_ms])
+                            customdata_list.append([record_index, replay_index, key_id_int, delay_ms, descriptive_name])
                         except (ValueError, TypeError):
                             continue
                     
@@ -1713,7 +1752,6 @@ class MultiAlgorithmPlotGenerator:
                     sigma = std_0_1ms / 10.0  # 总体标准差（ms，带符号）
                     
                     # 计算相对延时：绝对延时减去平均延时
-                    # 相对延时反映了每个匹配对相对于算法平均水平的"提前"或"延迟"
                     delays_array = np.array(delays_ms)
                     relative_delays_array = delays_array - mu  # 相对延时
                     relative_delays_ms = relative_delays_array.tolist()
@@ -1781,7 +1819,7 @@ class MultiAlgorithmPlotGenerator:
                     customdata=alg_data['customdata'],  # 添加customdata，包含record_index、replay_index和算法名称
                     legendgroup=alg_data['descriptive_name'],
                     showlegend=True,
-                    hovertemplate=f"算法: {alg_data['descriptive_name']}<br>键位: %{{x}}<br>相对延时: %{{y:.2f}}ms<br>绝对延时: %{{customdata[3]:.2f}}ms<br>录制锤子时间: %{{customdata[5]:.2f}}ms<br>播放锤子时间: %{{customdata[6]:.2f}}ms<extra></extra>"
+                    hovertemplate=f"算法: {alg_data['descriptive_name']}<br>键位: %{{x}}<br>相对延时: %{{y:.2f}}ms<br>绝对延时: %{{customdata[3]:.2f}}ms<extra></extra>"
                 ))
             
             # 获取x轴范围，用于确定标注位置
@@ -1808,10 +1846,10 @@ class MultiAlgorithmPlotGenerator:
                     ),
                     legendgroup=alg_data['name'],  # 与散点图使用相同的图例组
                     showlegend=True,
-                    hovertemplate=f"算法: {alg_data['name']}<br>相对延时平均值 = 0ms<br>绝对延时平均值 = {alg_data['mu']:.2f}ms<extra></extra>"
+                    hovertemplate=f"算法: {alg_data['name']}<br>相对延时平均值 = 0ms<extra></extra>"
                 ))
                 # 注意：已移除标注，信息通过悬停（hover）显示
-
+                
                 # 添加相对延时的上阈值线（相对均值 + 3倍相对标准差）
                 fig.add_trace(go.Scatter(
                     x=[x_min, x_max],
@@ -1953,10 +1991,10 @@ class MultiAlgorithmPlotGenerator:
                     continue
                 
                 try:
-                    offset_data = algorithm.analyzer.note_matcher.get_precision_offset_alignment_data()
-
+                    offset_data = algorithm.analyzer.note_matcher.get_offset_alignment_data()
+                    
                     if not offset_data:
-                        logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有精确匹配数据（≤50ms），跳过")
+                        logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有匹配数据，跳过")
                         continue
                     
                     # 获取matched_pairs以便查找时间信息
@@ -2224,11 +2262,11 @@ class MultiAlgorithmPlotGenerator:
                 display_name = algorithm.metadata.display_name
                 color = colors[alg_idx % len(colors)]
                 
-                # 获取该算法的精确偏移数据（误差 ≤ 50ms）
+                # 获取该算法的偏移数据
                 if not algorithm.analyzer or not algorithm.analyzer.note_matcher:
                     continue
-
-                offset_data = algorithm.analyzer.note_matcher.get_precision_offset_alignment_data()
+                    
+                offset_data = algorithm.analyzer.note_matcher.get_offset_alignment_data()
                 if not offset_data:
                     continue
                 
@@ -2374,7 +2412,7 @@ class MultiAlgorithmPlotGenerator:
                         logger.warning(f"⚠️ 算法 '{descriptive_name}' 没有匹配数据，跳过")
                         continue
 
-                    offset_data = algorithm.analyzer.note_matcher.get_precision_offset_alignment_data()
+                    offset_data = algorithm.analyzer.note_matcher.get_offset_alignment_data()
 
                     # 提取锤速和延时数据，并计算Z-Score（与按键与延时Z-Score散点图相同）
                     hammer_velocities = []
@@ -2562,12 +2600,7 @@ class MultiAlgorithmPlotGenerator:
                 yaxis=dict(
                     showgrid=True,
                     gridcolor='lightgray',
-                    gridwidth=1,
-                    # 限制Y轴范围到合理的Z-Score区间，通常Z-Score在-5到+5之间
-                    range=[-5, 5],
-                    # 设置合适的刻度
-                    dtick=1,  # 每个整数一个刻度
-                    tickformat='.1f'
+                    gridwidth=1
                 ),
                 hovermode='closest',
                 plot_bgcolor='white',
@@ -2651,8 +2684,8 @@ class MultiAlgorithmPlotGenerator:
                     if not matched_pairs:
                         logger.warning(f"⚠️ 算法 '{descriptive_name}' 没有匹配数据，跳过")
                         continue
-
-                    offset_data = algorithm.analyzer.note_matcher.get_precision_offset_alignment_data()
+                    
+                    offset_data = algorithm.analyzer.note_matcher.get_offset_alignment_data()
                     
                     # 提取按键ID、锤速和延时数据
                     key_ids = []
@@ -2980,46 +3013,21 @@ class MultiAlgorithmPlotGenerator:
                     all_delays.extend(relative_delays_ms)  # 使用相对延时用于统计
                     color = colors[alg_idx % len(colors)]
                     
-                    # 添加偏移前的播放音轨散点图（X轴=原始播放时间，Y轴=相对延时）
-                    fig.add_trace(go.Scatter(
-                        x=replay_times_ms,  # X轴使用原始播放时间
-                        y=relative_delays_ms,  # Y轴使用相对延时
-                        mode='markers+lines',
-                        name=f'{display_name} (原始时间)',
-                        marker=dict(
-                            size=4,
-                            color=color,
-                            symbol='circle-open',  # 使用空心圆圈
-                            line=dict(width=1.5, color=color)
-                        ),
-                        line=dict(color=color, width=1, dash='dot'),  # 使用虚线
-                        legendgroup=f"{algorithm_name}_raw",
-                        showlegend=True,
-                        hovertemplate='<b>算法</b>: ' + display_name + ' (原始时间)<br>' +
-                                     '<b>播放时间（X轴）</b>: %{x:.2f}ms<br>' +
-                                     '<b>相对延时（Y轴）</b>: %{y:.2f}ms<br>' +
-                                     '<b>录制时间</b>: %{customdata[7]:.2f}ms<br>' +
-                                     '<b>原始延时</b>: %{customdata[4]:.2f}ms<br>' +
-                                     '<b>按键ID</b>: %{customdata[0]}<br>' +
-                                     '<b>平均延时</b>: %{customdata[5]:.2f}ms<extra></extra>',
-                        customdata=customdata_list
-                    ))
-
-                    # 添加偏移后的播放音轨散点图（X轴=偏移后的播放时间，Y轴=相对延时）
+                    # 添加播放音轨散点图（X轴=偏移后的播放时间，Y轴=相对延时）
                     fig.add_trace(go.Scatter(
                         x=replay_times_offset_ms,  # X轴使用偏移后的播放时间（播放时间 - 平均延时）
                         y=relative_delays_ms,  # Y轴使用相对延时
                         mode='markers+lines',
-                        name=f'{display_name} (偏移后，平均延时: {mean_delay:.2f}ms)',
+                        name=f'{display_name} (平均延时: {mean_delay:.2f}ms)',
                         marker=dict(
                             size=5,
                             color=color,
                             line=dict(width=0.5, color=color)
                         ),
                         line=dict(color=color, width=1.5),
-                        legendgroup=f"{algorithm_name}_offset",
+                        legendgroup=algorithm_name,
                         showlegend=True,
-                        hovertemplate='<b>算法</b>: ' + display_name + ' (偏移后)<br>' +
+                        hovertemplate='<b>算法</b>: ' + display_name + '<br>' +
                                      '<b>偏移后播放时间（X轴）</b>: %{x:.2f}ms<br>' +
                                      '<b>相对延时（Y轴）</b>: %{y:.2f}ms<br>' +
                                      '<b>实际播放时间</b>: %{customdata[6]:.2f}ms<br>' +
@@ -3108,125 +3116,14 @@ class MultiAlgorithmPlotGenerator:
                 margin=dict(t=100, b=60, l=60, r=60)
             )
             
-            # 创建原始延时时间序列图（偏移前）
-            raw_delay_fig = go.Figure()
-
-            # 收集所有算法的原始延时数据，然后按时间排序
-            all_raw_data = []  # 存储格式: [(time_ms, delay_ms, customdata, algorithm_name, color), ...]
-
-            for alg_idx, algorithm in enumerate(ready_algorithms):
-                algorithm_name = algorithm.metadata.algorithm_name
-                display_name = algorithm.metadata.display_name
-                filename = algorithm.metadata.filename
-                descriptive_name = f"{display_name} ({filename})"
-                color = colors[alg_idx % len(colors)]
-
-                if not algorithm.analyzer or not algorithm.analyzer.note_matcher:
-                    continue
-
-                try:
-                    matched_pairs = algorithm.analyzer.note_matcher.get_matched_pairs()
-                    offset_data = algorithm.analyzer.note_matcher.get_precision_offset_alignment_data()
-
-                    if not matched_pairs or not offset_data:
-                        continue
-
-                    # 提取原始延时数据
-                    offset_map = {}
-                    for item in offset_data:
-                        record_idx = item.get('record_index')
-                        replay_idx = item.get('replay_index')
-                        if record_idx is not None and replay_idx is not None:
-                            offset_map[(record_idx, replay_idx)] = item
-
-                    for record_idx, replay_idx, record_note, replay_note in matched_pairs:
-                        if (record_idx, replay_idx) in offset_map:
-                            item = offset_map[(record_idx, replay_idx)]
-                            record_keyon = item.get('record_keyon', 0)
-                            keyon_offset = item.get('keyon_offset', 0.0)
-
-                            time_ms = record_keyon / 10.0
-                            delay_ms = keyon_offset / 10.0
-                            customdata = [item.get('key_id'), record_idx, replay_idx]
-
-                            all_raw_data.append((time_ms, delay_ms, customdata, descriptive_name, color))
-
-                except Exception as e:
-                    logger.warning(f"⚠️ 处理算法 '{algorithm_name}' 的原始延时数据失败: {e}")
-                    continue
-
-            # 按时间排序所有数据点
-            all_raw_data.sort(key=lambda x: x[0])
-
-            # 为每个算法创建单独的trace（保持每条线代表一个算法）
-            algorithm_data = {}  # {algorithm_name: {'times': [], 'delays': [], 'customdata': [], 'color': color}}
-            for time_ms, delay_ms, customdata, descriptive_name, color in all_raw_data:
-                if descriptive_name not in algorithm_data:
-                    algorithm_data[descriptive_name] = {
-                        'times': [], 'delays': [], 'customdata': [], 'color': color
-                    }
-                algorithm_data[descriptive_name]['times'].append(time_ms)
-                algorithm_data[descriptive_name]['delays'].append(delay_ms)
-                algorithm_data[descriptive_name]['customdata'].append(customdata)
-
-            # 添加每个算法的trace到图表
-            for descriptive_name, data in algorithm_data.items():
-                if data['times'] and data['delays']:
-                    raw_delay_fig.add_trace(go.Scatter(
-                        x=data['times'],
-                        y=data['delays'],
-                        mode='markers+lines',
-                        name=f'{descriptive_name} (原始)',
-                        marker=dict(
-                            size=4,
-                            color=data['color'],
-                            symbol='circle'  # 实心圆点
-                        ),
-                        line=dict(color=data['color'], width=1, dash='dot'),
-                        hovertemplate='<b>算法</b>: ' + descriptive_name + '<br>' +
-                                     '<b>录制时间</b>: %{x:.2f}ms<br>' +
-                                     '<b>原始延时</b>: %{y:.2f}ms<br>' +
-                                     '<b>按键ID</b>: %{customdata[0]}<br>' +
-                                     '<extra></extra>',
-                        customdata=data['customdata']
-                    ))
-
-            # 配置原始延时图表布局
-            raw_delay_fig.update_layout(
-                xaxis_title='录制时间 (ms)',
-                yaxis_title='原始延时 (ms)',
-                showlegend=True,
-                template='plotly_white',
-                height=400,
-                hovermode='closest',
-                legend=dict(
-                    orientation='h',
-                    yanchor='bottom',
-                    y=1.02,
-                    xanchor='left',
-                    x=0.0,
-                    bgcolor='rgba(255, 255, 255, 0.9)',
-                    bordercolor='gray',
-                    borderwidth=1
-                ),
-                margin=dict(t=100, b=60, l=60, r=60)
-            )
-
             logger.info(f"✅ 多算法延时时间序列图生成成功，共 {len(ready_algorithms)} 个算法")
-            return {
-                'raw_delay_plot': raw_delay_fig,
-                'relative_delay_plot': fig  # fig是之前创建的相对延时图表
-            }
-
+            return fig
+            
         except Exception as e:
             logger.error(f"❌ 生成多算法延时时间序列图失败: {e}")
-
+            
             logger.error(traceback.format_exc())
-            empty_plot = self._create_empty_plot(f"生成失败: {str(e)}")
-            return {
-                'raw_delay_plot': empty_plot,
-                'relative_delay_plot': empty_plot
-            }
+            return self._create_empty_plot(f"生成失败: {str(e)}")
     
     def generate_relative_delay_distribution_plot(self, analysis_result: Dict[str, Any]) -> Any:
         """

@@ -201,10 +201,9 @@ class DataFilter:
             except (IndexError, AttributeError) as e:
                 raise ValueError(f"音符ID {note.id} 的after_touch数据无效: {e}") from e
             
-            # TODO
-            # 最短持续时间阈值：30ms（内部单位0.1ms）
-            if difference_value < 300:
-                # self._log_invalid_note_details(note, "持续时间过短", f"持续时间={difference_value/10:.2f}ms (<30ms)")
+            # 最短持续时间阈值：降低到10ms（内部单位0.1ms），避免过滤掉有效数据
+            if difference_value < 100:
+                self._log_invalid_note_details(note, "持续时间过短", f"持续时间={difference_value/10:.2f}ms (<10ms)")
                 return False, 'duration_too_short'
             
             # ========== 电机阈值检查逻辑已注释（用户反馈逻辑不靠谱） ==========

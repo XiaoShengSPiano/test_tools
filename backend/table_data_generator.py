@@ -41,6 +41,13 @@ class TableDataGenerator:
         self.matched_pairs = matched_pairs or []
         self.analyzer = analyzer
     
+        # 将错误数据同步到analyzer对象，确保UI层能够正确访问
+        if analyzer is not None:
+            analyzer.multi_hammers = self.multi_hammers
+            analyzer.drop_hammers = self.drop_hammers
+            analyzer.silent_hammers = self.silent_hammers
+            logger.info(f"✅ 错误数据已同步到analyzer: 丢锤={len(self.drop_hammers)}, 多锤={len(self.multi_hammers)}, 静音锤={len(self.silent_hammers)}")
+    
     
     def _build_error_table_rows(self, target_error_type: str) -> List[Dict[str, Any]]:
         """
@@ -83,13 +90,27 @@ class TableDataGenerator:
                     else:
                         analysis_reason = ''  # 没有原因就保持为空
                 
+                # 计算准确的时间信息（基于after_touch事件，基于实际note对象）
+                key_on_ms = 0.0
+                key_off_ms = 0.0
+
+                # 从analyzer获取初始数据
+                initial_valid_record_data = getattr(self.analyzer, 'initial_valid_record_data', []) if self.analyzer else []
+
+                if rec.index < len(initial_valid_record_data):
+                    record_note = initial_valid_record_data[rec.index]
+                    if hasattr(record_note, 'after_touch') and record_note.after_touch is not None and len(record_note.after_touch.index) > 0:
+                        # 使用after_touch的开始和结束时间
+                        key_on_ms = (record_note.after_touch.index[0] + record_note.offset) / 10.0
+                        key_off_ms = (record_note.after_touch.index[-1] + record_note.offset) / 10.0
+                
                 table_data.append({
                     'global_index': error_note.global_index,
                     'problem_type': error_note.error_type,
                     'data_type': 'record',
                     'keyId': rec.keyId,
-                    'keyOn': f"{rec.keyOn/10:.2f}ms",
-                    'keyOff': f"{rec.keyOff/10:.2f}ms",
+                    'keyOn': f"{key_on_ms:.2f}ms",
+                    'keyOff': f"{key_off_ms:.2f}ms",
                     'index': rec.index,
                     'analysis_reason': analysis_reason
                 })
@@ -130,14 +151,28 @@ class TableDataGenerator:
                     'index': '无匹配',
                     'analysis_reason': ''
                 })
+                # 计算准确的时间信息（基于after_touch事件，基于实际note对象）
+                key_on_ms = 0.0
+                key_off_ms = 0.0
+
+                # 从analyzer获取初始数据
+                initial_valid_replay_data = getattr(self.analyzer, 'initial_valid_replay_data', []) if self.analyzer else []
+
+                if play.index < len(initial_valid_replay_data):
+                    replay_note = initial_valid_replay_data[play.index]
+                    if hasattr(replay_note, 'after_touch') and replay_note.after_touch is not None and len(replay_note.after_touch.index) > 0:
+                        # 使用after_touch的开始和结束时间
+                        key_on_ms = (replay_note.after_touch.index[0] + replay_note.offset) / 10.0
+                        key_off_ms = (replay_note.after_touch.index[-1] + replay_note.offset) / 10.0
+
                 # 播放行显示实际数据
                 table_data.append({
                     'global_index': error_note.global_index,
                     'problem_type': '',
                     'data_type': 'play',
                     'keyId': play.keyId,
-                    'keyOn': f"{play.keyOn/10:.2f}ms",
-                    'keyOff': f"{play.keyOff/10:.2f}ms",
+                    'keyOn': f"{key_on_ms:.2f}ms",
+                    'keyOff': f"{key_off_ms:.2f}ms",
                     'index': play.index,
                     'analysis_reason': analysis_reason
                 })

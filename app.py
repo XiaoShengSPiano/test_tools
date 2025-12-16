@@ -75,9 +75,6 @@ class ApplicationManager:
 
         # 只在主进程中记录启动信息，避免Flask debug模式下的重复日志
         if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
-            logger.info("✅ SPMID模块加载成功")
-            logger.info(f"📁 数据库路径: {self.history_manager.db_path}")
-            logger.info("✅ 数据库初始化完成")
             logger.info(f"🌐 访问地址: http://{HOST}:{PORT}")
 
         self.app.run(debug=DEBUG, host=HOST, port=PORT)

@@ -20,6 +20,9 @@ from utils.logger import Logger
 import spmid
 import plotly.graph_objects as go
 
+# 导入新的瀑布图生成器
+from .waterfall_plot_generator import WaterfallPlotGenerator
+
 logger = Logger.get_logger()
 
 
@@ -33,6 +36,10 @@ class PlotGenerator:
         self.matched_pairs = None
         self.analyzer = None  # SPMIDAnalyzer实例
         self.data_filter = data_filter  # DataFilter实例
+
+        # 初始化新的瀑布图生成器
+        self.waterfall_generator = WaterfallPlotGenerator()
+
         self._setup_chinese_font()
     
     def set_data(self, valid_record_data=None, valid_replay_data=None, matched_pairs=None, analyzer=None):
@@ -95,83 +102,35 @@ class PlotGenerator:
             return False
     
     # TODO
-    def generate_waterfall_plot(self, time_filter=None) -> Any:
+    def generate_waterfall_plot(self, time_filter=None, include_all_data=True) -> Any:
         """
-        生成瀑布图 - 调用SPMIDAnalyzer获取有效数据
-        
+        生成瀑布图 - 基于匹配等级划分的数据
+
         Args:
-            time_filter: 时间过滤器实例，用于获取过滤后的数据
-        
+            time_filter: 时间过滤器实例，用于过滤数据
+            include_all_data: 兼容性参数（已废弃），现在总是使用基于匹配等级的模式
+
         Returns:
             Any: 瀑布图对象
         """
         try:
-            # 检查是否有可用的数据源
-            has_data = (self.valid_record_data and self.valid_replay_data) or self.analyzer
-            if not has_data:
-                logger.error("没有可用的数据源，无法生成瀑布图")
+            # 检查是否有analyzer（包含note_matcher）
+            if not self.analyzer or not hasattr(self.analyzer, 'note_matcher'):
+                logger.error("没有可用的分析器或音符匹配器，无法生成瀑布图")
                 return self._create_empty_plot("数据源不存在")
-            
-            # 获取数据
-            if time_filter:
-                # 使用时间过滤后的数据
-                filtered_record_data, filtered_replay_data = time_filter.get_filtered_data()
-                logger.info(f"⏰ 时间过滤结果: 录制{len(filtered_record_data)}个音符, 播放{len(filtered_replay_data)}个音符")
-                
-                # 如果时间过滤返回了有效数据，使用过滤后的数据
-                if filtered_record_data and filtered_replay_data:
-                    valid_record_data = filtered_record_data
-                    valid_replay_data = filtered_replay_data
-                    logger.info(f"✅ 使用时间过滤后的数据")
-                else:
-                    # 时间过滤返回空数据，回退到原始数据
-                    logger.warning("⚠️ 时间过滤返回空数据，回退到原始数据")
-                    if self.valid_record_data and self.valid_replay_data:
-                        valid_record_data = self.valid_record_data
-                        valid_replay_data = self.valid_replay_data
-                        logger.info(f"📊 使用PlotGenerator存储的数据: 录制{len(valid_record_data)}个音符, 播放{len(valid_replay_data)}个音符")
-                    elif self.analyzer:
-                        valid_record_data = self.analyzer.get_valid_record_data()
-                        valid_replay_data = self.analyzer.get_valid_replay_data()
-                        logger.info(f"📊 使用Analyzer数据: 录制{len(valid_record_data)}个音符, 播放{len(valid_replay_data)}个音符")
-                    else:
-                        valid_record_data = None
-                        valid_replay_data = None
-                        logger.warning("⚠️ 没有可用的数据源")
-            else:
-                # 优先使用PlotGenerator自己存储的数据
-                if self.valid_record_data and self.valid_replay_data:
-                    valid_record_data = self.valid_record_data
-                    valid_replay_data = self.valid_replay_data
-                    logger.info(f"📊 使用PlotGenerator存储的数据: 录制{len(valid_record_data)}个音符, 播放{len(valid_replay_data)}个音符")
-                elif self.analyzer:
-                    # 备选方案：从analyzer获取数据
-                    valid_record_data = self.analyzer.get_valid_record_data()
-                    valid_replay_data = self.analyzer.get_valid_replay_data()
-                    logger.info(f"📊 使用Analyzer数据: 录制{len(valid_record_data)}个音符, 播放{len(valid_replay_data)}个音符")
-                else:
-                    valid_record_data = None
-                    valid_replay_data = None
-                    logger.warning("⚠️ 没有可用的数据源")
-            
-            if not valid_record_data or not valid_replay_data:
-                logger.error("有效数据不存在，无法生成瀑布图")
-                return self._create_empty_plot("数据不存在")
-            
-            # 应用按键过滤
-            if self.data_filter and self.data_filter.key_filter:
-                logger.info(f"🔍 应用按键过滤: {sorted(list(self.data_filter.key_filter))}")
-                valid_record_data = self._apply_key_filter(valid_record_data, self.data_filter.key_filter)
-                valid_replay_data = self._apply_key_filter(valid_replay_data, self.data_filter.key_filter)
-                logger.info(f"📊 按键过滤后: 录制{len(valid_record_data)}个音符, 播放{len(valid_replay_data)}个音符")
-            
-            # 使用spmid模块生成瀑布图
-            # 注意：time_range 参数在 generate_waterfall_plot 中暂不支持，需要通过 update_layout 设置
-            fig = spmid.plot_bar_plotly(valid_record_data, valid_replay_data)
-            
+
+            # 使用基于匹配等级划分的瀑布图生成器
+            logger.info("🎨 使用基于匹配等级划分的瀑布图生成器")
+
+            fig = self.waterfall_generator.generate_comprehensive_waterfall_plot(
+                self.analyzer,  # 传递完整的analyzer，包含note_matcher和错误数据
+                time_filter,
+                self.data_filter.key_filter if self.data_filter else None
+            )
+
             logger.info("✅ 瀑布图生成成功")
             return fig
-            
+
         except Exception as e:
             logger.error(f"瀑布图生成失败: {e}")
             logger.error(traceback.format_exc())
@@ -584,10 +543,16 @@ class PlotGenerator:
         """配置图表布局（横轴、纵轴、图注等）"""
         # 收集所有播放锤速用于生成横轴刻度
         all_velocities = self._collect_all_velocities(analysis_result, is_multi_algorithm, algorithm_results)
-        
-        # 生成横轴刻度
-        tick_positions, tick_texts = self._generate_log_ticks(all_velocities)
-        
+
+        # 生成横轴刻度（基于数据分布动态调整）
+        tick_positions, tick_texts = self._generate_adaptive_log_ticks(all_velocities)
+
+        # 收集所有相对延时数据用于Y轴刻度调整
+        all_delays = self._collect_all_delays(analysis_result, is_multi_algorithm, algorithm_results)
+
+        # 基于数据分布动态调整Y轴范围和刻度
+        y_axis_config = self._generate_adaptive_y_axis_config(all_delays)
+
         fig.update_layout(
             xaxis_title='log₁₀(播放锤速)',
             yaxis_title='相对延时 (ms)',
@@ -604,7 +569,8 @@ class PlotGenerator:
                 gridcolor='lightgray',
                 zeroline=True,  # 显示y=0的参考线
                 zerolinecolor='red',
-                zerolinewidth=1.5
+                zerolinewidth=1.5,
+                **y_axis_config  # 使用动态配置
             ),
             showlegend=True,
             template='plotly_white',
@@ -642,7 +608,11 @@ class PlotGenerator:
         return all_velocities
     
     def _generate_log_ticks(self, velocities):
-        """生成对数刻度的刻度点"""
+        """生成对数刻度的刻度点（保留原有函数以防其他地方使用）"""
+        return self._generate_adaptive_log_ticks(velocities)
+
+    def _generate_adaptive_log_ticks(self, velocities):
+        """根据数据分布生成自适应的对数刻度"""
         if not velocities:
             return [], []
 
@@ -652,21 +622,103 @@ class PlotGenerator:
         if min_vel <= 0 or max_vel <= 0:
             return [], []
 
-        min_log = math.floor(math.log10(min_vel))
-        max_log = math.ceil(math.log10(max_vel))
+        min_log = math.log10(min_vel)
+        max_log = math.log10(max_vel)
+        log_range = max_log - min_log
 
-        # 生成更密集的刻度，每0.2个单位一个刻度
+        # 根据数据范围确定刻度间隔
+        if log_range <= 0.5:  # 范围很小，使用0.1间隔
+            tick_interval = 0.1
+        elif log_range <= 1.0:  # 范围中等，使用0.2间隔
+            tick_interval = 0.2
+        elif log_range <= 2.0:  # 范围较大，使用0.5间隔
+            tick_interval = 0.5
+        else:  # 范围很大，使用1.0间隔
+            tick_interval = 1.0
+
+        # 计算刻度位置
         tick_positions = []
         tick_texts = []
 
-        current = min_log
-        while current <= max_log:
-            tick_positions.append(current)
-            # 显示log10值本身
-            tick_texts.append(f"{current:.1f}")
-            current += 0.2  # 每0.2个log10单位一个刻度
+        start_tick = math.floor(min_log / tick_interval) * tick_interval
+        end_tick = math.ceil(max_log / tick_interval) * tick_interval
+
+        current = start_tick
+        while current <= end_tick + 1e-10:  # 添加小常数避免浮点误差
+            if current >= min_log - tick_interval * 0.5 and current <= max_log + tick_interval * 0.5:
+                tick_positions.append(current)
+                tick_texts.append(f"{current:.1f}")
+            current += tick_interval
 
         return tick_positions, tick_texts
+
+    def _collect_all_delays(self, analysis_result, is_multi_algorithm, algorithm_results):
+        """收集所有相对延时数据用于Y轴配置"""
+        all_delays = []
+
+        if is_multi_algorithm and algorithm_results:
+            for alg_result in algorithm_results.values():
+                interaction_data = alg_result.get('interaction_plot_data', {})
+                key_data = interaction_data.get('key_data', {})
+                for data in key_data.values():
+                    delays = data.get('delays', [])  # 相对延时
+                    all_delays.extend(delays)
+        else:
+            interaction_data = analysis_result.get('interaction_plot_data', {})
+            key_data = interaction_data.get('key_data', {})
+            for data in key_data.values():
+                delays = data.get('delays', [])
+                all_delays.extend(delays)
+
+        return all_delays
+
+    def _generate_adaptive_y_axis_config(self, delays):
+        """根据相对延时数据分布生成自适应的Y轴配置"""
+        if not delays:
+            # 默认配置
+            return {
+                'range': [-100, 100],
+                'dtick': 10,
+                'tickformat': '.1f'
+            }
+
+        min_delay = min(delays)
+        max_delay = max(delays)
+        delay_range = max_delay - min_delay
+
+        # 计算合适的范围（稍微扩大一点边界）
+        margin = delay_range * 0.05  # 5%的边距
+        y_min = min_delay - margin
+        y_max = max_delay + margin
+
+        # 确保范围不会超过合理限制
+        y_min = max(y_min, -200)  # 最大下限
+        y_max = min(y_max, 200)   # 最大上限
+
+        # 根据数据范围确定刻度间隔
+        if delay_range <= 20:  # 范围很小，使用2ms间隔
+            dtick = 2
+        elif delay_range <= 50:  # 范围中等，使用5ms间隔
+            dtick = 5
+        elif delay_range <= 100:  # 范围较大，使用10ms间隔
+            dtick = 10
+        else:  # 范围很大，使用20ms间隔
+            dtick = 20
+
+        # 确保刻度数量合适（大约10-20个刻度）
+        total_range = y_max - y_min
+        optimal_ticks = 15
+        calculated_dtick = total_range / optimal_ticks
+
+        # 选择最接近的标准刻度间隔
+        standard_dticks = [1, 2, 5, 10, 20, 25, 50, 100]
+        dtick = min(standard_dticks, key=lambda x: abs(x - calculated_dtick))
+
+        return {
+            'range': [y_min, y_max],
+            'dtick': dtick,
+            'tickformat': '.1f'
+        }
     
     def _create_algorithm_control_legends(self, fig, algorithm_names, algorithm_colors):
         """创建算法控制图注（独立的图例组）"""
@@ -866,11 +918,13 @@ class PlotGenerator:
         """
         生成按键-力度交互效应图
         横轴：log₁₀(播放锤速)
-        纵轴：锤速差值（播放锤速 - 录制锤速）
-        
+        纵轴：相对延时（延时 - 平均延时）
+
+        显示不同按键在不同力度下的延时表现，用于分析按键×力度的交互效应
+
         Args:
             analysis_result: analyze_key_force_interaction()的返回结果
-            
+
         Returns:
             Any: Plotly图表对象
         """
