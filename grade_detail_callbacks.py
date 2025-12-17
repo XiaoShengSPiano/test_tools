@@ -404,7 +404,59 @@ def _extract_active_cell(active_cells):
 def _get_table_data(table_data_list, table_index):
     """根据表格索引获取对应的数据"""
     if isinstance(table_data_list, list) and len(table_data_list) > 0:
-        return table_data_list[0]  # 简化处理，取第一个表格的数据
+        # 在多算法模式下，我们需要根据 table_index 找到对应的表格数据
+        # 由于回调使用了 dash.ALL，table_data_list 包含所有表格的数据
+        # 我们可以通过 table_index 在列表中查找匹配的数据
+
+        # 由于 dash.ALL 返回的数据顺序通常与组件定义顺序一致
+        # 我们可以尝试通过索引位置来匹配，或者通过数据内容来匹配
+
+        # 更简单的方法：由于表格数据通常按算法顺序创建
+        # 我们可以根据 table_index 的值来选择对应的数据
+        if table_index and isinstance(table_index, str):
+            # 尝试通过某种启发式方法匹配数据
+            # 例如，如果 table_index 是算法名称，我们可以检查数据中是否包含该算法的信息
+            for table_data in table_data_list:
+                if table_data and isinstance(table_data, list) and len(table_data) > 0:
+                    # 检查第一行数据是否包含算法信息
+                    first_row = table_data[0] if table_data else {}
+                    if isinstance(first_row, dict) and 'algorithm_name' in first_row:
+                        if first_row.get('algorithm_name') == table_index:
+                            return table_data
+
+        # 如果没有找到匹配的数据，返回第一个非空数据
+        for table_data in table_data_list:
+            if table_data and isinstance(table_data, list) and len(table_data) > 0:
+                return table_data
+
+        # 默认返回第一个表格的数据（向后兼容）
+        return table_data_list[0]
+    return None
+
+
+def _get_table_data_by_index(table_data_list, triggered_index):
+    """根据触发的索引获取对应的表格数据"""
+    if isinstance(table_data_list, list) and len(table_data_list) > 0:
+        # 在多算法模式下，尝试根据triggered_index找到对应的数据
+
+        # 方法1：检查数据内容是否包含匹配的算法信息
+        for table_data in table_data_list:
+            if table_data and isinstance(table_data, list) and len(table_data) > 0:
+                # 检查第一行数据是否包含算法信息
+                first_row = table_data[0] if table_data else {}
+                if isinstance(first_row, dict) and 'algorithm_name' in first_row:
+                    if first_row.get('algorithm_name') == triggered_index:
+                        return table_data
+
+        # 方法2：如果没有找到匹配的，根据数据的位置关系返回
+        # 通常第一个数据对应第一个算法，第二个对应第二个算法
+        # 这里简化处理，返回第一个非空数据
+        for table_data in table_data_list:
+            if table_data and isinstance(table_data, list) and len(table_data) > 0:
+                return table_data
+
+        # 默认返回第一个
+        return table_data_list[0]
     return None
 
 
@@ -580,19 +632,41 @@ def register_grade_detail_callbacks(app, session_manager: SessionManager):
 
         # 处理表格点击
         if 'grade-detail-datatable' in trigger_id and 'active_cell' in trigger_id:
-            # 解析表格信息
+            # 解析表格信息 - 获取触发表格的索引
             table_index = _parse_table_trigger(trigger_id)
             if not table_index:
                 return current_style, [], no_update
 
-            # 提取激活的单元格
-            active_cell = _extract_active_cell(active_cells)
-            if not active_cell:
-                return current_style, [], no_update
+            # 根据表格索引找到对应的active_cell和table_data
+            # 由于dash.ALL的返回顺序与组件定义顺序一致，我们需要找到匹配的索引
+            active_cell = None
+            table_data = None
 
-            # 获取表格数据
-            table_data = _get_table_data(table_data_list, table_index)
-            if not table_data:
+            # 解析触发源的完整ID来获取索引位置
+            try:
+                # trigger_id 格式类似: '{"index":"algorithm_name","type":"grade-detail-datatable"}.active_cell'
+                id_part = trigger_id.split('.')[0]
+                table_props = json.loads(id_part)
+                triggered_index = table_props.get('index')
+
+                # 在多算法模式下，我们需要找到对应索引的数据
+                # 由于回调参数的顺序与组件定义顺序一致，我们可以尝试匹配
+                if triggered_index:
+                    # 简化处理：假设第一个匹配的数据就是正确的
+                    # 在实际应用中，可能需要更复杂的匹配逻辑
+                    active_cell = _extract_active_cell(active_cells)
+                    table_data = _get_table_data_by_index(table_data_list, triggered_index)
+                else:
+                    # 单算法模式或默认处理
+                    active_cell = _extract_active_cell(active_cells)
+                    table_data = _get_table_data(table_data_list, table_index)
+
+            except (json.JSONDecodeError, KeyError):
+                # 回退到原来的逻辑
+                active_cell = _extract_active_cell(active_cells)
+                table_data = _get_table_data(table_data_list, table_index)
+
+            if not active_cell or not table_data:
                 return current_style, [], no_update
 
             # 提取行数据

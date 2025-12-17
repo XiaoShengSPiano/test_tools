@@ -365,19 +365,12 @@ def create_main_layout():
             dcc.Tabs(id="main-tabs", value="waterfall-tab", children=[
                 dcc.Tab(label="🌊 瀑布图分析", value="waterfall-tab", children=[
                     html.Div(id="waterfall-content", style={'padding': '20px', 'width': '100%'}, children=[
-                        # 返回按钮区域
+                        # 返回按钮 - 返回到报告界面
                         html.Div([
-                            # 返回报告界面按钮
                             dbc.Button([
                                 html.I(className="fas fa-arrow-left me-2"),
                                 "返回报告界面"
-                            ], id='btn-return-to-report', color='secondary', size='md', className='mb-3 me-2'),
-                            # 返回评级统计按钮（条件显示）
-                            dbc.Button([
-                                html.I(className="fas fa-arrow-left me-2"),
-                                "返回评级统计"
-                            ], id='btn-return-to-grade-detail', color='primary', size='md', className='mb-3',
-                               style={'display': 'none'})  # 默认隐藏，需要时显示
+                            ], id='btn-return-to-report', color='secondary', size='md', className='mb-3')
                         ], style={'marginBottom': '15px'}),
                         dcc.Graph(
                             id='main-plot', 
@@ -600,10 +593,10 @@ def create_main_layout():
         dcc.Store(id='scroll-to-plot-trigger', data=None),
         # 相对延时分布图滚动触发Store
         dcc.Store(id='relative-delay-distribution-scroll-trigger', data=None),
-        # 评级统计返回滚动触发Store
-        dcc.Store(id='grade-detail-return-scroll-trigger', data=None),
         # 评级统计区域滚动触发Store
         dcc.Store(id='grade-detail-section-scroll-trigger', data=None),
+        # 评级统计表格返回滚动触发Store
+        dcc.Store(id='grade-detail-return-scroll-trigger', data=None),
         # 将模态框移到主布局顶层，确保在所有Tab中都能显示
         html.Div([
             html.Div([
@@ -757,12 +750,11 @@ def create_main_layout():
                             })
                         ], style={'position': 'relative', 'borderBottom': '1px solid #dee2e6'}),
                         html.Div([
-                            html.Div(id='key-curves-comparison-container', children=[], style={'border': 'none', 'padding': '0', 'margin': '0'})
+                            html.Div(id='key-curves-comparison-container', children=[])
                         ], id='key-curves-modal-content', className="modal-body", style={
                             'padding': '10px 20px 20px 20px',  # 减少顶部padding：从20px改为10px
                             'maxHeight': '90vh',
-                            'overflowY': 'auto',
-                            'border': 'none'
+                            'overflowY': 'auto'
                         }),
                         html.Div([
                             html.Button(
@@ -1172,70 +1164,33 @@ def _create_single_algorithm_error_tables(algorithm, algorithm_name):
         if not algorithm.analyzer:
             return None, None
         
-        # 直接使用drop_hammers和multi_hammers数据，确保与统计数据源一致
-        drop_hammers_data = []
-        drop_hammers = getattr(algorithm.analyzer, 'drop_hammers', []) if hasattr(algorithm.analyzer, 'drop_hammers') else []
-        multi_hammers = getattr(algorithm.analyzer, 'multi_hammers', []) if hasattr(algorithm.analyzer, 'multi_hammers') else []
-
-        logger.info(f"📊 表格使用drop_hammers数据: {len(drop_hammers)} 个")
-        logger.info(f"📊 表格数据源详情: hasattr(algorithm.analyzer, 'drop_hammers')={hasattr(algorithm.analyzer, 'drop_hammers') if algorithm.analyzer else 'no_analyzer'}")
-
-        # 详细记录丢锤按键信息
-        if drop_hammers:
-            logger.info(f"🔍 多算法表格处理丢锤按键详细信息 ({len(drop_hammers)}个):")
-            for i, error_note in enumerate(drop_hammers):
-                if len(error_note.infos) > 0:
-                    rec = error_note.infos[0]
-                    logger.info(f"  多算法丢锤{i+1}: 按键ID={rec.keyId}, 索引={rec.index}, keyOn={rec.keyOn/10:.2f}ms, keyOff={rec.keyOff/10:.2f}ms")
-
-        # 详细记录多锤按键信息
-        if multi_hammers:
-            logger.info(f"🔍 多算法表格处理多锤按键详细信息 ({len(multi_hammers)}个):")
-            for i, error_note in enumerate(multi_hammers):
-                if len(error_note.infos) > 0:
-                    play = error_note.infos[0]
-                    logger.info(f"  多算法多锤{i+1}: 按键ID={play.keyId}, 索引={play.index}, keyOn={play.keyOn/10:.2f}ms, keyOff={play.keyOff/10:.2f}ms")
+        # 获取错误数据（ErrorNote对象列表）
+        drop_hammers = algorithm.analyzer.drop_hammers if hasattr(algorithm.analyzer, 'drop_hammers') else []
+        multi_hammers = algorithm.analyzer.multi_hammers if hasattr(algorithm.analyzer, 'multi_hammers') else []
         
         # 获取匹配失败原因（用于更详细的分析）
         failure_reasons = {}
         if algorithm.analyzer and hasattr(algorithm.analyzer, 'note_matcher'):
             failure_reasons = getattr(algorithm.analyzer.note_matcher, 'failure_reasons', {})
         
-        # 获取有效数据用于显示时间信息
-        initial_valid_record_data = getattr(algorithm.analyzer, 'initial_valid_record_data', [])
-
         # 转换为表格数据格式
+        drop_hammers_data = []
         for error_note in drop_hammers:
             # ErrorNote对象包含infos列表，每个元素是NoteInfo对象
             if len(error_note.infos) > 0:
                 rec = error_note.infos[0]  # 获取第一个NoteInfo对象
-
-                # 从原始数据获取更准确的时间信息
-                record_note = None
-                if rec.index < len(initial_valid_record_data):
-                    record_note = initial_valid_record_data[rec.index]
-
-                # 计算准确的时间信息（只使用after_touch数据）
-                if not record_note:
-                    raise ValueError(f"程序错误：找不到索引 {rec.index} 对应的音符数据")
-
-                if not hasattr(record_note, 'after_touch') or record_note.after_touch is None or len(record_note.after_touch.index) == 0:
-                    raise ValueError(f"程序错误：音符 {rec.index} 缺少after_touch数据")
-
-                # 只使用after_touch数据计算按下和释放时间
-                key_on = (record_note.after_touch.index[0] + record_note.offset) / 10.0
-                key_off = (record_note.after_touch.index[-1] + record_note.offset) / 10.0
                 
                 # 获取详细的匹配失败原因
                 analysis_reason = '丢锤（录制有，播放无）'
                 if ('record', rec.index) in failure_reasons:
                     analysis_reason = failure_reasons[('record', rec.index)]
                 
+                # NoteInfo的keyOn和keyOff单位是0.1ms，需要除以10转换为ms
                 row = {
                     'data_type': 'record',
                     'keyId': rec.keyId,
-                    'keyOn': f"{key_on:.2f}",
-                    'keyOff': f"{key_off:.2f}",
+                    'keyOn': f"{rec.keyOn/10:.2f}",
+                    'keyOff': f"{rec.keyOff/10:.2f}",
                     'index': rec.index,
                     'analysis_reason': analysis_reason
                 }
@@ -1252,12 +1207,13 @@ def _create_single_algorithm_error_tables(algorithm, algorithm_name):
                 })
         
         multi_hammers_data = []
-        initial_valid_replay_data = getattr(algorithm.analyzer, 'initial_valid_replay_data', [])
-
         for error_note in multi_hammers:
             # ErrorNote对象包含infos列表，每个元素是NoteInfo对象
             if len(error_note.infos) > 0:
                 play = error_note.infos[0]  # 获取第一个NoteInfo对象
+                
+                # 多锤的分析原因
+                analysis_reason = '多锤（播放有，录制无）'
                 
                 # 录制行显示"无匹配"
                 multi_hammers_data.append({
@@ -1268,31 +1224,14 @@ def _create_single_algorithm_error_tables(algorithm, algorithm_name):
                     'index': '无匹配',
                     'analysis_reason': ''
                 })
-
-                # 从实际的播放音符数据获取after_touch信息
-                replay_note = None
-                if play.index < len(initial_valid_replay_data):
-                    replay_note = initial_valid_replay_data[play.index]
-
-                if not replay_note:
-                    raise ValueError(f"程序错误：找不到索引 {play.index} 对应的播放音符数据")
-
-                if not hasattr(replay_note, 'after_touch') or replay_note.after_touch is None or len(replay_note.after_touch.index) == 0:
-                    raise ValueError(f"程序错误：播放音符 {play.index} 缺少after_touch数据")
-
-                # 只使用after_touch数据计算按下和释放时间
-                key_on = (replay_note.after_touch.index[0] + replay_note.offset) / 10.0
-                key_off = (replay_note.after_touch.index[-1] + replay_note.offset) / 10.0
-
-                # 多锤的分析原因
-                analysis_reason = '多锤（播放有，录制无）'
                 
                 # 播放行显示实际数据
+                # NoteInfo的keyOn和keyOff单位是0.1ms，需要除以10转换为ms
                 row = {
                     'data_type': 'play',
                     'keyId': play.keyId,
-                    'keyOn': f"{key_on:.2f}",
-                    'keyOff': f"{key_off:.2f}",
+                    'keyOn': f"{play.keyOn/10:.2f}",
+                    'keyOff': f"{play.keyOff/10:.2f}",
                     'index': play.index,
                     'analysis_reason': analysis_reason
                 }
@@ -1467,324 +1406,6 @@ def _create_single_algorithm_error_tables(algorithm, algorithm_name):
         return None, None
 
 
-def _create_single_algorithm_error_tables_component(backend):
-    """
-    为单算法模式创建独立的错误表格组件
-
-    Args:
-        backend: PianoAnalysisBackend实例
-
-    Returns:
-        dbc.Row: 包含丢锤和多锤表格的行
-    """
-    if not backend or not hasattr(backend, 'analyzer') or not backend.analyzer:
-        # 没有数据时返回空
-        return html.Div()
-
-    try:
-        # 直接从analyzer获取数据（单算法模式）
-        drop_hammers = getattr(backend.analyzer, 'drop_hammers', [])
-        multi_hammers = getattr(backend.analyzer, 'multi_hammers', [])
-
-        logger.info(f"📊 单算法错误表格组件: 丢锤={len(drop_hammers)}, 多锤={len(multi_hammers)}")
-
-        # 详细记录丢锤按键信息
-        if drop_hammers:
-            logger.info("🔍 表格处理丢锤按键详细信息:")
-            for i, error_note in enumerate(drop_hammers):
-                if len(error_note.infos) > 0:
-                    rec = error_note.infos[0]
-                    logger.info(f"  表格丢锤{i+1}: 按键ID={rec.keyId}, 索引={rec.index}, keyOn={rec.keyOn/10:.2f}ms, keyOff={rec.keyOff/10:.2f}ms")
-
-        # 详细记录多锤按键信息
-        if multi_hammers:
-            logger.info("🔍 表格处理多锤按键详细信息:")
-            for i, error_note in enumerate(multi_hammers):
-                if len(error_note.infos) > 0:
-                    play = error_note.infos[0]
-                    logger.info(f"  表格多锤{i+1}: 按键ID={play.keyId}, 索引={play.index}, keyOn={play.keyOn/10:.2f}ms, keyOff={play.keyOff/10:.2f}ms")
-
-        # 处理丢锤数据
-        drop_hammers_data = []
-        for error_note in drop_hammers:
-            if len(error_note.infos) > 0:
-                rec = error_note.infos[0]
-
-                # 从原始数据获取更准确的时间信息
-                record_note = None
-                initial_valid_record_data = getattr(backend.analyzer, 'initial_valid_record_data', [])
-                if rec.index < len(initial_valid_record_data):
-                    record_note = initial_valid_record_data[rec.index]
-
-                # 计算准确的时间信息（只使用after_touch数据）
-                if not record_note:
-                    raise ValueError(f"程序错误：找不到索引 {rec.index} 对应的音符数据")
-
-                if not hasattr(record_note, 'after_touch') or record_note.after_touch is None or len(record_note.after_touch.index) == 0:
-                    raise ValueError(f"程序错误：音符 {rec.index} 缺少after_touch数据")
-
-                # 只使用after_touch数据计算按下和释放时间
-                key_on = (record_note.after_touch.index[0] + record_note.offset) / 10.0
-                key_off = (record_note.after_touch.index[-1] + record_note.offset) / 10.0
-
-                analysis_reason = '丢锤（录制有，播放无）'
-                failure_reasons = getattr(backend.analyzer.note_matcher, 'failure_reasons', {}) if hasattr(backend.analyzer, 'note_matcher') else {}
-                if ('record', rec.index) in failure_reasons:
-                    analysis_reason = failure_reasons[('record', rec.index)]
-
-                drop_hammers_data.append({
-                    'data_type': 'record',
-                    'keyId': rec.keyId,
-                    'keyOn': f"{key_on:.2f}",
-                    'keyOff': f"{key_off:.2f}",
-                    'index': rec.index,
-                    'analysis_reason': analysis_reason
-                })
-
-                # 播放行显示"无匹配"
-                drop_hammers_data.append({
-                    'data_type': 'play',
-                    'keyId': '无匹配',
-                    'keyOn': '无匹配',
-                    'keyOff': '无匹配',
-                    'index': '无匹配',
-                    'analysis_reason': ''
-                })
-
-        # 处理多锤数据
-        multi_hammers_data = []
-        initial_valid_replay_data = getattr(backend.analyzer, 'initial_valid_replay_data', [])
-
-        for error_note in multi_hammers:
-            if len(error_note.infos) > 0:
-                play = error_note.infos[0]
-
-                # 录制行显示"无匹配"
-                multi_hammers_data.append({
-                    'data_type': 'record',
-                    'keyId': '无匹配',
-                    'keyOn': '无匹配',
-                    'keyOff': '无匹配',
-                    'index': '无匹配',
-                    'analysis_reason': ''
-                })
-
-                # 从实际的播放音符数据获取after_touch信息
-                replay_note = None
-                if play.index < len(initial_valid_replay_data):
-                    replay_note = initial_valid_replay_data[play.index]
-
-                if not replay_note:
-                    raise ValueError(f"程序错误：找不到索引 {play.index} 对应的播放音符数据")
-
-                if not hasattr(replay_note, 'after_touch') or replay_note.after_touch is None or len(replay_note.after_touch.index) == 0:
-                    raise ValueError(f"程序错误：播放音符 {play.index} 缺少after_touch数据")
-
-                # 只使用after_touch数据计算按下和释放时间
-                key_on = (replay_note.after_touch.index[0] + replay_note.offset) / 10.0
-                key_off = (replay_note.after_touch.index[-1] + replay_note.offset) / 10.0
-
-                # 播放行显示实际数据
-                analysis_reason = '多锤（播放有，录制无）'
-                multi_hammers_data.append({
-                    'data_type': 'play',
-                    'keyId': play.keyId,
-                    'keyOn': f"{key_on:.2f}",
-                    'keyOff': f"{key_off:.2f}",
-                    'index': play.index,
-                    'analysis_reason': analysis_reason
-                })
-
-        # 创建表格布局
-        return dbc.Row([
-            # 左侧：丢锤问题表格
-            dbc.Col([
-                html.Div([
-                    dbc.Row([
-                        dbc.Col([
-                            html.H5("丢锤问题列表", className="mb-3",
-                                   style={'color': '#721c24', 'fontWeight': 'bold', 'fontSize': '18px', 'borderBottom': '3px solid #721c24', 'paddingBottom': '8px'}),
-                        ], width=12)
-                    ]),
-                    dash_table.DataTable(
-                        id={'type': 'drop-hammers-table', 'index': 'single'},
-                        columns=[
-                            {"name": "数据类型", "id": "data_type"},
-                            {"name": "键位ID", "id": "keyId"},
-                            {"name": "按下时间(ms)", "id": "keyOn"},
-                            {"name": "释放时间(ms)", "id": "keyOff"},
-                            {"name": "index", "id": "index"},
-                            {"name": "未匹配原因", "id": "analysis_reason"},
-                        ],
-                        data=drop_hammers_data,
-                        page_action='none',
-                        style_cell={
-                            'textAlign': 'center',
-                            'fontSize': '14px',
-                            'fontFamily': 'Arial, sans-serif',
-                            'padding': '10px',
-                            'overflow': 'hidden',
-                            'textOverflow': 'ellipsis',
-                            'minWidth': '80px',
-                        },
-                        style_cell_conditional=[
-                            {'if': {'column_id': 'data_type'}, 'width': '14%'},
-                            {'if': {'column_id': 'keyId'}, 'width': '12%'},
-                            {'if': {'column_id': 'keyOn'}, 'width': '16%'},
-                            {'if': {'column_id': 'keyOff'}, 'width': '16%'},
-                            {'if': {'column_id': 'index'}, 'width': '10%'},
-                            {'if': {'column_id': 'analysis_reason'}, 'width': '20%'},
-                        ],
-                        style_header={
-                            'backgroundColor': '#f8d7da',
-                            'fontWeight': 'bold',
-                            'border': '2px solid #dee2e6',
-                            'fontSize': '15px',
-                            'color': '#721c24',
-                            'textAlign': 'center',
-                            'padding': '12px',
-                            'whiteSpace': 'normal',
-                            'height': 'auto',
-                            'position': 'sticky',
-                            'top': 0,
-                            'zIndex': 1
-                        },
-                        style_data={
-                            'border': '1px solid #dee2e6',
-                            'fontSize': '14px',
-                            'padding': '10px'
-                        },
-                        style_data_conditional=[
-                            {
-                                'if': {'filter_query': '{data_type} = record'},
-                                'fontWeight': 'bold',
-                                'backgroundColor': '#ffeaea'
-                            },
-                            {
-                                'if': {'filter_query': '{data_type} = play'},
-                                'backgroundColor': '#fffafa'
-                            },
-                            {
-                                'if': {'filter_query': '{keyOn} = 无匹配'},
-                                'backgroundColor': '#f5f5f5',
-                                'color': '#6c757d',
-                                'fontStyle': 'italic'
-                            },
-                            {
-                                'if': {'row_index': 'odd'},
-                                'backgroundColor': '#fafafa'
-                            }
-                        ],
-                        row_selectable=False,
-                        sort_action="native",
-                        filter_action="none",
-                        style_table={
-                            'height': 'calc(75vh - 200px)',
-                            'overflowY': 'auto',
-                            'overflowX': 'auto',
-                            'border': '2px solid #dee2e6',
-                            'borderRadius': '8px',
-                            'minHeight': '400px'
-                        }
-                    ),
-                ], style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '10px', 'boxShadow': '0 4px 12px rgba(0,0,0,0.15)', 'height': '100%'}),
-            ], width=6, className="pr-2"),
-
-            # 右侧：多锤问题表格
-            dbc.Col([
-                html.Div([
-                    dbc.Row([
-                        dbc.Col([
-                            html.H5("多锤问题列表", className="mb-3",
-                                   style={'color': '#856404', 'fontWeight': 'bold', 'fontSize': '18px', 'borderBottom': '3px solid #856404', 'paddingBottom': '8px'}),
-                        ], width=12)
-                    ]),
-                    dash_table.DataTable(
-                        id={'type': 'multi-hammers-table', 'index': 'single'},
-                        columns=[
-                            {"name": "数据类型", "id": "data_type"},
-                            {"name": "键位ID", "id": "keyId"},
-                            {"name": "按下时间(ms)", "id": "keyOn"},
-                            {"name": "释放时间(ms)", "id": "keyOff"},
-                            {"name": "index", "id": "index"},
-                            {"name": "未匹配原因", "id": "analysis_reason"},
-                        ],
-                        data=multi_hammers_data,
-                        page_action='none',
-                        style_cell={
-                            'textAlign': 'center',
-                            'fontSize': '14px',
-                            'fontFamily': 'Arial, sans-serif',
-                            'padding': '10px',
-                            'overflow': 'hidden',
-                            'textOverflow': 'ellipsis',
-                            'minWidth': '80px',
-                        },
-                        style_cell_conditional=[
-                            {'if': {'column_id': 'data_type'}, 'width': '14%'},
-                            {'if': {'column_id': 'keyId'}, 'width': '12%'},
-                            {'if': {'column_id': 'keyOn'}, 'width': '16%'},
-                            {'if': {'column_id': 'keyOff'}, 'width': '16%'},
-                            {'if': {'column_id': 'index'}, 'width': '10%'},
-                            {'if': {'column_id': 'analysis_reason'}, 'width': '20%'},
-                        ],
-                        style_header={
-                            'backgroundColor': '#fff3cd',
-                            'fontWeight': 'bold',
-                            'border': '2px solid #dee2e6',
-                            'fontSize': '15px',
-                            'color': '#856404',
-                            'textAlign': 'center',
-                            'padding': '12px',
-                            'whiteSpace': 'normal',
-                            'height': 'auto',
-                            'position': 'sticky',
-                            'top': 0,
-                            'zIndex': 1
-                        },
-                        style_data={
-                            'border': '1px solid #dee2e6',
-                            'fontSize': '14px',
-                            'padding': '10px'
-                        },
-                        style_data_conditional=[
-                            {
-                                'if': {'filter_query': '{data_type} = play'},
-                                'backgroundColor': '#fffef5'
-                            },
-                            {
-                                'if': {'filter_query': '{keyId} = 无匹配'},
-                                'backgroundColor': '#f5f5f5',
-                                'color': '#6c757d',
-                                'fontStyle': 'italic'
-                            },
-                            {
-                                'if': {'row_index': 'odd'},
-                                'backgroundColor': '#fafafa'
-                            }
-                        ],
-                        row_selectable=False,
-                        sort_action="native",
-                        filter_action="none",
-                        style_table={
-                            'height': 'calc(75vh - 200px)',
-                            'overflowY': 'auto',
-                            'overflowX': 'auto',
-                            'border': '2px solid #dee2e6',
-                            'borderRadius': '8px',
-                            'minHeight': '400px'
-                        }
-                    ),
-                ], style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '10px', 'boxShadow': '0 4px 12px rgba(0,0,0,0.15)', 'height': '100%'}),
-            ], width=6, className="pl-2"),
-        ])
-
-    except Exception as e:
-        logger.error(f"❌ 创建单算法错误表格组件失败: {e}")
-        logger.error(traceback.format_exc())
-        return html.Div(f"错误表格加载失败: {str(e)}")
-
-
 def _create_error_tables_row_for_algorithm(algorithm):
     """
     为单个算法创建一行错误表格（丢锤和多锤左右并排）
@@ -1878,7 +1499,7 @@ def create_report_layout(backend):
             layout_rows.append(
                 dbc.Row([
                     dbc.Col([
-                        dbc.Card(id="grade-statistics-card", children=[
+                        dbc.Card([
                             dbc.CardHeader([
                                 html.H4([
                                     html.I(className="fas fa-chart-pie", style={'marginRight': '10px', 'color': '#6f42c1'}),
@@ -1939,12 +1560,22 @@ def create_report_layout(backend):
 
         # 返回单算法模式的完整布局
         return html.Div([
+            dcc.Download(id='download-pdf'),
             dbc.Container([
                 dbc.Row([
                     dbc.Col([
                         html.H2(f"分析报告 - {data_source}", className="text-center mb-3",
                                style={'color': '#2E86AB', 'fontWeight': 'bold', 'textShadow': '1px 1px 2px rgba(0,0,0,0.1)'}),
-                    ], width=12)
+                    ], width=8),
+                    dbc.Col([
+                        html.Div([
+                            dbc.Button([
+                                html.I(className="fas fa-file-pdf", style={'marginRight': '8px'}),
+                                "导出PDF报告"
+                            ], id='btn-export-pdf', color='danger', size='sm', className='mb-2'),
+                            html.Div(id='pdf-status')
+                        ], className="text-end")
+                    ], width=4)
                 ], className="mb-4"),
 
                 # 单算法内容
@@ -1979,8 +1610,8 @@ def create_report_layout(backend):
                     ], width=12)
                 ]),
 
-                # 单算法模式错误表格
-                _create_single_algorithm_error_tables_component(backend) if hasattr(backend, 'analyzer') and backend.analyzer else html.Div(),
+                # 错误表格（单算法模式）
+                _create_single_algorithm_error_tables(backend.analyzer, data_source) if hasattr(backend, 'analyzer') and backend.analyzer else html.Div(),
 
             ], fluid=True),
         ], style={'padding': '20px'})
@@ -2245,12 +1876,22 @@ def create_report_layout(backend):
     # 否则回调函数无法找到它们，所以我们必须在这里包含它们
     
     return html.Div([
+        dcc.Download(id='download-pdf'),
         dbc.Container([
             dbc.Row([
                 dbc.Col([
                     html.H2(f"分析报告 - {data_source}", className="text-center mb-3",
                            style={'color': '#2E86AB', 'fontWeight': 'bold', 'textShadow': '1px 1px 2px rgba(0,0,0,0.1)'}),
-                ], width=12)
+                ], width=8),
+                dbc.Col([
+                    html.Div([
+                        dbc.Button([
+                            html.I(className="fas fa-file-pdf", style={'marginRight': '8px'}),
+                            "导出PDF报告"
+                        ], id='btn-export-pdf', color='danger', size='sm', className='mb-2'),
+                        html.Div(id='pdf-status')
+                    ], className="text-end")
+                ], width=4)
             ], className="mb-4"),
 
                 # 多算法数据概览和延时误差统计指标（每个算法一行）
@@ -2445,37 +2086,20 @@ def create_report_layout(backend):
         # 曲线对齐测试区域
         create_curve_alignment_test_area(),
 
-        # 延时时间序列图 - 分离显示偏移前和偏移后
+        # 延时时间序列图
         dbc.Row([
             dbc.Col([
                 html.Div([
                     dbc.Row([
                         dbc.Col([
-                            html.H6("原始延时时间序列图", className="mb-2",
-                                   style={'color': '#2c3e50', 'fontWeight': 'bold', 'borderBottom': '2px solid #FF9800', 'paddingBottom': '5px'}),
+                            html.H6("延时时间序列图", className="mb-2",
+                                   style={'color': '#2c3e50', 'fontWeight': 'bold', 'borderBottom': '2px solid #2c3e50', 'paddingBottom': '5px'}),
                         ], width=12)
                     ]),
                     dcc.Graph(
-                        id='raw-delay-time-series-plot',
+                        id='delay-time-series-plot',
                         figure={},
-                        style={'height': '400px'}
-                    ),
-                ], className="mb-3", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
-            ], width=12)
-        ]),
-        dbc.Row([
-            dbc.Col([
-                html.Div([
-                    dbc.Row([
-                        dbc.Col([
-                            html.H6("相对延时时间序列图", className="mb-2",
-                                   style={'color': '#2c3e50', 'fontWeight': 'bold', 'borderBottom': '2px solid #2196F3', 'paddingBottom': '5px'}),
-                        ], width=12)
-                    ]),
-                    dcc.Graph(
-                        id='relative-delay-time-series-plot',
-                        figure={},
-                        style={'height': '400px'}
+                        style={'height': '500px'}
                     ),
                 ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
             ], width=12)
@@ -2575,6 +2199,207 @@ def create_report_layout(backend):
             ], width=12)
         ]),
         
+        # 主要内容区域：为每个算法创建独立的丢锤和多锤表格（已在上面通过列表展开添加）
+        # 这里保留原有的单算法模式表格（用于向后兼容，但多算法模式下不会使用）
+        dbc.Row([
+                # 左侧：丢锤问题表格
+                dbc.Col([
+                    html.Div([
+                        dbc.Row([
+                            dbc.Col([
+                                html.H5("丢锤问题列表", className="mb-3",
+                                       style={'color': '#721c24', 'fontWeight': 'bold', 'fontSize': '18px', 'borderBottom': '3px solid #721c24', 'paddingBottom': '8px'}),
+                            ], width=12)
+                        ]),
+                        dash_table.DataTable(
+                            id='drop-hammers-table',
+                            columns=[
+                                {"name": "数据类型", "id": "data_type"},
+                                {"name": "键位ID", "id": "keyId"},
+                                {"name": "按下时间(ms)", "id": "keyOn"},
+                                {"name": "释放时间(ms)", "id": "keyOff"},
+                                {"name": "index", "id": "index"},
+                                {"name": "未匹配原因", "id": "analysis_reason"},
+                            ],
+                            data=backend.get_error_table_data('丢锤'),
+                            page_action='none',
+                            style_cell={
+                                'textAlign': 'center',
+                                    'fontSize': '14px',
+                                'fontFamily': 'Arial, sans-serif',
+                                    'padding': '10px',
+                                'overflow': 'hidden',
+                                'textOverflow': 'ellipsis',
+                                'minWidth': '80px',
+                            },
+                                style_cell_conditional=(
+                                    # 多算法模式：添加算法名称列的宽度
+                                    [{'if': {'column_id': 'algorithm_name'}, 'width': '12%'}] if (
+                                        hasattr(backend, 'is_multi_algorithm_mode') and 
+                                        backend.is_multi_algorithm_mode()
+                                    ) else []
+                                ) + [
+                                    {'if': {'column_id': 'data_type'}, 'width': '14%'},
+                                    {'if': {'column_id': 'keyId'}, 'width': '12%'},
+                                    {'if': {'column_id': 'keyOn'}, 'width': '16%'},
+                                    {'if': {'column_id': 'keyOff'}, 'width': '16%'},
+                                    {'if': {'column_id': 'index'}, 'width': '10%'},
+                                    {'if': {'column_id': 'analysis_reason'}, 'width': '20%'},
+                            ],
+                            style_header={
+                                'backgroundColor': '#f8d7da',
+                                'fontWeight': 'bold',
+                                'border': '2px solid #dee2e6',
+                                    'fontSize': '15px',
+                                'color': '#721c24',
+                                'textAlign': 'center',
+                                    'padding': '12px',
+                                'whiteSpace': 'normal',
+                                'height': 'auto',
+                                'position': 'sticky',
+                                'top': 0,
+                                'zIndex': 1
+                            },
+                            style_data={
+                                'border': '1px solid #dee2e6',
+                                    'fontSize': '14px',
+                                'padding': '10px'
+                            },
+                            style_data_conditional=[
+                                {
+                                    'if': {'filter_query': '{data_type} = record'},
+                                    'fontWeight': 'bold',
+                                    'backgroundColor': '#ffeaea'
+                                },
+                                {
+                                    'if': {'filter_query': '{data_type} = play'},
+                                    'backgroundColor': '#fffafa'
+                                },
+                                {
+                                    'if': {'filter_query': '{keyOn} = 无匹配'},
+                                    'backgroundColor': '#f5f5f5',
+                                    'color': '#6c757d',
+                                    'fontStyle': 'italic'
+                                },
+                                {
+                                    'if': {'row_index': 'odd'},
+                                    'backgroundColor': '#fafafa'
+                                }
+                            ],
+                                row_selectable=False,
+                            sort_action="native",
+                                filter_action="none",
+                            style_table={
+                                    'height': 'calc(75vh - 200px)',
+                                'overflowY': 'auto', 
+                                'overflowX': 'auto',
+                                'border': '2px solid #dee2e6', 
+                                'borderRadius': '8px',
+                                'minHeight': '400px'
+                            }
+                        ),
+                    ], style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '10px', 'boxShadow': '0 4px 12px rgba(0,0,0,0.15)', 'height': '100%'}),
+                    ], width=6, className="pr-2"),
+                
+                # 右侧：多锤问题表格
+                dbc.Col([
+                    html.Div([
+                        dbc.Row([
+                            dbc.Col([
+                                html.H5("多锤问题列表", className="mb-3",
+                                       style={'color': '#856404', 'fontWeight': 'bold', 'fontSize': '18px', 'borderBottom': '3px solid #856404', 'paddingBottom': '8px'}),
+                            ], width=12)
+                        ]),
+                        dash_table.DataTable(
+                            id='multi-hammers-table',
+                            columns=[
+                                {"name": "数据类型", "id": "data_type"},
+                                {"name": "键位ID", "id": "keyId"},
+                                {"name": "按下时间(ms)", "id": "keyOn"},
+                                {"name": "释放时间(ms)", "id": "keyOff"},
+                                {"name": "index", "id": "index"},
+                                {"name": "未匹配原因", "id": "analysis_reason"},
+                            ],
+                            data=backend.get_error_table_data('多锤'),
+                            page_action='none',
+                            style_cell={
+                                'textAlign': 'center',
+                                    'fontSize': '14px',
+                                'fontFamily': 'Arial, sans-serif',
+                                    'padding': '10px',
+                                'overflow': 'hidden',
+                                'textOverflow': 'ellipsis',
+                                'minWidth': '80px',
+                            },
+                                style_cell_conditional=(
+                                    # 多算法模式：添加算法名称列的宽度
+                                    [{'if': {'column_id': 'algorithm_name'}, 'width': '12%'}] if (
+                                        hasattr(backend, 'is_multi_algorithm_mode') and 
+                                        backend.is_multi_algorithm_mode()
+                                    ) else []
+                                ) + [
+                                    {'if': {'column_id': 'data_type'}, 'width': '14%'},
+                                    {'if': {'column_id': 'keyId'}, 'width': '12%'},
+                                    {'if': {'column_id': 'keyOn'}, 'width': '16%'},
+                                    {'if': {'column_id': 'keyOff'}, 'width': '16%'},
+                                    {'if': {'column_id': 'index'}, 'width': '10%'},
+                                    {'if': {'column_id': 'analysis_reason'}, 'width': '20%'},
+                            ],
+                            style_header={
+                                'backgroundColor': '#fff3cd',
+                                'fontWeight': 'bold',
+                                'border': '2px solid #dee2e6',
+                                    'fontSize': '15px',
+                                'color': '#856404',
+                                'textAlign': 'center',
+                                    'padding': '12px',
+                                'whiteSpace': 'normal',
+                                'height': 'auto',
+                                'position': 'sticky',
+                                'top': 0,
+                                'zIndex': 1
+                            },
+                            style_data={
+                                'border': '1px solid #dee2e6',
+                                    'fontSize': '14px',
+                                'padding': '10px'
+                            },
+                            style_data_conditional=[
+                                {
+                                    'if': {'filter_query': '{data_type} = record'},
+                                    'fontWeight': 'bold',
+                                    'backgroundColor': '#fff8e1'
+                                },
+                                {
+                                    'if': {'filter_query': '{data_type} = play'},
+                                    'backgroundColor': '#fffef5'
+                                },
+                                {
+                                    'if': {'filter_query': '{keyOn} = 无匹配'},
+                                    'backgroundColor': '#f5f5f5',
+                                    'color': '#6c757d',
+                                    'fontStyle': 'italic'
+                                },
+                                {
+                                    'if': {'row_index': 'odd'},
+                                    'backgroundColor': '#fafafa'
+                                }
+                            ],
+                                row_selectable=False,
+                            sort_action="native",
+                                filter_action="none",
+                            style_table={
+                                    'height': 'calc(75vh - 200px)',
+                                'overflowY': 'auto', 
+                                'overflowX': 'auto',
+                                'border': '2px solid #dee2e6', 
+                                'borderRadius': '8px',
+                                'minHeight': '400px'
+                            }
+                        ),
+                    ], style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '10px', 'boxShadow': '0 4px 12px rgba(0,0,0,0.15)', 'height': '100%'}),
+                    ], width=6, className="pl-2"),
+                ], className="mb-4", style={'display': 'none'}),  # 多算法模式下隐藏，使用上面的独立表格
             
             # 无效音符统计表格（单独一行）
             dbc.Row([

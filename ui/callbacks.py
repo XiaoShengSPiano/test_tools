@@ -35,6 +35,8 @@ from ui.layout_components import create_report_layout, empty_figure, create_mult
 from backend.session_manager import SessionManager
 from ui.ui_processor import UIProcessor
 from ui.multi_file_upload_handler import MultiFileUploadHandler
+from ui.waterfall_jump_handler import WaterfallJumpHandler
+from ui.delay_time_series_handler import DelayTimeSeriesHandler
 from grade_detail_callbacks import register_all_callbacks
 from utils.logger import Logger
 # 后端类型导入
@@ -505,6 +507,12 @@ def _handle_report_button(backend):
 def register_callbacks(app, session_manager: SessionManager, history_manager):
     """注册所有回调函数"""
 
+    # 创建瀑布图跳转处理器实例
+    waterfall_jump_handler = WaterfallJumpHandler(session_manager)
+
+    # 创建延时时间序列图处理器实例
+    delay_time_series_handler = DelayTimeSeriesHandler(session_manager)
+
     # 初始化回调：自动启用多算法模式
     @app.callback(
         Output('session-id', 'data'),
@@ -970,52 +978,80 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             logger.warning("[WARNING] Z-Score标准化散点图点击回调 - 图表生成失败，部分图表为None")
             return current_style, [], no_update
 
+    # Z-Score标准化散点图点击回调
     @app.callback(
         [Output('key-curves-modal', 'style', allow_duplicate=True),
          Output('key-curves-comparison-container', 'children', allow_duplicate=True),
          Output('current-clicked-point-info', 'data', allow_duplicate=True),
-         Output('key-delay-zscore-scatter-plot', 'clickData', allow_duplicate=True),
-         Output('key-delay-scatter-plot', 'clickData', allow_duplicate=True)],
-        [Input('key-delay-zscore-scatter-plot', 'clickData'),  # Z-Score标准化散点图点击输入
-         Input('key-delay-scatter-plot', 'clickData'),  # 新增：按键与相对延时散点图点击输入
+         Output('key-delay-zscore-scatter-plot', 'clickData', allow_duplicate=True)],
+        [Input('key-delay-zscore-scatter-plot', 'clickData'),
          Input('close-key-curves-modal', 'n_clicks'),
          Input('close-key-curves-modal-btn', 'n_clicks')],
         [State('session-id', 'data'),
          State('key-curves-modal', 'style')],
         prevent_initial_call=True
     )
-    def handle_zscore_scatter_click(zscore_scatter_clickData, raw_scatter_clickData, close_modal_clicks, close_btn_clicks, session_id, current_style):
-        """处理Z-Score标准化散点图和按键与相对延时散点图点击，显示曲线对比（悬浮窗）并支持跳转到瀑布图"""
+    def handle_zscore_scatter_click(zscore_scatter_clickData, close_modal_clicks, close_btn_clicks, session_id, current_style):
+        """处理Z-Score标准化散点图点击，显示曲线对比（悬浮窗）并支持跳转到瀑布图"""
         # 检测触发源
         ctx = callback_context
         if not ctx.triggered:
-            logger.debug("[WARNING] 散点图点击回调：没有触发源")
-            return current_style, [], no_update, no_update, no_update
+            logger.debug("[WARNING] Z-Score散点图点击回调：没有触发源")
+            return current_style, [], no_update, no_update
 
         trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
-        logger.info(f"[PROCESS] 散点图点击回调触发：trigger_id={trigger_id}")
+        logger.info(f"[PROCESS] Z-Score散点图点击回调触发：trigger_id={trigger_id}")
 
         # 如果点击了关闭按钮，隐藏模态框
         if trigger_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
-            # 注意：这里需要返回 None 给 clickData，以重置图表点击状态
             result = _handle_zscore_modal_close()
-            return result[0], result[1], result[2], None, None
+            return result[0], result[1], result[2], None
 
         # 如果是Z-Score散点图点击
         if trigger_id == 'key-delay-zscore-scatter-plot' and zscore_scatter_clickData:
             result = _handle_zscore_plot_click(zscore_scatter_clickData, session_id, current_style, 'key-delay-zscore-scatter-plot')
-            # 保持 clickData 不变 (no_update) 或返回当前值
-            return result[0], result[1], result[2], no_update, None
-
-        # 如果是按键与相对延时散点图点击
-        if trigger_id == 'key-delay-scatter-plot' and raw_scatter_clickData:
-            # 复用 Z-Score 图表的点击处理逻辑，因为 customdata 格式应该是一样的
-            result = _handle_zscore_plot_click(raw_scatter_clickData, session_id, current_style, 'key-delay-scatter-plot')
-            return result[0], result[1], result[2], None, no_update
+            return result[0], result[1], result[2], no_update
 
         # 其他情况，返回默认值
-        return current_style, [], no_update, no_update, no_update
+        return current_style, [], no_update, no_update
 
+    # 按键与相对延时散点图点击回调
+    @app.callback(
+        [Output('key-curves-modal', 'style', allow_duplicate=True),
+         Output('key-curves-comparison-container', 'children', allow_duplicate=True),
+         Output('current-clicked-point-info', 'data', allow_duplicate=True),
+         Output('key-delay-scatter-plot', 'clickData', allow_duplicate=True)],
+        [Input('key-delay-scatter-plot', 'clickData'),
+         Input('close-key-curves-modal', 'n_clicks'),
+         Input('close-key-curves-modal-btn', 'n_clicks')],
+        [State('session-id', 'data'),
+         State('key-curves-modal', 'style')],
+        prevent_initial_call=True
+    )
+    def handle_key_delay_scatter_click(scatter_clickData, close_modal_clicks, close_btn_clicks, session_id, current_style):
+        """处理按键与相对延时散点图点击，显示曲线对比（悬浮窗）并支持跳转到瀑布图"""
+        # 检测触发源
+        ctx = callback_context
+        if not ctx.triggered:
+            logger.debug("[WARNING] 按键与相对延时散点图点击回调：没有触发源")
+            return current_style, [], no_update, no_update
+
+        trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
+        logger.info(f"[PROCESS] 按键与相对延时散点图点击回调触发：trigger_id={trigger_id}")
+
+        # 如果点击了关闭按钮，隐藏模态框
+        if trigger_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
+            result = _handle_zscore_modal_close()
+            return result[0], result[1], result[2], None
+
+        # 如果是按键与相对延时散点图点击
+        if trigger_id == 'key-delay-scatter-plot' and scatter_clickData:
+            # 复用 Z-Score 图表的点击处理逻辑，因为 customdata 格式应该是一样的
+            result = _handle_zscore_plot_click(scatter_clickData, session_id, current_style, 'key-delay-scatter-plot')
+            return result[0], result[1], result[2], no_update
+
+        # 其他情况，返回默认值
+        return current_style, [], no_update, no_update
 
 
 
@@ -3364,10 +3400,9 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             logger.error(traceback.format_exc())
         return current_style, [], no_update
 
-    # 延时时间序列图回调 - 报告内容加载时自动生成（分离为两个图表）
+    # 延时时间序列图回调 - 报告内容加载时自动生成
     @app.callback(
-        [Output('raw-delay-time-series-plot', 'figure'),
-         Output('relative-delay-time-series-plot', 'figure')],
+        Output('delay-time-series-plot', 'figure'),
         [Input('report-content', 'children')],
         [State('session-id', 'data')],
         prevent_initial_call=True
@@ -3376,7 +3411,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         """处理延时时间序列图自动生成 - 当报告内容更新时触发"""
         backend = session_manager.get_backend(session_id)
         if not backend:
-            return no_update, no_update
+            return no_update
 
         try:
             # 检查是否在多算法模式
@@ -3385,48 +3420,46 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             if not active_algorithms:
                 logger.warning("[WARNING] 没有激活的算法，无法生成延时时间序列图")
                 empty_plot = backend.plot_generator._create_empty_plot("没有激活的算法")
-                return empty_plot, empty_plot
+                return empty_plot
 
             result = backend.generate_delay_time_series_plot()
 
             # 检查返回的是否是字典（两个图表）还是单个图表
             if isinstance(result, dict) and 'raw_delay_plot' in result and 'relative_delay_plot' in result:
                 logger.info("[OK] 延时时间序列图生成成功（分离模式）")
-                return result['raw_delay_plot'], result['relative_delay_plot']
+                # 在当前布局中，我们只有一个图表组件，合并两个图表或选择一个
+                # 这里选择相对延时图作为主要显示
+                return result['relative_delay_plot']
             else:
-                # 向后兼容：如果是单个图表，则两个输出都返回同一个图表
-                logger.info("[OK] 延时时间序列图生成成功（兼容模式）")
-                return result, result
+                # 单个图表模式
+                logger.info("[OK] 延时时间序列图生成成功（单个图表模式）")
+                return result
 
         except Exception as e:
             logger.error(f"[ERROR] 生成延时时间序列图失败: {e}")
             logger.error(traceback.format_exc())
             empty_plot = backend.plot_generator._create_empty_plot(f"生成时间序列图失败: {str(e)}")
-            return empty_plot, empty_plot
+            return empty_plot
     
-    # 延时时间序列图点击回调 - 显示音符分析曲线（支持两个图表）
+    # 延时时间序列图点击回调 - 只处理关闭按钮（单算法模式）
     @app.callback(
         [Output('key-curves-modal', 'style', allow_duplicate=True),
          Output('key-curves-comparison-container', 'children', allow_duplicate=True),
-         Output('current-clicked-point-info', 'data', allow_duplicate=True),
-         Output('raw-delay-time-series-plot', 'clickData', allow_duplicate=True),
-         Output('relative-delay-time-series-plot', 'clickData', allow_duplicate=True)],
-        [Input('raw-delay-time-series-plot', 'clickData'),
-         Input('relative-delay-time-series-plot', 'clickData'),
-         Input('close-key-curves-modal', 'n_clicks'),
+         Output('current-clicked-point-info', 'data', allow_duplicate=True)],
+        [Input('close-key-curves-modal', 'n_clicks'),
          Input('close-key-curves-modal-btn', 'n_clicks')],
-        [State('session-id', 'data'),
-         State('key-curves-modal', 'style')],
+        [State('key-curves-modal', 'style')],
         prevent_initial_call=True
     )
-    def handle_delay_time_series_click(raw_click_data, relative_click_data, close_modal_clicks, close_btn_clicks, session_id, current_style):
+    def handle_delay_time_series_click(close_modal_clicks, close_btn_clicks, current_style):
         """处理延时时间序列图点击，显示音符分析曲线（悬浮窗）并支持跳转到瀑布图"""
-        logger.info("[START] handle_delay_time_series_click 回调被触发")
+        """处理延时时间序列图模态框的关闭按钮（单算法模式）"""
+        logger.info("[START] handle_delay_time_series_click 关闭按钮回调被触发")
 
         # 检测触发源
         ctx = callback_context
         if not ctx.triggered:
-            return current_style, [], no_update, no_update, no_update
+            return current_style, [], no_update
 
         trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
         logger.info(f"🔍 触发ID: {trigger_id}")
@@ -3444,259 +3477,295 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 'backgroundColor': 'rgba(0,0,0,0.6)',
                 'backdropFilter': 'blur(5px)'
             }
-            return modal_style, [], no_update, no_update, no_update
+            return modal_style, [], no_update
 
-        # 确定使用哪个点击数据
-        if trigger_id == 'raw-delay-time-series-plot':
-            click_data = raw_click_data
-            source_plot_id = 'raw-delay-time-series-plot'
-        elif trigger_id == 'relative-delay-time-series-plot':
-            click_data = relative_click_data
-            source_plot_id = 'relative-delay-time-series-plot'
-        else:
-            return current_style, [], no_update, no_update, no_update
-        
-        # 如果是时间序列图点击
-        if trigger_id in ['raw-delay-time-series-plot', 'relative-delay-time-series-plot'] and click_data:
-            logger.info(f"[TARGET] 检测到{trigger_id}点击")
-            
-            backend = session_manager.get_backend(session_id)
-            if not backend:
-                logger.warning("[WARNING] backend为空")
-                return current_style, [], no_update, no_update, no_update
+        return current_style, [], no_update
 
-            try:
-                if 'points' not in click_data or len(click_data['points']) == 0:
-                    logger.warning("[WARNING] clickData中没有points")
-                    return current_style, [], no_update, no_update, no_update
-
-                point = click_data['points'][0]
-                if not point.get('customdata'):
-                    logger.warning("[WARNING] point中没有customdata")
-                    return current_style, [], no_update, no_update, no_update
-                
-                # 提取customdata: [key_id, record_index, replay_index] 或 [key_id, record_index, replay_index, algorithm_name, ...]
-                # 多算法模式可能包含更多信息: [key_id, record_index, replay_index, algorithm_name, delay, mean_delay, replay_time, record_time]
-                customdata = point['customdata']
-                logger.info(f"[DATA] customdata: {customdata}")
-                
-                if not isinstance(customdata, list) or len(customdata) < 3:
-                    logger.warning(f"[WARNING] customdata格式错误: {customdata}")
-                    return current_style, [], no_update, no_update, no_update
-                
-                key_id = customdata[0]
-                record_index = customdata[1]
-                replay_index = customdata[2]
-                algorithm_name = customdata[3] if len(customdata) > 3 else None
-                
-                logger.info(f"[STATS] 提取的数据: key_id={key_id}, record_index={record_index}, replay_index={replay_index}, algorithm_name={algorithm_name}")
-                
-                # 获取算法对象和匹配对
-                record_note = None
-                replay_note = None
-                final_algorithm_name = None
-                
-                # 计算时间信息，用于跳转时直接使用
-                center_time_ms = None
-                
-                if backend.multi_algorithm_mode and backend.multi_algorithm_manager and algorithm_name:
-                    # 多算法模式
-                    algorithm = backend.multi_algorithm_manager.get_algorithm(algorithm_name)
-                    if not algorithm or not algorithm.analyzer:
-                        logger.warning(f"[WARNING] 算法 '{algorithm_name}' 不存在或analyzer为空")
-                        return current_style, [], no_update
-                    
-                    # 获取matched_pairs
-                    matched_pairs = algorithm.analyzer.matched_pairs if hasattr(algorithm.analyzer, 'matched_pairs') else []
-                    
-                    # 在matched_pairs中查找匹配对
-                    for r_idx, p_idx, r_note, p_note in matched_pairs:
-                        if r_idx == record_index and p_idx == replay_index:
-                            record_note = r_note
-                            replay_note = p_note
-                            final_algorithm_name = algorithm_name
-                            logger.info(f"[OK] 在多算法模式中找到匹配对")
-                            
-                            # 计算keyon时间
-                            try:
-                                record_keyon = r_note.after_touch.index[0] + r_note.offset if hasattr(r_note, 'after_touch') and not r_note.after_touch.empty else r_note.offset
-                                replay_keyon = p_note.after_touch.index[0] + p_note.offset if hasattr(p_note, 'after_touch') and not p_note.after_touch.empty else p_note.offset
-                                center_time_ms = ((record_keyon + replay_keyon) / 2.0) / 10.0  # 转换为ms
-                            except Exception as e:
-                                logger.warning(f"[WARNING] 计算时间信息失败: {e}")
-                                # 备用方案：从 customdata 获取时间信息（如果可用）
-                                if len(customdata) >= 7:
-                                    record_time = customdata[7] if len(customdata) > 7 else None
-                                    replay_time = customdata[6] if len(customdata) > 6 else None
-                                    if record_time is not None and replay_time is not None:
-                                        center_time_ms = ((record_time + replay_time) / 2.0) / 10.0
-                            
-                            break
-                    
-                    # 备用方案：从 offset_data 获取
-                    if center_time_ms is None and algorithm.analyzer.note_matcher:
-                        try:
-                            offset_data = algorithm.analyzer.note_matcher.get_offset_alignment_data()
-                            if offset_data:
-                                for item in offset_data:
-                                    if item.get('record_index') == record_index and item.get('replay_index') == replay_index:
-                                        record_keyon = item.get('record_keyon', 0)
-                                        replay_keyon = item.get('replay_keyon', 0)
-                                        if record_keyon and replay_keyon:
-                                            center_time_ms = ((record_keyon + replay_keyon) / 2.0) / 10.0
-                                            break
-                        except Exception as e:
-                            logger.warning(f"[WARNING] 从offset_data获取时间信息失败: {e}")
-                else:
-                    # 单算法模式
-                    if not backend.analyzer or not backend.analyzer.note_matcher:
-                        logger.warning("[WARNING] analyzer或note_matcher为空")
-                        return current_style, [], no_update, no_update
-                    
-                    matched_pairs = backend.analyzer.matched_pairs if hasattr(backend.analyzer, 'matched_pairs') else []
-                    
-                    # 在matched_pairs中查找匹配对
-                    for r_idx, p_idx, r_note, p_note in matched_pairs:
-                        if r_idx == record_index and p_idx == replay_index:
-                            record_note = r_note
-                            replay_note = p_note
-                            final_algorithm_name = None
-                            logger.info(f"[OK] 在单算法模式中找到匹配对")
-                            
-                            # 计算keyon时间
-                            try:
-                                record_keyon = r_note.after_touch.index[0] + r_note.offset if hasattr(r_note, 'after_touch') and not r_note.after_touch.empty else r_note.offset
-                                replay_keyon = p_note.after_touch.index[0] + p_note.offset if hasattr(p_note, 'after_touch') and not p_note.after_touch.empty else p_note.offset
-                                center_time_ms = ((record_keyon + replay_keyon) / 2.0) / 10.0  # 转换为ms
-                            except Exception as e:
-                                logger.warning(f"[WARNING] 计算时间信息失败: {e}")
-                            
-                            break
-                    
-                    # 备用方案：从 offset_data 获取
-                    if center_time_ms is None:
-                        try:
-                            offset_data = backend.analyzer.note_matcher.get_offset_alignment_data()
-                            if offset_data:
-                                for item in offset_data:
-                                    if item.get('record_index') == record_index and item.get('replay_index') == replay_index:
-                                        record_keyon = item.get('record_keyon', 0)
-                                        replay_keyon = item.get('replay_keyon', 0)
-                                        if record_keyon and replay_keyon:
-                                            center_time_ms = ((record_keyon + replay_keyon) / 2.0) / 10.0
-                                            break
-                        except Exception as e:
-                            logger.warning(f"[WARNING] 从offset_data获取时间信息失败: {e}")
-                
-                if not record_note or not replay_note:
-                    logger.warning("[WARNING] 未找到匹配对")
-                    return current_style, [], no_update, no_update
-                
-                # 在多算法模式下，查找所有算法中匹配到同一个录制音符的播放音符
-                other_algorithm_notes = []  # [(algorithm_name, play_note), ...]
-                if backend.multi_algorithm_mode and backend.multi_algorithm_manager:
-                    active_algorithms = backend.multi_algorithm_manager.get_active_algorithms()
-                    for alg in active_algorithms:
-                        if alg.metadata.algorithm_name == algorithm_name:
-                            continue  # 跳过当前算法（已经绘制）
-                        
-                        if not alg.analyzer or not hasattr(alg.analyzer, 'matched_pairs'):
-                            continue
-                        
-                        matched_pairs = alg.analyzer.matched_pairs
-                        # 查找匹配到同一个record_index的播放音符
-                        for r_idx, p_idx, r_note, p_note in matched_pairs:
-                            if r_idx == record_index:
-                                other_algorithm_notes.append((alg.metadata.algorithm_name, p_note))
-                                logger.info(f"[OK] 找到算法 '{alg.metadata.algorithm_name}' 的匹配播放音符")
-                                break
-                
-                # 计算平均延时
-                mean_delays = {}
-                if backend.multi_algorithm_mode and backend.multi_algorithm_manager and algorithm_name:
-                    # 多算法模式
-                    algorithm = backend.multi_algorithm_manager.get_algorithm(algorithm_name)
-                    if algorithm and algorithm.analyzer:
-                        mean_error_0_1ms = algorithm.analyzer.get_mean_error()
-                        mean_delays[algorithm_name] = mean_error_0_1ms / 10.0  # 转换为毫秒
-                    else:
-                        logger.error(f"[ERROR] 无法获取算法 '{algorithm_name}' 的平均延时")
-                        return current_style, [], no_update, no_update, no_update
-                else:
-                    # 单算法模式
-                    if backend.analyzer:
-                        mean_error_0_1ms = backend.analyzer.get_mean_error()
-                        mean_delays[final_algorithm_name or 'default'] = mean_error_0_1ms / 10.0  # 转换为毫秒
-                    else:
-                        logger.error("[ERROR] 无法获取单算法模式的平均延时")
-                        return current_style, [], no_update, no_update
-                
-                # 生成对比曲线（包含其他算法的播放曲线）
-                import spmid
-                detail_figure_combined = spmid.plot_note_comparison_plotly(
-                    record_note, 
-                    replay_note, 
-                    algorithm_name=final_algorithm_name,
-                    other_algorithm_notes=other_algorithm_notes,  # 传递其他算法的播放音符
-                    mean_delays=mean_delays
-                )
-                
-                if not detail_figure_combined:
-                    logger.error("[ERROR] 曲线生成失败")
-                    return current_style, [], no_update, no_update
-                
-                # 存储当前点击的数据点信息，用于跳转按钮
-                point_info = {
-                    'algorithm_name': final_algorithm_name,
-                    'record_idx': record_index,
-                    'replay_idx': replay_index,
-                    'key_id': key_id,
-                    'source_plot_id': 'delay-time-series-plot',  # 记录来源图表ID
-                    'center_time_ms': center_time_ms  # 预先计算的时间信息
-                }
-                
-                # 显示模态框
-                modal_style = {
-                    'display': 'block',
-                    'position': 'fixed',
-                    'zIndex': '9999',
-                    'left': '0',
-                    'top': '0',
-                    'width': '100%',
-                    'height': '100%',
-                    'backgroundColor': 'rgba(0,0,0,0.6)',
-                    'backdropFilter': 'blur(5px)'
-                }
-                
-                rendered_row = dcc.Graph(figure=detail_figure_combined, style={'height': '600px'})
-                
-                logger.info("[OK] 延时时间序列图点击处理成功")
-                return modal_style, [rendered_row], point_info, no_update, no_update
-                
-            except Exception as e:
-                logger.error(f"[ERROR] 处理延时时间序列图点击失败: {e}")
-                
-                logger.error(traceback.format_exc())
-                return current_style, [], no_update, no_update, no_update
-
-        return current_style, [], no_update, no_update, no_update
-    
-    # 处理最大/最小延迟字段点击，显示对应按键的曲线对比图
+    # 延时时间序列图点击回调 - 多算法模式（仅监听 delay-time-series-plot）
     @app.callback(
         [Output('key-curves-modal', 'style', allow_duplicate=True),
          Output('key-curves-comparison-container', 'children', allow_duplicate=True),
-         Output('current-clicked-point-info', 'data', allow_duplicate=True)],
-        [Input({'type': 'max-delay-value', 'algorithm': dash.dependencies.ALL}, 'n_clicks'),
-         Input({'type': 'min-delay-value', 'algorithm': dash.dependencies.ALL}, 'n_clicks'),
+         Output('current-clicked-point-info', 'data', allow_duplicate=True),
+         Output('delay-time-series-plot', 'clickData', allow_duplicate=True)],
+        [Input('delay-time-series-plot', 'clickData'),
          Input('close-key-curves-modal', 'n_clicks'),
          Input('close-key-curves-modal-btn', 'n_clicks')],
-        [State({'type': 'max-delay-value', 'algorithm': dash.dependencies.ALL}, 'id'),
-         State({'type': 'min-delay-value', 'algorithm': dash.dependencies.ALL}, 'id'),
-         State('session-id', 'data'),
+        [State('session-id', 'data'),
          State('key-curves-modal', 'style')],
         prevent_initial_call=True
     )
-    def handle_delay_value_click(max_clicks_list, min_clicks_list, close_modal_clicks, close_btn_clicks, 
+#     def handle_delay_time_series_click_multi(delay_click_data, close_modal_clicks, close_btn_clicks, session_id, current_style):
+#         """处理延时时间序列图点击（多算法模式），显示音符分析曲线（悬浮窗）"""
+        # 检测触发源
+#         ctx = callback_context
+#         if not ctx.triggered:
+#             return current_style, [], no_update, no_update
+
+#         trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
+#         logger.info(f"🔍 触发ID: {trigger_id}")
+
+        # 如果点击了关闭按钮，隐藏模态框
+#         if trigger_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
+#             modal_style = {
+#                 'display': 'none',
+#                 'position': 'fixed',
+#                 'zIndex': '9999',
+#                 'left': '0',
+#                 'top': '0',
+#                 'width': '100%',
+#                 'height': '100%',
+#                 'backgroundColor': 'rgba(0,0,0,0.6)',
+#                 'backdropFilter': 'blur(5px)'
+#             }
+#             return modal_style, [], no_update, no_update
+
+        # 只有在点击了 delay-time-series-plot 时才处理
+#         if trigger_id != 'delay-time-series-plot' or not delay_click_data:
+#             return current_style, [], no_update, no_update
+
+#         logger.info(f"[TARGET] 检测到{trigger_id}点击")
+
+#         backend = session_manager.get_backend(session_id)
+#         if not backend:
+#             logger.warning("[WARNING] backend为空")
+#             return current_style, [], no_update, no_update
+
+#         try:
+#             if 'points' not in click_data or len(click_data['points']) == 0:
+#                 logger.warning("[WARNING] clickData中没有points")
+#                 return current_style, [], no_update, no_update
+
+#             point = click_data['points'][0]
+#             if not point.get('customdata'):
+#                 logger.warning("[WARNING] point中没有customdata")
+#                 return current_style, [], no_update, no_update
+
+            # 提取customdata: [key_id, record_index, replay_index] 或 [key_id, record_index, replay_index, algorithm_name, ...]
+            # 多算法模式可能包含更多信息: [key_id, record_index, replay_index, algorithm_name, delay, mean_delay, replay_time, record_time]
+#             customdata = point['customdata']
+#             logger.info(f"[DATA] customdata: {customdata}")
+
+#             if not isinstance(customdata, list) or len(customdata) < 3:
+#                 logger.warning(f"[WARNING] customdata格式错误: {customdata}")
+#                 return current_style, [], no_update, no_update
+                
+#                 key_id = customdata[0]
+#                 record_index = customdata[1]
+#                 replay_index = customdata[2]
+#                 algorithm_name = customdata[3] if len(customdata) > 3 else None
+                
+#                 logger.info(f"[STATS] 提取的数据: key_id={key_id}, record_index={record_index}, replay_index={replay_index}, algorithm_name={algorithm_name}")
+                
+                # 获取算法对象和匹配对
+#                 record_note = None
+#                 replay_note = None
+#                 final_algorithm_name = None
+                
+                # 计算时间信息，用于跳转时直接使用
+#                 center_time_ms = None
+                
+#                 if backend.multi_algorithm_mode and backend.multi_algorithm_manager and algorithm_name:
+                    # 多算法模式
+#                     algorithm = backend.multi_algorithm_manager.get_algorithm(algorithm_name)
+#                     if not algorithm or not algorithm.analyzer:
+#                         logger.warning(f"[WARNING] 算法 '{algorithm_name}' 不存在或analyzer为空")
+#                         return current_style, [], no_update
+                    
+                    # 获取matched_pairs
+#                     matched_pairs = algorithm.analyzer.matched_pairs if hasattr(algorithm.analyzer, 'matched_pairs') else []
+                    
+                    # 在matched_pairs中查找匹配对
+#                     for r_idx, p_idx, r_note, p_note in matched_pairs:
+#                         if r_idx == record_index and p_idx == replay_index:
+#                             record_note = r_note
+#                             replay_note = p_note
+#                             final_algorithm_name = algorithm_name
+#                             logger.info(f"[OK] 在多算法模式中找到匹配对")
+                            
+                            # 计算keyon时间
+#                             try:
+#                                 record_keyon = r_note.after_touch.index[0] + r_note.offset if hasattr(r_note, 'after_touch') and not r_note.after_touch.empty else r_note.offset
+#                                 replay_keyon = p_note.after_touch.index[0] + p_note.offset if hasattr(p_note, 'after_touch') and not p_note.after_touch.empty else p_note.offset
+#                                 center_time_ms = ((record_keyon + replay_keyon) / 2.0) / 10.0  # 转换为ms
+#                             except Exception as e:
+#                                 logger.warning(f"[WARNING] 计算时间信息失败: {e}")
+                                # 备用方案：从 customdata 获取时间信息（如果可用）
+#                                 if len(customdata) >= 7:
+#                                     record_time = customdata[7] if len(customdata) > 7 else None
+#                                     replay_time = customdata[6] if len(customdata) > 6 else None
+#                                     if record_time is not None and replay_time is not None:
+#                                         center_time_ms = ((record_time + replay_time) / 2.0) / 10.0
+                            
+#                             break
+                    
+                    # 备用方案：从 offset_data 获取
+#                     if center_time_ms is None and algorithm.analyzer.note_matcher:
+#                         try:
+#                             offset_data = algorithm.analyzer.note_matcher.get_offset_alignment_data()
+#                             if offset_data:
+#                                 for item in offset_data:
+#                                     if item.get('record_index') == record_index and item.get('replay_index') == replay_index:
+#                                         record_keyon = item.get('record_keyon', 0)
+#                                         replay_keyon = item.get('replay_keyon', 0)
+#                                         if record_keyon and replay_keyon:
+#                                             center_time_ms = ((record_keyon + replay_keyon) / 2.0) / 10.0
+#                                             break
+#                         except Exception as e:
+#                             logger.warning(f"[WARNING] 从offset_data获取时间信息失败: {e}")
+#                 else:
+                    # 单算法模式
+#                     if not backend.analyzer or not backend.analyzer.note_matcher:
+#                         logger.warning("[WARNING] analyzer或note_matcher为空")
+#                         return current_style, [], no_update, no_update
+                    
+#                     matched_pairs = backend.analyzer.matched_pairs if hasattr(backend.analyzer, 'matched_pairs') else []
+                    
+                    # 在matched_pairs中查找匹配对
+#                     for r_idx, p_idx, r_note, p_note in matched_pairs:
+#                         if r_idx == record_index and p_idx == replay_index:
+#                             record_note = r_note
+#                             replay_note = p_note
+#                             final_algorithm_name = None
+#                             logger.info(f"[OK] 在单算法模式中找到匹配对")
+                            
+                            # 计算keyon时间
+#                             try:
+#                                 record_keyon = r_note.after_touch.index[0] + r_note.offset if hasattr(r_note, 'after_touch') and not r_note.after_touch.empty else r_note.offset
+#                                 replay_keyon = p_note.after_touch.index[0] + p_note.offset if hasattr(p_note, 'after_touch') and not p_note.after_touch.empty else p_note.offset
+#                                 center_time_ms = ((record_keyon + replay_keyon) / 2.0) / 10.0  # 转换为ms
+#                             except Exception as e:
+#                                 logger.warning(f"[WARNING] 计算时间信息失败: {e}")
+                            
+#                             break
+                    
+                    # 备用方案：从 offset_data 获取
+#                     if center_time_ms is None:
+#                         try:
+#                             offset_data = backend.analyzer.note_matcher.get_offset_alignment_data()
+#                             if offset_data:
+#                                 for item in offset_data:
+#                                     if item.get('record_index') == record_index and item.get('replay_index') == replay_index:
+#                                         record_keyon = item.get('record_keyon', 0)
+#                                         replay_keyon = item.get('replay_keyon', 0)
+#                                         if record_keyon and replay_keyon:
+#                                             center_time_ms = ((record_keyon + replay_keyon) / 2.0) / 10.0
+#                                             break
+#                         except Exception as e:
+#                             logger.warning(f"[WARNING] 从offset_data获取时间信息失败: {e}")
+                
+#                 if not record_note or not replay_note:
+#                     logger.warning("[WARNING] 未找到匹配对")
+#                     return current_style, [], no_update, no_update, no_update
+                
+                # 在多算法模式下，查找所有算法中匹配到同一个录制音符的播放音符
+#                 other_algorithm_notes = []  # [(algorithm_name, play_note), ...]
+#                 if backend.multi_algorithm_mode and backend.multi_algorithm_manager:
+#                     active_algorithms = backend.multi_algorithm_manager.get_active_algorithms()
+#                     for alg in active_algorithms:
+#                         if alg.metadata.algorithm_name == algorithm_name:
+#                             continue  # 跳过当前算法（已经绘制）
+                        
+#                         if not alg.analyzer or not hasattr(alg.analyzer, 'matched_pairs'):
+#                             continue
+                        
+#                         matched_pairs = alg.analyzer.matched_pairs
+                        # 查找匹配到同一个record_index的播放音符
+#                         for r_idx, p_idx, r_note, p_note in matched_pairs:
+#                             if r_idx == record_index:
+#                                 other_algorithm_notes.append((alg.metadata.algorithm_name, p_note))
+#                                 logger.info(f"[OK] 找到算法 '{alg.metadata.algorithm_name}' 的匹配播放音符")
+#                                 break
+                
+                # 计算平均延时
+#                 mean_delays = {}
+#                 if backend.multi_algorithm_mode and backend.multi_algorithm_manager and algorithm_name:
+                    # 多算法模式
+#                     algorithm = backend.multi_algorithm_manager.get_algorithm(algorithm_name)
+#                     if algorithm and algorithm.analyzer:
+#                         mean_error_0_1ms = algorithm.analyzer.get_mean_error()
+#                         mean_delays[algorithm_name] = mean_error_0_1ms / 10.0  # 转换为毫秒
+#                     else:
+#                         logger.error(f"[ERROR] 无法获取算法 '{algorithm_name}' 的平均延时")
+#                         return current_style, [], no_update
+#                 else:
+                    # 单算法模式
+#                     if backend.analyzer:
+#                         mean_error_0_1ms = backend.analyzer.get_mean_error()
+#                         mean_delays[final_algorithm_name or 'default'] = mean_error_0_1ms / 10.0  # 转换为毫秒
+#                     else:
+#                         logger.error("[ERROR] 无法获取单算法模式的平均延时")
+#                         return current_style, [], no_update, no_update
+                
+                # 生成对比曲线（包含其他算法的播放曲线）
+#                 import spmid
+#                 detail_figure_combined = spmid.plot_note_comparison_plotly(
+#                     record_note, 
+#                     replay_note, 
+#                     algorithm_name=final_algorithm_name,
+#                     other_algorithm_notes=other_algorithm_notes,  # 传递其他算法的播放音符
+#                     mean_delays=mean_delays
+#                 )
+                
+#                 if not detail_figure_combined:
+#                     logger.error("[ERROR] 曲线生成失败")
+#                     return current_style, [], no_update, no_update
+                
+                # 存储当前点击的数据点信息，用于跳转按钮
+#                 point_info = {
+#                     'algorithm_name': final_algorithm_name,
+#                     'record_idx': record_index,
+#                     'replay_idx': replay_index,
+#                     'key_id': key_id,
+#                     'source_plot_id': 'delay-time-series-plot',  # 记录来源图表ID
+#                     'center_time_ms': center_time_ms  # 预先计算的时间信息
+#                 }
+                
+                # 显示模态框
+#                 modal_style = {
+#                     'display': 'block',
+#                     'position': 'fixed',
+#                     'zIndex': '9999',
+#                     'left': '0',
+#                     'top': '0',
+#                     'width': '100%',
+#                     'height': '100%',
+#                     'backgroundColor': 'rgba(0,0,0,0.6)',
+#                     'backdropFilter': 'blur(5px)'
+#                 }
+                
+#                 rendered_row = dcc.Graph(figure=detail_figure_combined, style={'height': '600px'})
+                
+#                 logger.info("[OK] 延时时间序列图点击处理成功")
+#                 return modal_style, [rendered_row], point_info, no_update
+
+#         except Exception as e:
+#                 logger.error(f"[ERROR] 处理延时时间序列图点击失败: {e}")
+
+#                 logger.error(traceback.format_exc())
+#                 return current_style, [], no_update, no_update, no_update
+
+#         return current_style, [], no_update, no_update, no_update
+
+    # 延时时间序列图点击回调 - 多算法模式（仅监听 delay-time-series-plot）
+#     @app.callback(
+#         [Output('key-curves-modal', 'style', allow_duplicate=True),
+#          Output('key-curves-comparison-container', 'children', allow_duplicate=True),
+#          Output('current-clicked-point-info', 'data', allow_duplicate=True),
+#          Output('delay-time-series-plot', 'clickData', allow_duplicate=True)],
+#         [Input('delay-time-series-plot', 'clickData'),
+#          Input('close-key-curves-modal', 'n_clicks'),
+#          Input('close-key-curves-modal-btn', 'n_clicks')],
+#         [State('session-id', 'data'),
+#          State('key-curves-modal', 'style')],
+#         prevent_initial_call=True
+#     )
+    def handle_delay_time_series_click_multi(delay_click_data, close_modal_clicks, close_btn_clicks, session_id, current_style):
+        """处理延时时间序列图点击（多算法模式），显示音符分析曲线（悬浮窗）"""
+        return delay_time_series_handler.handle_delay_time_series_click_multi(
+            delay_click_data, close_modal_clicks, close_btn_clicks, session_id, current_style
+        )
+
+    def handle_delay_value_click(max_clicks_list, min_clicks_list, close_modal_clicks, close_btn_clicks,
                                   max_ids_list, min_ids_list, session_id, current_style):
         """处理最大/最小延迟字段点击，显示对应按键的曲线对比图"""
         
@@ -6351,7 +6420,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             if not backend:
                 logger.warning("[WARNING] 没有找到backend")
                 return current_style, [], no_update, no_update, no_update
-            
+
             if not click_data or 'points' not in click_data or not click_data['points']:
                 logger.warning("[WARNING] click_data为空或没有points")
                 return current_style, [], no_update, no_update, no_update
@@ -6386,7 +6455,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 # 单算法模式: [key_id, orig_force, abs_delay, rel_delay, record_idx, replay_idx]
                 if len(customdata) < 5:
                     logger.warning(f"[WARNING] customdata长度不足：{len(customdata)}，期望至少5个元素")
-                    return current_style, [], no_update, no_update, no_update
+                    return current_style, [], no_update
                 
                 # 判断是单算法还是多算法模式
                 if len(customdata) >= 8:
@@ -6412,7 +6481,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 
                 if record_idx is None or replay_idx is None:
                     logger.warning(f"[WARNING] 按键-力度交互效应图点击 - 缺少索引信息: record_idx={record_idx}, replay_idx={replay_idx}")
-                    return current_style, [], no_update, no_update, no_update
+                    return current_style, [], no_update
                 
                 logger.info(f"🖱️ 按键-力度交互效应图点击: 算法={algorithm_display_name}, 按键={key_id}, 锤速={original_velocity}, record_idx={record_idx}, replay_idx={replay_idx}")
                 
@@ -6636,7 +6705,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 return modal_style, [html.Div([
                     html.P(f"生成曲线对比失败: {str(e)}", className="text-danger text-center")
                 ])], no_update, no_update, no_update
-        
+
         # 其他情况，保持当前状态
         return current_style, [], no_update, no_update, no_update
     
@@ -6653,301 +6722,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
     )
     def handle_jump_to_waterfall(n_clicks, session_id, point_info):
         """处理跳转到瀑布图按钮点击"""
-        from dash import callback_context
-        
-        ctx = callback_context
-        if not ctx.triggered:
-            return no_update, no_update, no_update, no_update
-        
-        trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
-        if trigger_id != 'jump-to-waterfall-btn':
-            return no_update, no_update, no_update, no_update
-        
-        if not n_clicks or n_clicks == 0:
-            return no_update, no_update, no_update, no_update
-        
-        if not point_info:
-            logger.warning("[WARNING] 没有存储的数据点信息，无法跳转")
-            return no_update, no_update, no_update, no_update
-        
-        # 获取来源图表ID和子图索引
-        source_plot_id = point_info.get('source_plot_id', None)
-        source_subplot_idx = point_info.get('source_subplot_idx', None)
-        
-        # 如果是相对延时分布图，构建包含子图索引的字典
-        if source_plot_id == 'relative-delay-distribution-plot' and source_subplot_idx is not None:
-            source_plot_id = {
-                'type': 'relative-delay-distribution-plot',
-                'index': source_subplot_idx
-            }
-        
-        backend = session_manager.get_backend(session_id)
-        if not backend:
-            logger.warning("[WARNING] 没有找到backend")
-            return no_update, no_update, no_update, no_update
-        
-        try:
-            algorithm_name = point_info.get('algorithm_name')
-            record_idx = point_info.get('record_idx')
-            replay_idx = point_info.get('replay_idx')
-            key_id = point_info.get('key_id')
-            source_plot_id = point_info.get('source_plot_id', '')
-            
-            # 对于丢锤和多锤问题，可能只有record_idx或只有replay_idx
-            # 检查是否来自错误表格（丢锤/多锤）
-            is_error_table = source_plot_id and 'error-table' in source_plot_id
-            
-            if not is_error_table and (record_idx is None or replay_idx is None):
-                # 非错误表格需要完整的record_idx和replay_idx
-                logger.warning(f"[WARNING] 数据点信息不完整: {point_info}")
-                return no_update, no_update, no_update, no_update
-            elif is_error_table and record_idx is None and replay_idx is None:
-                # 错误表格至少需要一个索引
-                logger.warning(f"[WARNING] 错误表格数据点信息不完整: {point_info}")
-                return no_update, no_update, no_update, no_update
-            
-            logger.info(f"[PROCESS] 跳转到瀑布图: 算法={algorithm_name}, record_idx={record_idx}, replay_idx={replay_idx}, 按键={key_id}")
-            
-            # 生成新的瀑布图（不限制时间范围，显示全部数据，和正常上传后的瀑布图一样）
-            waterfall_fig = backend.generate_waterfall_plot()
-            if not waterfall_fig:
-                logger.warning(f"[WARNING] 瀑布图生成失败")
-                return no_update, no_update, no_update, no_update
-            
-            # 获取音符的时间信息，用于高亮标记
-            # 优先使用 point_info 中预先计算的时间信息
-            center_time_ms = point_info.get('center_time_ms')
-            
-            # 对于错误表格（丢锤/多锤），如果已经有center_time_ms，直接使用
-            if is_error_table and center_time_ms is not None:
-                logger.info(f"[OK] 使用错误表格预先计算的时间信息: center_time_ms={center_time_ms:.1f}ms")
-            # 如果没有预先计算的时间信息，则重新计算
-            elif center_time_ms is None:
-                try:
-                    logger.info(f"🔍 开始计算跳转点时间: algorithm_name={algorithm_name}, record_idx={record_idx}, replay_idx={replay_idx}, key_id={key_id}")
-                    
-                    if algorithm_name:
-                        # 多算法模式
-                        if backend.multi_algorithm_mode and backend.multi_algorithm_manager:
-                            algorithm = backend.multi_algorithm_manager.get_algorithm(algorithm_name)
-                            if algorithm and algorithm.analyzer and algorithm.analyzer.note_matcher:
-                                matched_pairs = algorithm.analyzer.matched_pairs
-                                logger.info(f"🔍 多算法模式: 找到 {len(matched_pairs)} 个匹配对")
-                                for r_idx, p_idx, r_note, p_note in matched_pairs:
-                                    if r_idx == record_idx and p_idx == replay_idx:
-                                        # 计算keyon时间
-                                        record_keyon = r_note.after_touch.index[0] + r_note.offset if hasattr(r_note, 'after_touch') and not r_note.after_touch.empty else r_note.offset
-                                        replay_keyon = p_note.after_touch.index[0] + p_note.offset if hasattr(p_note, 'after_touch') and not p_note.after_touch.empty else p_note.offset
-                                        center_time_ms = ((record_keyon + replay_keyon) / 2.0) / 10.0  # 转换为ms
-                                        logger.info(f"[OK] 多算法模式: 找到匹配对，计算得到 center_time_ms={center_time_ms:.1f}ms")
-                                        break
-                                if center_time_ms is None:
-                                    logger.warning(f"[WARNING] 多算法模式: 未找到匹配的 matched_pairs (record_idx={record_idx}, replay_idx={replay_idx})")
-                                    # 备用方案1：对于错误表格，直接从initial_valid_data获取时间信息
-                                    if is_error_table:
-                                        if record_idx is not None:
-                                            # 丢锤：从录制数据获取时间
-                                            initial_data = getattr(algorithm.analyzer, 'initial_valid_record_data', [])
-                                            if record_idx < len(initial_data):
-                                                note = initial_data[record_idx]
-                                                if hasattr(note, 'after_touch') and not note.after_touch.empty:
-                                                    center_time_ms = (note.after_touch.index[0] + note.offset) / 10.0
-                                                elif hasattr(note, 'offset'):
-                                                    center_time_ms = note.offset / 10.0
-                                                logger.info(f"[OK] 多算法模式(丢锤): 从录制数据获取时间，center_time_ms={center_time_ms:.1f}ms")
-                                        elif replay_idx is not None:
-                                            # 多锤：从播放数据获取时间
-                                            initial_data = getattr(algorithm.analyzer, 'initial_valid_replay_data', [])
-                                            if replay_idx < len(initial_data):
-                                                note = initial_data[replay_idx]
-                                                if hasattr(note, 'after_touch') and not note.after_touch.empty:
-                                                    center_time_ms = (note.after_touch.index[0] + note.offset) / 10.0
-                                                elif hasattr(note, 'offset'):
-                                                    center_time_ms = note.offset / 10.0
-                                                logger.info(f"[OK] 多算法模式(多锤): 从播放数据获取时间，center_time_ms={center_time_ms:.1f}ms")
-                                    # 备用方案2：从 offset_data 获取时间信息
-                                    if center_time_ms is None and algorithm and algorithm.analyzer and algorithm.analyzer.note_matcher:
-                                        offset_data = algorithm.analyzer.note_matcher.get_offset_alignment_data()
-                                        if offset_data:
-                                            for item in offset_data:
-                                                if item.get('record_index') == record_idx and item.get('replay_index') == replay_idx:
-                                                    record_keyon = item.get('record_keyon', 0)
-                                                    replay_keyon = item.get('replay_keyon', 0)
-                                                    if record_keyon and replay_keyon:
-                                                        center_time_ms = ((record_keyon + replay_keyon) / 2.0) / 10.0
-                                                        logger.info(f"[OK] 多算法模式: 从 offset_data 获取时间，center_time_ms={center_time_ms:.1f}ms")
-                                                        break
-                    else:
-                        # 单算法模式
-                        if backend.analyzer and backend.analyzer.note_matcher:
-                            matched_pairs = backend.analyzer.matched_pairs
-                            logger.info(f"🔍 单算法模式: 找到 {len(matched_pairs)} 个匹配对")
-                            for r_idx, p_idx, r_note, p_note in matched_pairs:
-                                if r_idx == record_idx and p_idx == replay_idx:
-                                    # 计算keyon时间
-                                    record_keyon = r_note.after_touch.index[0] + r_note.offset if hasattr(r_note, 'after_touch') and not r_note.after_touch.empty else r_note.offset
-                                    replay_keyon = p_note.after_touch.index[0] + p_note.offset if hasattr(p_note, 'after_touch') and not p_note.after_touch.empty else p_note.offset
-                                    center_time_ms = ((record_keyon + replay_keyon) / 2.0) / 10.0  # 转换为ms
-                                    logger.info(f"[OK] 单算法模式: 找到匹配对，计算得到 center_time_ms={center_time_ms:.1f}ms")
-                                    break
-                            if center_time_ms is None:
-                                logger.warning(f"[WARNING] 单算法模式: 未找到匹配的 matched_pairs (record_idx={record_idx}, replay_idx={replay_idx})")
-                                # 备用方案1：对于错误表格，直接从initial_valid_data获取时间信息
-                                if is_error_table:
-                                    if record_idx is not None:
-                                        # 丢锤：从录制数据获取时间
-                                        initial_data = getattr(backend.analyzer, 'initial_valid_record_data', [])
-                                        if record_idx < len(initial_data):
-                                            note = initial_data[record_idx]
-                                            if hasattr(note, 'after_touch') and not note.after_touch.empty:
-                                                center_time_ms = (note.after_touch.index[0] + note.offset) / 10.0
-                                            elif hasattr(note, 'hammers') and not note.hammers.empty:
-                                                center_time_ms = (note.hammers.index[0] + note.offset) / 10.0
-                                            elif hasattr(note, 'offset'):
-                                                center_time_ms = note.offset / 10.0
-                                            logger.info(f"[OK] 单算法模式(丢锤): 从录制数据获取时间，center_time_ms={center_time_ms:.1f}ms")
-                                    elif replay_idx is not None:
-                                        # 多锤：从播放数据获取时间
-                                        initial_data = getattr(backend.analyzer, 'initial_valid_replay_data', [])
-                                        if replay_idx < len(initial_data):
-                                            note = initial_data[replay_idx]
-                                            if hasattr(note, 'after_touch') and not note.after_touch.empty:
-                                                center_time_ms = (note.after_touch.index[0] + note.offset) / 10.0
-                                            elif hasattr(note, 'hammers') and not note.hammers.empty:
-                                                center_time_ms = (note.hammers.index[0] + note.offset) / 10.0
-                                            elif hasattr(note, 'offset'):
-                                                center_time_ms = note.offset / 10.0
-                                            logger.info(f"[OK] 单算法模式(多锤): 从播放数据获取时间，center_time_ms={center_time_ms:.1f}ms")
-                                # 备用方案2：从 offset_data 获取时间信息
-                                if center_time_ms is None and backend.analyzer and backend.analyzer.note_matcher:
-                                    offset_data = backend.analyzer.note_matcher.get_offset_alignment_data()
-                                    if offset_data:
-                                        for item in offset_data:
-                                            if item.get('record_index') == record_idx and item.get('replay_index') == replay_idx:
-                                                record_keyon = item.get('record_keyon', 0)
-                                                replay_keyon = item.get('replay_keyon', 0)
-                                                if record_keyon and replay_keyon:
-                                                    center_time_ms = ((record_keyon + replay_keyon) / 2.0) / 10.0
-                                                    logger.info(f"[OK] 单算法模式: 从 offset_data 获取时间，center_time_ms={center_time_ms:.1f}ms")
-                                                    break
-                except Exception as e:
-                    logger.warning(f"[WARNING] 计算时间信息失败: {e}")
-                    
-                    logger.error(traceback.format_exc())
-            else:
-                logger.info(f"[OK] 使用预先计算的时间信息: center_time_ms={center_time_ms:.1f}ms")
-            
-            logger.info(f"🔍 最终结果: center_time_ms={center_time_ms}, key_id={key_id}, source_plot_id={source_plot_id}")
-            
-            if center_time_ms is not None and key_id is not None:
-                # 在瀑布图中添加高亮标记（使用annotation和marker）
-                
-                # 计算标记的y位置（使用实际的按键ID，如果是多算法模式需要考虑偏移）
-                # 对于丢锤（record类型），y坐标是 key_id + y_offset
-                # 对于多锤（replay类型），y坐标是 key_id + y_offset + 0.2
-                try:
-                    marker_y = float(key_id)
-                    logger.info(f"🔍 初始marker_y={marker_y} (key_id={key_id})")
-                except (ValueError, TypeError):
-                    logger.warning(f"[WARNING] 无法转换key_id为float: {key_id}")
-                    marker_y = 0.0
-                
-                # 检查是否是错误表格（丢锤/多锤）
-                is_error_table = source_plot_id and 'error-table' in str(source_plot_id)
-                logger.info(f"🔍 is_error_table={is_error_table}, source_plot_id={source_plot_id}")
-                
-                if is_error_table:
-                    # 错误表格：根据表格类型决定是否添加0.2偏移
-                    if source_plot_id == 'error-table-multi' or (isinstance(source_plot_id, str) and 'error-table-multi' in source_plot_id):
-                        # 多锤：replay类型，需要添加0.2偏移
-                        marker_y += 0.2
-                        logger.info(f"🔍 多锤：添加0.2偏移，marker_y={marker_y}")
-                    else:
-                        # 丢锤：record类型，不需要添加0.2偏移
-                        logger.info(f"🔍 丢锤：不添加0.2偏移，marker_y={marker_y}")
-                
-                if algorithm_name and backend.multi_algorithm_mode and backend.multi_algorithm_manager:
-                    # 多算法模式：需要找到该算法对应的y偏移
-                    active_algorithms = backend.multi_algorithm_manager.get_active_algorithms()
-                    algorithm_y_offset = 0
-                    algorithm_y_range = 100  # 每个算法偏移100个单位
-                    for idx, alg in enumerate(active_algorithms):
-                        if alg.metadata.algorithm_name == algorithm_name:
-                            algorithm_y_offset = idx * algorithm_y_range
-                            break
-                    marker_y = marker_y + algorithm_y_offset
-                    logger.info(f"🔍 多算法模式：添加algorithm_y_offset={algorithm_y_offset}，最终marker_y={marker_y}")
-                else:
-                    logger.info(f"🔍 单算法模式或无算法名称，marker_y={marker_y}")
-                
-                logger.info(f"🔍 最终标记位置: x={center_time_ms:.2f}ms, y={marker_y:.2f}, key_id={key_id}")
-                
-                # 添加垂直参考线标记跳转的数据点（贯穿整个y轴）
-                waterfall_fig.add_vline(
-                    x=center_time_ms,
-                    line_dash="dash",
-                    line_color="red",
-                    line_width=4,
-                    opacity=0.9,
-                    annotation_text=f"跳转点: 按键 {key_id}" + (f" (算法: {algorithm_name})" if algorithm_name else ""),
-                    annotation_position="top",
-                    annotation=dict(
-                        font=dict(size=16, color="red", family="Arial Black"),
-                        bgcolor="rgba(255, 255, 255, 0.9)",
-                        bordercolor="red",
-                        borderwidth=2,
-                        borderpad=4
-                    )
-                )
-                
-                # 在按键位置添加一个醒目的标记点
-                waterfall_fig.add_trace(go.Scatter(
-                    x=[center_time_ms],
-                    y=[marker_y],
-                    mode='markers+text',
-                    marker=dict(
-                        size=25,
-                        color='red',
-                        symbol='star',
-                        line=dict(width=3, color='white'),
-                        opacity=0.9
-                    ),
-                    text=[f"按键 {key_id}"],
-                    textposition="top center",
-                    textfont=dict(size=16, color="red", family="Arial Black", weight="bold"),
-                    name='跳转标记',
-                    showlegend=False,
-                    hovertemplate=f'<b>[TARGET] 跳转点</b><br>按键: {key_id}<br>时间: {center_time_ms:.1f}ms' + (f'<br>算法: {algorithm_name}' if algorithm_name else '') + '<extra></extra>'
-                ))
-                
-                logger.info(f"[OK] 已在瀑布图中添加跳转标记: 按键={key_id}, 时间={center_time_ms:.1f}ms, y位置={marker_y:.1f}")
-            else:
-                if center_time_ms is None:
-                    logger.error(f"[ERROR] 无法计算 center_time_ms: record_idx={record_idx}, replay_idx={replay_idx}, algorithm_name={algorithm_name}")
-                if key_id is None:
-                    logger.error(f"[ERROR] key_id 为 None: point_info={point_info}")
-            
-            # 关闭模态框
-            modal_style = {
-                'display': 'none',
-                'position': 'fixed',
-                'zIndex': '9999',
-                'left': '0',
-                'top': '0',
-                'width': '100%',
-                'height': '100%',
-                'backgroundColor': 'rgba(0,0,0,0.6)',
-                'backdropFilter': 'blur(5px)'
-            }
-            
-            # 返回更新后的瀑布图、切换到瀑布图标签页、关闭模态框、保存来源图表ID
-            return waterfall_fig, 'waterfall-tab', modal_style, source_plot_id
-            
-        except Exception as e:
-            logger.error(f"[ERROR] 跳转到瀑布图失败: {e}")
-            
-            logger.error(traceback.format_exc())
-            return no_update, no_update, no_update, no_update
+        return waterfall_jump_handler.handle_jump_to_waterfall(n_clicks, session_id, point_info)
     
     # 返回报告界面按钮回调
     @app.callback(
@@ -7420,7 +7195,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
     def handle_hammer_velocity_scatter_click(click_data, close_modal_clicks, close_btn_clicks, session_id, current_style):
         """处理锤速与延时散点图点击，显示曲线对比（悬浮窗）并调整瀑布图显示范围"""
         from dash import callback_context
-        
+
         # 检测触发源
         ctx = callback_context
         if not ctx.triggered:
@@ -7453,7 +7228,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             if not backend:
                 logger.warning("[WARNING] 没有找到backend")
                 return current_style, [], no_update, no_update, no_update
-            
+
             if not click_data or 'points' not in click_data or not click_data['points']:
                 logger.warning("[WARNING] click_data为空或没有points")
                 return current_style, [], no_update, no_update, no_update
@@ -7488,7 +7263,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 # 多算法模式: [delay_ms, original_velocity, record_idx, replay_idx, algorithm_name, key_id]
                 if len(customdata) < 5:
                     logger.warning(f"[WARNING] customdata长度不足：{len(customdata)}，期望至少5个元素")
-                    return current_style, [], no_update, no_update, no_update
+                    return current_style, [], no_update
                 
                 delay_ms = customdata[0]
                 original_velocity = customdata[1]  # 原始锤速值（用于显示）
@@ -7612,7 +7387,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                         }
                         return modal_style, [html.Div([
                             html.P("图表生成失败", className="text-danger text-center")
-                        ])], waterfall_fig, point_info, no_update, no_update
+                        ])], waterfall_fig, point_info, no_update
                 else:
                     # 单算法模式：使用generate_scatter_detail_plot_by_indices
                     detail_figure1, detail_figure2, detail_figure_combined = backend.generate_scatter_detail_plot_by_indices(
@@ -7636,7 +7411,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                         }
                         logger.info("[OK] 散点图点击回调（单算法） - 返回模态框和图表")
                         # 将Plotly figure对象包装在dcc.Graph组件中
-                        return modal_style, dcc.Graph(figure=detail_figure_combined, style={'height': '600px'}), waterfall_fig, point_info
+                        return modal_style, dcc.Graph(figure=detail_figure_combined, style={'height': '600px'}), waterfall_fig, point_info, no_update
                     else:
                         logger.warning(f"[WARNING] 散点图点击回调（单算法） - 图表生成失败，部分图表为None")
                         modal_style = {
@@ -7671,7 +7446,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 return modal_style, [html.Div([
                     html.P(f"生成对比图失败: {str(e)}", className="text-danger text-center")
                 ])], no_update, no_update, no_update
-        
+
         # 其他情况，保持当前状态
         return current_style, [], no_update, no_update, no_update
 
@@ -7775,7 +7550,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                         }
                         return modal_style, [html.Div([
                             html.P("生成曲线对比图失败", className="text-danger text-center")
-                        ])], no_update, no_update
+                        ])], no_update, no_update, no_update
 
                     # 生成瀑布图并调整显示范围
                     waterfall_fig = backend.generate_waterfall_plot()
