@@ -8,7 +8,9 @@ import time
 import traceback
 import uuid
 import math
+
 from typing import Dict, Optional, Union, TypedDict, Tuple, List, Any
+from collections import defaultdict
 
 import pandas as pd
 import numpy as np
@@ -31,12 +33,14 @@ from datetime import datetime
 import plotly.graph_objects as go
 from plotly.graph_objects import Figure
 
+from scipy import stats
 from ui.layout_components import create_report_layout, empty_figure, create_multi_algorithm_upload_area, create_multi_algorithm_management_area
 from backend.session_manager import SessionManager
 from ui.ui_processor import UIProcessor
 from ui.multi_file_upload_handler import MultiFileUploadHandler
 from ui.waterfall_jump_handler import WaterfallJumpHandler
 from ui.delay_time_series_handler import DelayTimeSeriesHandler
+from ui.relative_delay_distribution_handler import RelativeDelayDistributionHandler
 from grade_detail_callbacks import register_all_callbacks
 from utils.logger import Logger
 # 后端类型导入
@@ -478,32 +482,6 @@ def _handle_waterfall_button(backend):
             return empty_fig, no_update, no_update, 0, 1000, [0, 1000], "显示全部时间范围"
 
 
-def _handle_report_button(backend):
-    """处理报告按钮点击"""
-    current_data_source = getattr(backend, '_data_source', 'none') if backend else 'none'
-    logger.info(f"[PROCESS] 生成分析报告（数据源: {current_data_source}）")
-    
-    # 检查是否有已加载的数据（支持单算法和多算法模式）
-    has_data = (hasattr(backend, 'all_error_notes') and backend.all_error_notes) or \
-               (hasattr(backend, 'analyzer') and backend.analyzer)
-
-    if has_data:
-        report_content = create_report_layout(backend)
-        return no_update, report_content, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
-    else:
-        if current_data_source == 'history':
-            error_content = html.Div([
-                html.H4("请选择历史记录或上传新文件", className="text-center text-warning"),
-                html.P("需要先选择历史记录或上传SPMID文件才能生成报告", className="text-center")
-            ])
-        else:
-            error_content = html.Div([
-                html.H4("请先上传SPMID文件", className="text-center text-warning"),
-                html.P("需要先上传并分析SPMID文件才能生成报告", className="text-center")
-            ])
-        return no_update, error_content, no_update, no_update, no_update, no_update, no_update, no_update, no_update, no_update
-
-
 def register_callbacks(app, session_manager: SessionManager, history_manager):
     """注册所有回调函数"""
 
@@ -512,6 +490,9 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
 
     # 创建延时时间序列图处理器实例
     delay_time_series_handler = DelayTimeSeriesHandler(session_manager)
+
+    # 创建相对延时分布图处理器实例
+    relative_delay_distribution_handler = RelativeDelayDistributionHandler(session_manager)
 
     # 初始化回调：自动启用多算法模式
     @app.callback(
@@ -1053,10 +1034,6 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         # 其他情况，返回默认值
         return current_style, [], no_update, no_update
 
-
-
-
-    # TODO
     # 时间轴筛选回调函数
     @app.callback(
         [Output('main-plot', 'figure', allow_duplicate=True),
@@ -1513,8 +1490,6 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             logger.error(traceback.format_exc())
             empty = backend.plot_generator._create_empty_plot(f"生成Z-Score标准化散点图失败: {str(e)}")
             return empty
-
-    
 
 
     # 锤速与延时散点图自动生成回调函数 - 当报告内容加载时自动生成
@@ -2513,7 +2488,6 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
 
     def _process_velocity_statistics(all_velocity_data):
         """按按键ID和算法+曲子分组计算平均锤速差值"""
-        from collections import defaultdict
         key_algorithm_stats = defaultdict(lambda: defaultdict(list))
 
         for item in all_velocity_data:
@@ -2630,7 +2604,6 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
     def _create_subplot_figure(subplot_idx, display_name, filename_display, delays_array, base_color):
         """为单个子图创建图表"""
         
-        from scipy import stats
 
         # 生成子图标题
         if filename_display == '汇总':
@@ -2763,7 +2736,6 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             return None
 
         # 按按键ID分组计算平均锤速差值
-        from collections import defaultdict
         key_velocity_stats = defaultdict(list)
 
         for item in hammer_velocity_diffs:
@@ -2953,9 +2925,6 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                     dbc.Alert("没有有效的相对延时数据", color="warning")
                 ])
 
-            
-            from scipy import stats
-            
             # 生成整体锤速对比图
             overall_velocity_plot = _create_overall_velocity_plot(algorithm_groups)
 
@@ -3039,161 +3008,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
     )
     def handle_relative_delay_distribution_click(click_data, session_id, plot_id):
         """处理同种算法相对延时分布图点击事件，显示该相对延时范围内的数据点详情"""
-        
-        
-        logger.info(f"🔍 相对延时分布图点击回调被触发，click_data: {click_data}")
-        print(f"🔍 相对延时分布图点击回调被触发，click_data: {click_data}")
-        
-        backend = session_manager.get_backend(session_id)
-        if not backend:
-            logger.warning("[WARNING] backend 为空")
-            return [], {'overflowX': 'auto', 'overflowY': 'auto', 'maxHeight': '600px'}, "", {'display': 'none'}, ""
-        
-        # 如果没有点击数据，隐藏表格
-        if not click_data:
-            logger.info("[WARNING] click_data 为空")
-            return [], {'overflowX': 'auto', 'overflowY': 'auto', 'maxHeight': '600px'}, "", {'display': 'none'}, ""
-        
-        if 'points' not in click_data or not click_data['points']:
-            logger.info(f"[WARNING] click_data 中没有 points 或 points 为空")
-            return [], {'overflowX': 'auto', 'overflowY': 'auto', 'maxHeight': '600px'}, "", {'display': 'none'}, ""
-        
-        try:
-            # 从plot_id获取子图索引（Pattern Matching Callbacks）
-            subplot_idx = plot_id.get('index') if isinstance(plot_id, dict) else None
-            if subplot_idx is None:
-                logger.warning("[WARNING] 无法从plot_id获取子图索引")
-                return [], {'overflowX': 'auto', 'overflowY': 'auto', 'maxHeight': '600px'}, "", {'display': 'none'}, ""
-            
-            logger.info(f"[STATS] 点击的子图索引: {subplot_idx}")
-            
-            # 获取点击的柱状图信息
-            point = click_data['points'][0]
-            logger.info(f"[STATS] 点击的 point 数据: {point}")
-            print(f"[STATS] 点击的 point 数据: {point}")
-            
-            # 获取点击的x值（相对延时值）
-            x_value = point.get('x')
-            if x_value is None:
-                logger.warning("[WARNING] point 中没有 x 值")
-                return [], {'overflowX': 'auto', 'overflowY': 'auto', 'maxHeight': '600px'}, "", {'display': 'none'}, ""
-            
-            # 获取分析结果以确定子图信息
-            analysis_result = backend.get_same_algorithm_relative_delay_analysis()
-            if analysis_result.get('status') != 'success':
-                logger.warning("[WARNING] 无法获取分析结果")
-                return [], {'overflowX': 'auto', 'overflowY': 'auto', 'maxHeight': '600px'}, "", {'display': 'none'}, ""
-            
-            algorithm_groups = analysis_result.get('algorithm_groups', {})
-            if not algorithm_groups:
-                logger.warning("[WARNING] 没有算法组数据")
-                return [], {'overflowX': 'auto', 'overflowY': 'auto', 'maxHeight': '600px'}, "", {'display': 'none'}, ""
-            
-            # 构建子图列表（与生成图表时的顺序一致）
-            all_songs = []
-            for display_name, group_data in algorithm_groups.items():
-                song_data = group_data.get('song_data', [])
-                group_relative_delays = group_data.get('relative_delays', [])
-                
-                if not group_relative_delays:
-                    continue
-                
-                # 添加每个曲子
-                for song_info in song_data:
-                    song_relative_delays = song_info.get('relative_delays', [])
-                    if song_relative_delays:
-                        filename_display = song_info.get('filename_display', song_info.get('filename', '未知文件'))
-                        all_songs.append((display_name, filename_display, song_relative_delays, None))
-                
-                # 添加汇总
-                all_songs.append((display_name, '汇总', None, group_relative_delays))
-            
-            # 根据subplot_idx直接确定目标子图（索引从1开始）
-            if subplot_idx < 1 or subplot_idx > len(all_songs):
-                logger.warning(f"[WARNING] 子图索引超出范围: subplot_idx={subplot_idx}, 总子图数={len(all_songs)}")
-                return [], {'overflowX': 'auto', 'overflowY': 'auto', 'maxHeight': '600px'}, "", {'display': 'none'}, ""
-            
-            target_display_name, target_filename_display, song_relative_delays, group_relative_delays = all_songs[subplot_idx - 1]
-            
-            # 确定使用的数据
-            if target_filename_display == '汇总':
-                target_delays = np.array(group_relative_delays)
-            else:
-                target_delays = np.array(song_relative_delays)
-            
-            if len(target_delays) == 0:
-                logger.warning(f"[WARNING] 目标子图没有数据: subplot_idx={subplot_idx}")
-                return [], {'overflowX': 'auto', 'overflowY': 'auto', 'maxHeight': '600px'}, "", {'display': 'none'}, ""
-            
-            logger.info(f"[OK] 确定的子图: subplot_idx={subplot_idx}, display_name={target_display_name}, filename_display={target_filename_display}")
-            
-            # 计算bin范围（使用与生成图表时相同的逻辑）
-            hist, bin_edges = np.histogram(target_delays, bins=50, density=False)
-            bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-            
-            # 找到包含x_value的bin
-            bin_idx = np.argmin(np.abs(bin_centers - x_value))
-            if bin_idx >= len(bin_edges) - 1:
-                bin_idx = len(bin_edges) - 2
-            
-            bin_left = float(bin_edges[bin_idx])
-            bin_right = float(bin_edges[bin_idx + 1])
-            
-            logger.info(f"[STATS] 确定的子图信息: display_name={target_display_name}, filename_display={target_filename_display}, bin=[{bin_left:.2f}, {bin_right:.2f}]")
-            print(f"[STATS] 确定的子图信息: display_name={target_display_name}, filename_display={target_filename_display}, bin=[{bin_left:.2f}, {bin_right:.2f}]")
-            
-            # 计算子图索引（用于滚动定位）
-            subplot_index = None
-            for idx, (display_name_item, filename_display_item, _, _) in enumerate(all_songs, 1):
-                if display_name_item == target_display_name and filename_display_item == target_filename_display:
-                    subplot_index = idx
-                    break
-            
-            # 生成子图标题
-            if target_filename_display == '汇总':
-                subplot_title = f"[STATS] {target_display_name} (汇总) - 数据详情"
-            else:
-                subplot_title = f"[STATS] {target_display_name} - {target_filename_display} - 数据详情"
-            
-            # 获取该相对延时范围内的数据点
-            data_points = backend.get_relative_delay_range_data_points_by_subplot(
-                target_display_name, target_filename_display, bin_left, bin_right
-            )
-            
-            if not data_points:
-                info_text = f"相对延时范围 [{bin_left:.2f}ms, {bin_right:.2f}ms] 内没有数据点"
-                return [], {'overflowX': 'auto', 'overflowY': 'auto', 'maxHeight': '600px'}, info_text, {'display': 'block'}, subplot_title
-            
-            # 准备表格数据
-            table_data = []
-            for item in data_points:
-                table_data.append({
-                    'algorithm_name': item.get('algorithm_name', 'N/A'),
-                    'key_id': item.get('key_id', 'N/A'),
-                    'relative_delay_ms': item.get('relative_delay_ms', 0.0),
-                    'absolute_delay_ms': item.get('absolute_delay_ms', 0.0),
-                    'record_index': item.get('record_index', 'N/A'),
-                    'replay_index': item.get('replay_index', 'N/A'),
-                    'record_keyon': item.get('record_keyon', 'N/A'),
-                    'replay_keyon': item.get('replay_keyon', 'N/A'),
-                    'duration_offset': item.get('duration_offset', 'N/A'),
-                })
-            
-            # 显示信息
-            info_text = f"相对延时范围 [{bin_left:.2f}ms, {bin_right:.2f}ms] 内共有 {len(data_points)} 个数据点"
-            
-            # 显示表格，添加垂直滚动条，限制最大高度为600px
-            table_style = {
-                'overflowX': 'auto',
-                'overflowY': 'auto',
-                'maxHeight': '600px',
-            }
-            return table_data, table_style, info_text, {'display': 'block'}, subplot_title
-            
-        except Exception as e:
-            logger.error(f"[ERROR] 处理相对延时分布图点击事件失败: {e}")
-            logger.error(traceback.format_exc())
-            return [], {'overflowX': 'auto', 'overflowY': 'auto', 'maxHeight': '600px'}, f"处理失败: {str(e)}", {'display': 'none'}, ""
+        return relative_delay_distribution_handler.handle_click(click_data, session_id, plot_id)
     
     def _find_target_algorithm_instance(backend, algorithm_name, record_index, replay_index):
         """[Helper] 在多算法模式下查找目标算法实例"""

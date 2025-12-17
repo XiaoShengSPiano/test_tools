@@ -543,16 +543,10 @@ class PlotGenerator:
         """配置图表布局（横轴、纵轴、图注等）"""
         # 收集所有播放锤速用于生成横轴刻度
         all_velocities = self._collect_all_velocities(analysis_result, is_multi_algorithm, algorithm_results)
-
-        # 生成横轴刻度（基于数据分布动态调整）
-        tick_positions, tick_texts = self._generate_adaptive_log_ticks(all_velocities)
-
-        # 收集所有相对延时数据用于Y轴刻度调整
-        all_delays = self._collect_all_delays(analysis_result, is_multi_algorithm, algorithm_results)
-
-        # 基于数据分布动态调整Y轴范围和刻度
-        y_axis_config = self._generate_adaptive_y_axis_config(all_delays)
-
+        
+        # 生成横轴刻度
+        tick_positions, tick_texts = self._generate_log_ticks(all_velocities)
+        
         fig.update_layout(
             xaxis_title='log₁₀(播放锤速)',
             yaxis_title='相对延时 (ms)',
@@ -569,8 +563,7 @@ class PlotGenerator:
                 gridcolor='lightgray',
                 zeroline=True,  # 显示y=0的参考线
                 zerolinecolor='red',
-                zerolinewidth=1.5,
-                **y_axis_config  # 使用动态配置
+                zerolinewidth=1.5
             ),
             showlegend=True,
             template='plotly_white',
@@ -608,11 +601,7 @@ class PlotGenerator:
         return all_velocities
     
     def _generate_log_ticks(self, velocities):
-        """生成对数刻度的刻度点（保留原有函数以防其他地方使用）"""
-        return self._generate_adaptive_log_ticks(velocities)
-
-    def _generate_adaptive_log_ticks(self, velocities):
-        """根据数据分布生成自适应的对数刻度"""
+        """生成对数刻度的刻度点"""
         if not velocities:
             return [], []
 
@@ -622,103 +611,21 @@ class PlotGenerator:
         if min_vel <= 0 or max_vel <= 0:
             return [], []
 
-        min_log = math.log10(min_vel)
-        max_log = math.log10(max_vel)
-        log_range = max_log - min_log
+        min_log = math.floor(math.log10(min_vel))
+        max_log = math.ceil(math.log10(max_vel))
 
-        # 根据数据范围确定刻度间隔
-        if log_range <= 0.5:  # 范围很小，使用0.1间隔
-            tick_interval = 0.1
-        elif log_range <= 1.0:  # 范围中等，使用0.2间隔
-            tick_interval = 0.2
-        elif log_range <= 2.0:  # 范围较大，使用0.5间隔
-            tick_interval = 0.5
-        else:  # 范围很大，使用1.0间隔
-            tick_interval = 1.0
-
-        # 计算刻度位置
+        # 生成更密集的刻度，每0.2个单位一个刻度
         tick_positions = []
         tick_texts = []
 
-        start_tick = math.floor(min_log / tick_interval) * tick_interval
-        end_tick = math.ceil(max_log / tick_interval) * tick_interval
-
-        current = start_tick
-        while current <= end_tick + 1e-10:  # 添加小常数避免浮点误差
-            if current >= min_log - tick_interval * 0.5 and current <= max_log + tick_interval * 0.5:
-                tick_positions.append(current)
-                tick_texts.append(f"{current:.1f}")
-            current += tick_interval
+        current = min_log
+        while current <= max_log:
+            tick_positions.append(current)
+            # 显示log10值本身
+            tick_texts.append(f"{current:.1f}")
+            current += 0.2  # 每0.2个log10单位一个刻度
 
         return tick_positions, tick_texts
-
-    def _collect_all_delays(self, analysis_result, is_multi_algorithm, algorithm_results):
-        """收集所有相对延时数据用于Y轴配置"""
-        all_delays = []
-
-        if is_multi_algorithm and algorithm_results:
-            for alg_result in algorithm_results.values():
-                interaction_data = alg_result.get('interaction_plot_data', {})
-                key_data = interaction_data.get('key_data', {})
-                for data in key_data.values():
-                    delays = data.get('delays', [])  # 相对延时
-                    all_delays.extend(delays)
-        else:
-            interaction_data = analysis_result.get('interaction_plot_data', {})
-            key_data = interaction_data.get('key_data', {})
-            for data in key_data.values():
-                delays = data.get('delays', [])
-                all_delays.extend(delays)
-
-        return all_delays
-
-    def _generate_adaptive_y_axis_config(self, delays):
-        """根据相对延时数据分布生成自适应的Y轴配置"""
-        if not delays:
-            # 默认配置
-            return {
-                'range': [-100, 100],
-                'dtick': 10,
-                'tickformat': '.1f'
-            }
-
-        min_delay = min(delays)
-        max_delay = max(delays)
-        delay_range = max_delay - min_delay
-
-        # 计算合适的范围（稍微扩大一点边界）
-        margin = delay_range * 0.05  # 5%的边距
-        y_min = min_delay - margin
-        y_max = max_delay + margin
-
-        # 确保范围不会超过合理限制
-        y_min = max(y_min, -200)  # 最大下限
-        y_max = min(y_max, 200)   # 最大上限
-
-        # 根据数据范围确定刻度间隔
-        if delay_range <= 20:  # 范围很小，使用2ms间隔
-            dtick = 2
-        elif delay_range <= 50:  # 范围中等，使用5ms间隔
-            dtick = 5
-        elif delay_range <= 100:  # 范围较大，使用10ms间隔
-            dtick = 10
-        else:  # 范围很大，使用20ms间隔
-            dtick = 20
-
-        # 确保刻度数量合适（大约10-20个刻度）
-        total_range = y_max - y_min
-        optimal_ticks = 15
-        calculated_dtick = total_range / optimal_ticks
-
-        # 选择最接近的标准刻度间隔
-        standard_dticks = [1, 2, 5, 10, 20, 25, 50, 100]
-        dtick = min(standard_dticks, key=lambda x: abs(x - calculated_dtick))
-
-        return {
-            'range': [y_min, y_max],
-            'dtick': dtick,
-            'tickformat': '.1f'
-        }
     
     def _create_algorithm_control_legends(self, fig, algorithm_names, algorithm_colors):
         """创建算法控制图注（独立的图例组）"""
@@ -918,13 +825,11 @@ class PlotGenerator:
         """
         生成按键-力度交互效应图
         横轴：log₁₀(播放锤速)
-        纵轴：相对延时（延时 - 平均延时）
-
-        显示不同按键在不同力度下的延时表现，用于分析按键×力度的交互效应
-
+        纵轴：锤速差值（播放锤速 - 录制锤速）
+        
         Args:
             analysis_result: analyze_key_force_interaction()的返回结果
-
+            
         Returns:
             Any: Plotly图表对象
         """
