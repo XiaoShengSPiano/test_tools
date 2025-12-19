@@ -919,7 +919,7 @@ def _create_single_algorithm_overview_row(algorithm, algorithm_name, backend=Non
         if not backend or not hasattr(backend, 'get_algorithm_statistics'):
             raise ValueError("后端对象或get_algorithm_statistics方法不可用")
 
-        # 获取完整的统计信息（包括准确率、错误统计等）
+        # 获取完整的统计信息（包括匹配率、错误统计等）
         stats = backend.get_algorithm_statistics(algorithm)
         accuracy = stats['accuracy']
         matched_count = stats['matched_count']
@@ -939,8 +939,8 @@ def _create_single_algorithm_overview_row(algorithm, algorithm_name, backend=Non
                                 dbc.Col([
                                     html.Div([
                         html.H3(f"{accuracy:.1f}%", className="text-success mb-1"),
-                                        html.P("准确率", className="text-muted mb-0"),
-                                        html.Small("所有配对音符数/总有效音符数", className="text-muted", style={'fontSize': '10px'})
+                                        html.P("匹配率", className="text-muted mb-0"),
+                                        html.Small("成功匹配音符数/总有效音符数", className="text-muted", style={'fontSize': '10px'})
                                     ], className="text-center")
                                 ], width=3),
                                 dbc.Col([
@@ -2096,8 +2096,15 @@ def create_report_layout(backend):
                                    style={'color': '#2c3e50', 'fontWeight': 'bold', 'borderBottom': '2px solid #2c3e50', 'paddingBottom': '5px'}),
                         ], width=12)
                     ]),
+                    # 原始延时时间序列图
                     dcc.Graph(
-                        id='delay-time-series-plot',
+                        id='raw-delay-time-series-plot',
+                        figure={},
+                        style={'height': '500px', 'marginBottom': '20px'}
+                    ),
+                    # 相对延时时间序列图
+                    dcc.Graph(
+                        id='relative-delay-time-series-plot',
                         figure={},
                         style={'height': '500px'}
                     ),
@@ -2137,13 +2144,6 @@ def create_report_layout(backend):
                                    style={'marginTop': '10px'}),
                                 html.Div(id='export-delay-histogram-status',
                                         style={'marginTop': '5px', 'fontSize': '12px'}),
-                                dbc.Button([
-                                    html.I(className="fas fa-sync-alt", style={'marginRight': '8px'}),
-                                    "重复验证一致性"
-                                ], id='repeat-verification-btn', color='info', size='sm',
-                                   style={'marginTop': '5px'}),
-                                html.Div(id='repeat-verification-status',
-                                        style={'marginTop': '2px', 'fontSize': '12px'}),
                                 dbc.Button([
                                     html.I(className="fas fa-flask", style={'marginRight': '8px'}),
                                     "导出匹配前数据(测试)"

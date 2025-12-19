@@ -805,6 +805,361 @@ class PianoAnalysisBackend:
         cv = self.analyzer.get_coefficient_of_variation()
         return cv
     
+    def _get_delay_time_series_raw_data(self) -> Optional[List[Dict[str, Any]]]:
+        """
+        获取延时时间序列图的原始数据
+
+        Returns:
+            Optional[List[Dict[str, Any]]]: 精确匹配数据列表，如果获取失败返回None
+        """
+        try:
+            if not self.analyzer or not self.analyzer.note_matcher:
+                logger.warning("[WARNING] 没有分析器或音符匹配器，无法获取数据")
+                return None
+
+            offset_data = self.analyzer.note_matcher.get_precision_offset_alignment_data()
+            logger.info(f"[DEBUG] 获取到精确匹配数据: {len(offset_data)} 条记录")
+
+            if not offset_data:
+                logger.warning("[WARNING] 无精确匹配数据（≤50ms）")
+                return None
+
+            return offset_data
+
+        except Exception as e:
+            logger.error(f"[ERROR] 获取延时时间序列原始数据失败: {e}")
+            return None
+
+    def _process_delay_time_series_data(self, offset_data: List[Dict[str, Any]]) -> Optional[List[Dict[str, Any]]]:
+        """
+        处理和过滤延时时间序列数据
+
+        Args:
+            offset_data: 原始偏移数据
+
+        Returns:
+            Optional[List[Dict[str, Any]]]: 处理后的数据点列表，按时间排序
+        """
+        data_points = []  # 存储所有数据点，用于排序
+        skipped_count = 0
+
+        for i, item in enumerate(offset_data):
+            record_keyon = item.get('record_keyon')  # 单位：0.1ms
+            keyon_offset = item.get('keyon_offset')  # 单位：0.1ms
+            key_id = item.get('key_id')
+            record_index = item.get('record_index')
+            replay_index = item.get('replay_index')
+
+            # 检查必要字段是否存在且不为None
+            if record_keyon is None or keyon_offset is None:
+                logger.debug(f"[DEBUG] 跳过第{i}条记录: record_keyon或keyon_offset为None")
+                skipped_count += 1
+                continue
+
+            # 检查时间和偏移量是否有效（为有效数字）
+            if not isinstance(record_keyon, (int, float)):
+                logger.debug(f"[DEBUG] 跳过第{i}条记录: record_keyon无效 ({record_keyon})")
+                skipped_count += 1
+                continue
+            if not isinstance(keyon_offset, (int, float)):
+                logger.debug(f"[DEBUG] 跳过第{i}条记录: keyon_offset无效 ({keyon_offset})")
+                skipped_count += 1
+                continue
+
+            # 转换为ms单位
+            time_ms = record_keyon / 10.0
+            delay_ms = keyon_offset / 10.0
+
+            data_points.append({
+                'time': time_ms,
+                'delay': delay_ms,
+                'key_id': key_id if key_id is not None else 'N/A',
+                'record_index': record_index,
+                'replay_index': replay_index
+            })
+
+        logger.info(f"[DEBUG] 数据处理完成: 原始数据 {len(offset_data)} 条, 有效数据点 {len(data_points)} 条, 跳过 {skipped_count} 条")
+
+        if not data_points:
+            logger.warning("[WARNING] 无有效时间序列数据")
+            return None
+
+        # 按时间排序，确保按时间顺序显示
+        data_points.sort(key=lambda x: x['time'])
+        return data_points
+
+    def _calculate_relative_delays(self, data_points: List[Dict[str, Any]]) -> Tuple[List[float], float]:
+        """
+        计算相对延时数据
+
+        Args:
+            data_points: 排序后的数据点列表
+
+        Returns:
+            Tuple[List[float], float]: (相对延时列表, 平均延时ms)
+        """
+        # 计算平均延时（用于计算相对延时）
+        me_0_1ms = self.get_mean_error()  # 平均延时（0.1ms单位，带符号）
+        mean_delay = me_0_1ms / 10.0  # 平均延时（ms，带符号）
+
+        # 计算相对延时：每个点的延时减去平均延时
+        # 标准公式：相对延时 = 延时 - 平均延时（对所有点统一适用）
+        relative_delays_ms = []
+        for point in data_points:
+            delay_ms = point['delay']
+            relative_delay = delay_ms - mean_delay
+            relative_delays_ms.append(relative_delay)
+
+        return relative_delays_ms, mean_delay
+
+    def _prepare_time_series_plot_data(self, data_points: List[Dict[str, Any]], mean_delay: float) -> Tuple[List[float], List[float], List[List[Any]]]:
+        """
+        准备图表绘制所需的数据格式
+
+        Args:
+            data_points: 排序后的数据点列表
+            mean_delay: 平均延时（ms）
+
+        Returns:
+            Tuple[List[float], List[float], List[List[Any]]]: (时间列表, 延时列表, 自定义数据列表)
+        """
+        # 提取排序后的数据
+        times_ms = [point['time'] for point in data_points]
+        delays_ms = [point['delay'] for point in data_points]  # 保留原始延时用于hover显示
+        # customdata 包含 [key_id, record_index, replay_index, 原始延时, 平均延时]，用于点击时查找匹配对和显示原始值
+        customdata_list = [[point['key_id'], point['record_index'], point['replay_index'], point['delay'], mean_delay]
+                          for point in data_points]
+
+        return times_ms, delays_ms, customdata_list
+
+    def _configure_delay_plot_axes(self, delays_ms: List[float], is_relative: bool = False) -> Tuple[float, float, float]:
+        """
+        配置延时图表的Y轴参数
+
+        Args:
+            delays_ms: 延时数据列表
+            is_relative: 是否为相对延时图
+
+        Returns:
+            Tuple[float, float, float]: (y_axis_min, y_axis_max, dtick)
+        """
+        if not delays_ms:
+            # 默认配置
+            return (-50, 50, 10) if not is_relative else (-15, 15, 3)
+
+        y_min = min(delays_ms)
+        y_max = max(delays_ms)
+
+        # 使用已有的统计信息来确定合适的Y轴范围
+        mean_delay_0_1ms = self.get_mean_error()  # 平均延时（0.1ms单位）
+        std_dev_0_1ms = self.get_standard_deviation()  # 标准差（0.1ms单位）
+
+        # 转换为ms单位
+        mean_delay_ms = mean_delay_0_1ms / 10.0
+        std_dev_ms = std_dev_0_1ms / 10.0
+
+        if is_relative:
+            # 相对延时通常集中在0附近，基于标准差设置合理的对称范围
+            if std_dev_ms <= 2:  # 数据高度集中
+                y_half_range = 8  # ±8ms
+                dtick = 2
+            elif std_dev_ms <= 5:  # 中等集中
+                y_half_range = 12  # ±12ms
+                dtick = 3
+            elif std_dev_ms <= 10:  # 适中离散
+                y_half_range = 20  # ±20ms
+                dtick = 4
+            elif std_dev_ms <= 25:  # 较大离散
+                y_half_range = 40  # ±40ms
+                dtick = 8
+            else:  # 超大离散
+                y_half_range = max(40, std_dev_ms * 1.5)  # 至少±40ms，或1.5倍标准差
+                dtick = 10
+
+            # 以0为中心对称显示（相对延时的特点）
+            # 但确保能显示所有实际数据点
+            y_axis_min = min(y_min - 1, -y_half_range)  # 显示实际最小值，或对称范围的最小值
+            y_axis_max = max(y_max + 1, y_half_range)   # 显示实际最大值，或对称范围的最大值
+
+            # 确保最小范围为±5ms
+            if y_axis_max - y_axis_min < 10:
+                y_axis_min = -5
+                y_axis_max = 5
+                dtick = 1
+        else:
+            # 原始延时：根据数据分布智能选择Y轴范围和刻度
+            # 使用3倍标准差作为合理的显示范围
+            suggested_half_range = max(15, std_dev_ms * 3)  # 至少显示±15ms，或3倍标准差
+
+            if std_dev_ms <= 5:  # 数据集中分布
+                dtick = 2
+            elif std_dev_ms <= 20:  # 中等离散度
+                dtick = 5
+            elif std_dev_ms <= 100:  # 大离散度
+                dtick = 10
+            else:  # 超大离散度
+                dtick = 20
+
+            # 以平均值为中心设置Y轴范围，但确保显示所有数据点
+            y_center = mean_delay_ms
+            y_axis_min = min(y_min - 2, y_center - suggested_half_range)
+            y_axis_max = max(y_max + 2, y_center + suggested_half_range)
+
+        return y_axis_min, y_axis_max, dtick
+
+    def _create_raw_delay_plot(self, times_ms: List[float], delays_ms: List[float], customdata_list: List[List[Any]]) -> Any:
+        """
+        创建原始延时时间序列图
+
+        Args:
+            times_ms: 时间数据（ms）
+            delays_ms: 原始延时数据（ms）
+            customdata_list: 自定义数据列表
+
+        Returns:
+            Any: Plotly图表对象
+        """
+        import plotly.graph_objects as go
+
+        # 创建偏移之前的时间序列图
+        raw_delay_fig = go.Figure()
+        raw_delay_fig.add_trace(go.Scatter(
+            x=times_ms,  # X轴使用录制时间
+            y=delays_ms,  # Y轴使用原始延时
+            mode='markers+lines',
+            name='原始延时时间序列',
+            marker=dict(
+                size=6,
+                color='#FF9800',  # 橙色
+                symbol='circle'  # 实心圆点
+            ),
+            line=dict(color='#FF9800', width=1.5),
+            hovertemplate='<b>录制时间</b>: %{x:.2f}ms<br>' +
+                         '<b>原始延时</b>: %{y:.2f}ms<br>' +
+                         '<b>按键ID</b>: %{customdata[0]}<br>' +
+                         '<extra></extra>',
+            customdata=customdata_list
+        ))
+
+        # 配置Y轴
+        y_axis_min, y_axis_max, dtick = self._configure_delay_plot_axes(delays_ms, is_relative=False)
+
+        # 配置偏移前图表的布局
+        raw_delay_fig.update_layout(
+            xaxis_title='录制时间 (ms)',
+            yaxis_title='原始延时 (ms)',
+            showlegend=True,
+            template='plotly_white',
+            height=400,
+            hovermode='closest'
+        )
+
+        # 根据数据动态设置Y轴刻度和范围
+        raw_delay_fig.update_yaxes(
+            range=[y_axis_min, y_axis_max],
+            dtick=dtick,
+            tickformat='.1f'  # 显示1位小数
+        )
+
+        return raw_delay_fig
+
+    def _create_relative_delay_plot(self, times_ms: List[float], relative_delays_ms: List[float],
+                                   customdata_list: List[List[Any]], mean_delay: float) -> Any:
+        """
+        创建相对延时时间序列图
+
+        Args:
+            times_ms: 时间数据（ms）
+            relative_delays_ms: 相对延时数据（ms）
+            customdata_list: 自定义数据列表
+            mean_delay: 平均延时（ms）
+
+        Returns:
+            Any: Plotly图表对象
+        """
+        import plotly.graph_objects as go
+
+        # 创建偏移之后的时间序列图
+        relative_delay_fig = go.Figure()
+        relative_delay_fig.add_trace(go.Scatter(
+            x=times_ms,
+            y=relative_delays_ms,
+            mode='markers+lines',  # 同时显示点和线，便于观察趋势
+            name=f'相对延时时间序列 (平均延时: {mean_delay:.2f}ms)',
+            marker=dict(
+                size=6,
+                color='#2196F3',  # 蓝色
+                line=dict(width=0.5, color='#1976D2')
+            ),
+            line=dict(color='#2196F3', width=1.5),
+            hovertemplate='<b>录制时间</b>: %{x:.2f}ms<br>' +
+                         '<b>相对延时</b>: %{y:.2f}ms<br>' +
+                         '<b>原始延时</b>: %{customdata[3]:.2f}ms<br>' +
+                         '<b>平均延时</b>: %{customdata[4]:.2f}ms<br>' +
+                         '<b>按键ID</b>: %{customdata[0]}<br>' +
+                         '<extra></extra>',
+            customdata=customdata_list
+        ))
+
+        # 配置Y轴
+        y_axis_min, y_axis_max, dtick = self._configure_delay_plot_axes(relative_delays_ms, is_relative=True)
+
+        # 配置偏移后图表的布局
+        relative_delay_fig.update_layout(
+            xaxis_title='录制时间 (ms)',
+            yaxis_title='相对延时 (ms)',
+            showlegend=True,
+            template='plotly_white',
+            height=400,
+            hovermode='closest'
+        )
+
+        # 根据数据动态设置Y轴刻度和范围
+        relative_delay_fig.update_yaxes(
+            range=[y_axis_min, y_axis_max],
+            dtick=dtick,
+            tickformat='.1f'  # 显示1位小数
+        )
+
+        # 为相对延时图添加参考线
+        if relative_delays_ms:
+            std_0_1ms = self.get_standard_deviation()  # 标准差（0.1ms单位）
+            std_delay = std_0_1ms / 10.0  # 标准差（ms）
+
+            # 添加零线参考线（相对延时的均值应该为0）
+            relative_delay_fig.add_trace(go.Scatter(
+                x=[times_ms[0], times_ms[-1]] if times_ms else [0, 1],
+                y=[0, 0],
+                mode='lines',
+                name='平均延时（零线）',
+                line=dict(dash='dash', color='red', width=2),
+                hovertemplate='<b>平均延时（零线）</b>: 0.00ms<extra></extra>',
+                showlegend=False
+            ))
+
+            # 添加±3σ参考线（相对延时的±3σ，以0为中心）
+            if std_delay > 0:
+                relative_delay_fig.add_trace(go.Scatter(
+                    x=[times_ms[0], times_ms[-1]] if times_ms else [0, 1],
+                    y=[3 * std_delay, 3 * std_delay],
+                    mode='lines',
+                    name='+3σ',
+                    line=dict(dash='dot', color='orange', width=1.5),
+                    hovertemplate=f'<b>+3σ</b>: {3 * std_delay:.2f}ms<extra></extra>',
+                    showlegend=False
+                ))
+                relative_delay_fig.add_trace(go.Scatter(
+                    x=[times_ms[0], times_ms[-1]] if times_ms else [0, 1],
+                    y=[-3 * std_delay, -3 * std_delay],
+                    mode='lines',
+                    name='-3σ',
+                    line=dict(dash='dot', color='orange', width=1.5),
+                    hovertemplate=f'<b>-3σ</b>: {-3 * std_delay:.2f}ms<extra></extra>',
+                    showlegend=False
+                ))
+
+        return relative_delay_fig
+
     def generate_delay_time_series_plot(self) -> Any:
         """
         生成延时时间序列图（支持单算法和多算法模式）
@@ -817,190 +1172,53 @@ class PianoAnalysisBackend:
             # 多算法模式：生成多算法对比时间序列图
             active_algorithms = self.multi_algorithm_manager.get_active_algorithms()
             if not active_algorithms:
-                logger.warning("⚠️ 多算法模式下没有激活的算法，返回空图表")
+                logger.debug("ℹ️ 多算法模式下没有激活的算法，返回空图表")
                 return self.plot_generator._create_empty_plot("没有激活的算法")
-            
+
             # 使用多算法图表生成器
             return self.multi_algorithm_plot_generator.generate_multi_algorithm_delay_time_series_plot(
                 active_algorithms
             )
-        
+
         # 单算法模式
         try:
-            if not self.analyzer or not self.analyzer.note_matcher:
+            # 1. 获取原始数据
+            offset_data = self._get_delay_time_series_raw_data()
+            if offset_data is None:
                 return {
-                    'raw_delay_plot': self.plot_generator._create_empty_plot("没有分析器"),
-                    'relative_delay_plot': self.plot_generator._create_empty_plot("没有分析器")
+                    'raw_delay_plot': self.plot_generator._create_empty_plot("无法获取数据"),
+                    'relative_delay_plot': self.plot_generator._create_empty_plot("无法获取数据")
                 }
 
-            offset_data = self.analyzer.note_matcher.get_precision_offset_alignment_data()
-            if not offset_data:
-                return {
-                    'raw_delay_plot': self.plot_generator._create_empty_plot("无精确匹配数据（≤50ms）"),
-                    'relative_delay_plot': self.plot_generator._create_empty_plot("无精确匹配数据（≤50ms）")
-                }
-
-            import plotly.graph_objects as go
-
-            # 提取时间和延时数据
-            data_points = []  # 存储所有数据点，用于排序
-
-            for item in offset_data:
-                record_keyon = item.get('record_keyon', 0)  # 单位：0.1ms
-                keyon_offset = item.get('keyon_offset', 0.0)  # 单位：0.1ms
-                key_id = item.get('key_id')
-                record_index = item.get('record_index')
-                replay_index = item.get('replay_index')
-
-                if record_keyon is None or keyon_offset is None:
-                    continue
-
-                # 转换为ms单位
-                time_ms = record_keyon / 10.0
-                delay_ms = keyon_offset / 10.0
-
-                data_points.append({
-                    'time': time_ms,
-                    'delay': delay_ms,
-                    'key_id': key_id if key_id is not None else 'N/A',
-                    'record_index': record_index,
-                    'replay_index': replay_index
-                })
-
-            if not data_points:
+            # 2. 处理和过滤数据
+            data_points = self._process_delay_time_series_data(offset_data)
+            if data_points is None:
                 return {
                     'raw_delay_plot': self.plot_generator._create_empty_plot("无有效时间序列数据"),
                     'relative_delay_plot': self.plot_generator._create_empty_plot("无有效时间序列数据")
                 }
 
-            # 按时间排序，确保按时间顺序显示
-            data_points.sort(key=lambda x: x['time'])
+            # 3. 计算相对延时
+            relative_delays_ms, mean_delay = self._calculate_relative_delays(data_points)
 
-            # 计算平均延时（用于计算相对延时）
-            me_0_1ms = self.get_mean_error()  # 平均延时（0.1ms单位，带符号）
-            mean_delay = me_0_1ms / 10.0  # 平均延时（ms，带符号）
+            # 4. 准备图表数据
+            times_ms, delays_ms, customdata_list = self._prepare_time_series_plot_data(data_points, mean_delay)
 
-            # 计算相对延时：每个点的延时减去平均延时
-            # 标准公式：相对延时 = 延时 - 平均延时（对所有点统一适用）
-            relative_delays_ms = []
-            for point in data_points:
-                delay_ms = point['delay']
-                relative_delay = delay_ms - mean_delay
-                relative_delays_ms.append(relative_delay)
+            # 5. 创建原始延时图
+            raw_delay_plot = self._create_raw_delay_plot(times_ms, delays_ms, customdata_list)
 
-            # 提取排序后的数据
-            times_ms = [point['time'] for point in data_points]
-            delays_ms = [point['delay'] for point in data_points]  # 保留原始延时用于hover显示
-            # customdata 包含 [key_id, record_index, replay_index, 原始延时, 平均延时]，用于点击时查找匹配对和显示原始值
-            customdata_list = [[point['key_id'], point['record_index'], point['replay_index'], point['delay'], mean_delay]
-                              for point in data_points]
-
-            # 创建偏移之前的时间序列图
-            raw_delay_fig = go.Figure()
-            raw_delay_fig.add_trace(go.Scatter(
-                x=times_ms,  # X轴使用录制时间
-                y=delays_ms,  # Y轴使用原始延时
-                mode='markers+lines',
-                name=f'原始延时时间序列',
-                marker=dict(
-                    size=6,
-                    color='#FF9800',  # 橙色
-                    symbol='circle'  # 实心圆点
-                ),
-                line=dict(color='#FF9800', width=1.5),
-                hovertemplate='<b>录制时间</b>: %{x:.2f}ms<br>' +
-                             '<b>原始延时</b>: %{y:.2f}ms<br>' +
-                             '<b>按键ID</b>: %{customdata[0]}<br>' +
-                             '<extra></extra>',
-                customdata=customdata_list
-            ))
-
-            # 配置偏移前图表的布局
-            raw_delay_fig.update_layout(
-                xaxis_title='录制时间 (ms)',
-                yaxis_title='原始延时 (ms)',
-                showlegend=True,
-                template='plotly_white',
-                height=400,
-                hovermode='closest'
+            # 6. 创建相对延时图
+            relative_delay_plot = self._create_relative_delay_plot(
+                times_ms, relative_delays_ms, customdata_list, mean_delay
             )
-
-            # 创建偏移之后的时间序列图
-            relative_delay_fig = go.Figure()
-            relative_delay_fig.add_trace(go.Scatter(
-                x=times_ms,
-                y=relative_delays_ms,
-                mode='markers+lines',  # 同时显示点和线，便于观察趋势
-                name=f'相对延时时间序列 (平均延时: {mean_delay:.2f}ms)',
-                marker=dict(
-                    size=6,
-                    color='#2196F3',  # 蓝色
-                    line=dict(width=0.5, color='#1976D2')
-                ),
-                line=dict(color='#2196F3', width=1.5),
-                hovertemplate='<b>录制时间</b>: %{x:.2f}ms<br>' +
-                             '<b>相对延时</b>: %{y:.2f}ms<br>' +
-                             '<b>原始延时</b>: %{customdata[3]:.2f}ms<br>' +
-                             '<b>平均延时</b>: %{customdata[4]:.2f}ms<br>' +
-                             '<b>按键ID</b>: %{customdata[0]}<br>' +
-                             '<extra></extra>',
-                customdata=customdata_list
-            ))
-
-            # 配置偏移后图表的布局
-            relative_delay_fig.update_layout(
-                xaxis_title='录制时间 (ms)',
-                yaxis_title='相对延时 (ms)',
-                showlegend=True,
-                template='plotly_white',
-                height=400,
-                hovermode='closest'
-            )
-            
-            # 为相对延时图添加参考线
-            if delays_ms:
-                std_0_1ms = self.get_standard_deviation()  # 标准差（0.1ms单位）
-                std_delay = std_0_1ms / 10.0  # 标准差（ms）
-
-                # 添加零线参考线（相对延时的均值应该为0）
-                relative_delay_fig.add_trace(go.Scatter(
-                    x=[times_ms[0], times_ms[-1]] if times_ms else [0, 1],
-                    y=[0, 0],
-                    mode='lines',
-                    name='平均延时（零线）',
-                    line=dict(dash='dash', color='red', width=2),
-                    hovertemplate=f'<b>平均延时（零线）</b>: 0.00ms<extra></extra>',
-                    showlegend=False
-                ))
-
-                # 添加±3σ参考线（相对延时的±3σ，以0为中心）
-                if std_delay > 0:
-                    relative_delay_fig.add_trace(go.Scatter(
-                        x=[times_ms[0], times_ms[-1]] if times_ms else [0, 1],
-                        y=[3 * std_delay, 3 * std_delay],
-                        mode='lines',
-                        name='+3σ',
-                        line=dict(dash='dot', color='orange', width=1.5),
-                        hovertemplate=f'<b>+3σ</b>: {3 * std_delay:.2f}ms<extra></extra>',
-                        showlegend=False
-                    ))
-                    relative_delay_fig.add_trace(go.Scatter(
-                        x=[times_ms[0], times_ms[-1]] if times_ms else [0, 1],
-                        y=[-3 * std_delay, -3 * std_delay],
-                        mode='lines',
-                        name='-3σ',
-                        line=dict(dash='dot', color='orange', width=1.5),
-                        hovertemplate=f'<b>-3σ</b>: {-3 * std_delay:.2f}ms<extra></extra>',
-                        showlegend=False
-                    ))
 
             return {
-                'raw_delay_plot': raw_delay_fig,
-                'relative_delay_plot': relative_delay_fig
+                'raw_delay_plot': raw_delay_plot,
+                'relative_delay_plot': relative_delay_plot
             }
+
         except Exception as e:
             logger.error(f"生成延时时间序列图失败: {e}")
-            
             logger.error(traceback.format_exc())
             return self.plot_generator._create_empty_plot(f"生成延时时间序列图失败: {str(e)}")
     
@@ -1106,7 +1324,7 @@ class PianoAnalysisBackend:
             # 多算法模式：生成多算法对比直方图
             active_algorithms = self.multi_algorithm_manager.get_active_algorithms()
             if not active_algorithms:
-                logger.warning("⚠️ 多算法模式下没有激活的算法，返回空图表")
+                logger.debug("ℹ️ 多算法模式下没有激活的算法，返回空图表")
                 return self.plot_generator._create_empty_plot("没有激活的算法")
             
             # 使用多算法图表生成器
@@ -1597,7 +1815,7 @@ class PianoAnalysisBackend:
             # 多算法模式：生成多算法对比柱状图
             active_algorithms = self.multi_algorithm_manager.get_active_algorithms()
             if not active_algorithms:
-                logger.warning("⚠️ 多算法模式下没有激活的算法，返回空图表")
+                logger.debug("ℹ️ 多算法模式下没有激活的算法，返回空图表")
                 return self.plot_generator._create_empty_plot("没有激活的算法")
             
             # 使用多算法图表生成器
@@ -1923,7 +2141,7 @@ class PianoAnalysisBackend:
             # 多算法模式：生成多算法对比散点图
             active_algorithms = self.multi_algorithm_manager.get_active_algorithms()
             if not active_algorithms:
-                logger.warning("⚠️ 多算法模式下没有激活的算法，返回空图表")
+                logger.debug("ℹ️ 多算法模式下没有激活的算法，返回空图表")
                 return self.plot_generator._create_empty_plot("没有激活的算法")
             
             # 使用多算法图表生成器
@@ -2129,7 +2347,7 @@ class PianoAnalysisBackend:
             # 多算法模式：生成多算法对比Z-Score散点图
             active_algorithms = self.multi_algorithm_manager.get_active_algorithms()
             if not active_algorithms:
-                logger.warning("⚠️ 多算法模式下没有激活的算法，返回空图表")
+                logger.debug("ℹ️ 多算法模式下没有激活的算法，返回空图表")
                 return self.plot_generator._create_empty_plot("没有激活的算法")
             
             # 使用多算法图表生成器
@@ -2156,7 +2374,7 @@ class PianoAnalysisBackend:
             # 多算法模式：生成对比图
             active_algorithms = self.multi_algorithm_manager.get_active_algorithms()
             if not active_algorithms:
-                logger.warning("⚠️ 多算法模式下没有激活的算法，返回空图表")
+                logger.debug("ℹ️ 多算法模式下没有激活的算法，返回空图表")
                 return self.plot_generator._create_empty_plot("没有激活的算法")
             
             # 使用多算法图表生成器
@@ -2179,7 +2397,7 @@ class PianoAnalysisBackend:
             # 多算法模式：生成多算法对比散点图
             active_algorithms = self.multi_algorithm_manager.get_active_algorithms()
             if not active_algorithms:
-                logger.warning("⚠️ 多算法模式下没有激活的算法，返回空图表")
+                logger.debug("ℹ️ 多算法模式下没有激活的算法，返回空图表")
                 return self.plot_generator._create_empty_plot("没有激活的算法")
             
             # 使用多算法图表生成器
@@ -2411,7 +2629,7 @@ class PianoAnalysisBackend:
             # 多算法模式：生成多算法对比散点图
             active_algorithms = self.multi_algorithm_manager.get_active_algorithms()
             if not active_algorithms:
-                logger.warning("⚠️ 多算法模式下没有激活的算法，返回空图表")
+                logger.debug("ℹ️ 多算法模式下没有激活的算法，返回空图表")
                 return self.plot_generator._create_empty_plot("没有激活的算法")
             
             # 使用多算法图表生成器
@@ -2565,7 +2783,7 @@ class PianoAnalysisBackend:
             analyzers = []
             active_algorithms = self.multi_algorithm_manager.get_active_algorithms()
             if not active_algorithms:
-                logger.warning("⚠️ 多算法模式下没有激活的算法，返回空图表")
+                logger.debug("ℹ️ 多算法模式下没有激活的算法，返回空图表")
                 return self.plot_generator._create_empty_plot("没有激活的算法")
 
             analyzers = [alg.analyzer for alg in active_algorithms if alg.analyzer]
@@ -2756,7 +2974,7 @@ class PianoAnalysisBackend:
             if self.multi_algorithm_mode and self.multi_algorithm_manager:
                 active_algorithms = self.multi_algorithm_manager.get_active_algorithms()
                 if not active_algorithms:
-                    logger.warning("⚠️ 多算法模式下没有激活的算法")
+                    logger.debug("ℹ️ 多算法模式下没有激活的算法")
                     return None
                 
                 # 使用第一个激活的算法

@@ -990,7 +990,6 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             return current_style, [], no_update, no_update
 
         trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
-        logger.info(f"[PROCESS] Z-Score散点图点击回调触发：trigger_id={trigger_id}")
 
         # 如果点击了关闭按钮，隐藏模态框
         if trigger_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
@@ -1027,7 +1026,6 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             return current_style, [], no_update, no_update
 
         trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
-        logger.info(f"[PROCESS] 按键与相对延时散点图点击回调触发：trigger_id={trigger_id}")
 
         # 如果点击了关闭按钮，隐藏模态框
         if trigger_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
@@ -1291,7 +1289,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             # 检查是否有激活的算法
             active_algorithms = backend.get_active_algorithms()
             if not active_algorithms:
-                logger.warning("[WARNING] 没有激活的算法，无法生成偏移对齐分析")
+                logger.debug("[DEBUG] 没有激活的算法，跳过偏移对齐分析生成")
                 empty = backend.plot_generator._create_empty_plot("没有激活的算法")
                 return [dcc.Graph(figure=empty)], []
             
@@ -1518,7 +1516,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             # 检查是否有激活的算法
             active_algorithms = backend.get_active_algorithms()
             if not active_algorithms:
-                logger.warning("[WARNING] 没有激活的算法，无法生成散点图")
+                logger.debug("[DEBUG] 没有激活的算法，跳过散点图生成")
                 return backend.plot_generator._create_empty_plot("没有激活的算法")
             
             # 生成锤速与延时散点图
@@ -1594,7 +1592,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
 
         active_algorithms = backend.multi_algorithm_manager.get_active_algorithms()
         if not active_algorithms:
-            logger.warning("[WARNING] 没有激活的算法，无法生成锤速对比图")
+            logger.debug("[DEBUG] 没有激活的算法，跳过锤速对比图生成")
             return False
 
         return True
@@ -2053,7 +2051,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             # 检查是否有激活的算法
             active_algorithms = backend.get_active_algorithms()
             if not active_algorithms:
-                logger.warning("[WARNING] 没有激活的算法，无法生成交互效应图")
+                logger.debug("[DEBUG] 没有激活的算法，跳过交互效应图生成")
                 return backend.plot_generator._create_empty_plot("没有激活的算法")
 
             # 重新生成图表
@@ -2933,7 +2931,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 return html.Div([
                     dbc.Alert("没有有效的相对延时数据", color="warning")
                 ])
-
+            
             # 生成整体锤速对比图
             overall_velocity_plot = _create_overall_velocity_plot(algorithm_groups)
 
@@ -3028,18 +3026,18 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                         logger.info(f"{log_prefix} 通过匹配对找到算法实例: {alg.metadata.algorithm_name}")
                         return alg
         return None
-
+    
     def _find_target_algorithm_instance(backend, algorithm_name, record_index, replay_index):
         """[Helper] 在多算法模式下查找目标算法实例"""
         if not backend.multi_algorithm_mode or not backend.multi_algorithm_manager:
             return None
-
+            
         all_algorithms = backend.multi_algorithm_manager.get_all_algorithms()
-
+        
         # 1. 首先尝试精确匹配算法名称
         candidate_algorithms = [alg for alg in all_algorithms if alg.metadata.algorithm_name == algorithm_name]
         logger.info(f"🔍 找到 {len(candidate_algorithms)} 个匹配算法名称的算法实例: {algorithm_name}")
-
+        
         # 2. 在候选算法中通过匹配对查找
         if candidate_algorithms:
             target_alg = _find_algorithm_by_indices(
@@ -3068,19 +3066,19 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
 
         # 从 matched_pairs 获取匹配的音符对
         matched_pairs = getattr(target_algorithm.analyzer, 'matched_pairs', [])
-
+        
         for r_idx, p_idx, r_note, p_note in matched_pairs:
             if r_idx == record_index and p_idx == replay_index:
                 # 如果指定了key_id，进行额外验证
                 if key_id is not None and r_note.id != key_id:
                     continue
+                        
+            # 计算中心时间（keyon时间）
+            r_offset = r_note.after_touch.index[0] + r_note.offset if hasattr(r_note, 'after_touch') and not r_note.after_touch.empty else r_note.offset
+            p_offset = p_note.after_touch.index[0] + p_note.offset if hasattr(p_note, 'after_touch') and not p_note.after_touch.empty else p_note.offset
+            center_time_ms = ((r_offset + p_offset) / 2.0) / 10.0
 
-                # 计算中心时间（keyon时间）
-                r_offset = r_note.after_touch.index[0] + r_note.offset if hasattr(r_note, 'after_touch') and not r_note.after_touch.empty else r_note.offset
-                p_offset = p_note.after_touch.index[0] + p_note.offset if hasattr(p_note, 'after_touch') and not p_note.after_touch.empty else p_note.offset
-                center_time_ms = ((r_offset + p_offset) / 2.0) / 10.0
-
-                return r_note, p_note, center_time_ms
+        return r_note, p_note, center_time_ms
 
         # 如果在 matched_pairs 中找不到匹配的音符对，直接返回None
         return None, None, None
@@ -3201,7 +3199,8 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
 
     # 延时时间序列图回调 - 报告内容加载时自动生成
     @app.callback(
-        Output('delay-time-series-plot', 'figure'),
+        [Output('raw-delay-time-series-plot', 'figure'),
+         Output('relative-delay-time-series-plot', 'figure')],
         [Input('report-content', 'children')],
         [State('session-id', 'data')],
         prevent_initial_call=True
@@ -3210,35 +3209,33 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         """处理延时时间序列图自动生成 - 当报告内容更新时触发"""
         backend = session_manager.get_backend(session_id)
         if not backend:
-            return no_update
+            return [no_update, no_update]
 
         try:
             # 检查是否在多算法模式
             # 检查是否有激活的算法
             active_algorithms = backend.get_active_algorithms()
             if not active_algorithms:
-                logger.warning("[WARNING] 没有激活的算法，无法生成延时时间序列图")
+                logger.debug("[DEBUG] 没有激活的算法，跳过延时时间序列图生成")
                 empty_plot = backend.plot_generator._create_empty_plot("没有激活的算法")
-                return empty_plot
+                return [empty_plot, empty_plot]
 
             result = backend.generate_delay_time_series_plot()
 
             # 检查返回的是否是字典（两个图表）还是单个图表
             if isinstance(result, dict) and 'raw_delay_plot' in result and 'relative_delay_plot' in result:
                 logger.info("[OK] 延时时间序列图生成成功（分离模式）")
-                # 在当前布局中，我们只有一个图表组件，合并两个图表或选择一个
-                # 这里选择相对延时图作为主要显示
-                return result['relative_delay_plot']
+                return [result['raw_delay_plot'], result['relative_delay_plot']]
             else:
-                # 单个图表模式
-                logger.info("[OK] 延时时间序列图生成成功（单个图表模式）")
-                return result
+                # 单算法模式 - 两个图表都显示相同的内容
+                logger.info("[OK] 延时时间序列图生成成功（单算法模式）")
+                return [result, result]
 
         except Exception as e:
             logger.error(f"[ERROR] 生成延时时间序列图失败: {e}")
             logger.error(traceback.format_exc())
             empty_plot = backend.plot_generator._create_empty_plot(f"生成时间序列图失败: {str(e)}")
-            return empty_plot
+            return [empty_plot, empty_plot]
     
     # 延时时间序列图点击回调 - 只处理关闭按钮（单算法模式）
     @app.callback(
@@ -3279,24 +3276,26 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             return modal_style, [], no_update
 
         return current_style, [], no_update
-
-    # 延时时间序列图点击回调 - 多算法模式（仅监听 delay-time-series-plot）
+                    
+    # 延时时间序列图点击回调 - 多算法模式（监听所有时间序列图）
     @app.callback(
         [Output('key-curves-modal', 'style', allow_duplicate=True),
          Output('key-curves-comparison-container', 'children', allow_duplicate=True),
          Output('current-clicked-point-info', 'data', allow_duplicate=True),
-         Output('delay-time-series-plot', 'clickData', allow_duplicate=True)],
-        [Input('delay-time-series-plot', 'clickData'),
+         Output('raw-delay-time-series-plot', 'clickData', allow_duplicate=True),
+         Output('relative-delay-time-series-plot', 'clickData', allow_duplicate=True)],
+        [Input('raw-delay-time-series-plot', 'clickData'),
+         Input('relative-delay-time-series-plot', 'clickData'),
          Input('close-key-curves-modal', 'n_clicks'),
          Input('close-key-curves-modal-btn', 'n_clicks')],
         [State('session-id', 'data'),
          State('key-curves-modal', 'style')],
         prevent_initial_call=True
     )
-    def handle_delay_time_series_click_multi(delay_click_data, close_modal_clicks, close_btn_clicks, session_id, current_style):
+    def handle_delay_time_series_click_multi(raw_click_data, relative_click_data, close_modal_clicks, close_btn_clicks, session_id, current_style):
         """处理延时时间序列图点击（多算法模式），显示音符分析曲线（悬浮窗）"""
         return delay_time_series_handler.handle_delay_time_series_click_multi(
-            delay_click_data, close_modal_clicks, close_btn_clicks, session_id, current_style
+            raw_click_data, relative_click_data, close_modal_clicks, close_btn_clicks, session_id, current_style
         )
 
     # 最大/最小延迟字段点击回调 - 显示对应按键的曲线对比图
@@ -3314,7 +3313,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
          State('key-curves-modal', 'style')],
         prevent_initial_call=True
     )
-    def handle_delay_value_click(max_clicks_list, min_clicks_list, close_modal_clicks, close_btn_clicks,
+    def handle_delay_value_click(max_clicks_list, min_clicks_list, close_modal_clicks, close_btn_clicks, 
                                   max_ids_list, min_ids_list, session_id, current_style):
         """处理最大/最小延迟字段点击，显示对应按键的曲线对比图"""
         return delay_value_click_handler.handle_delay_value_click(
@@ -3340,7 +3339,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             # 检查是否有激活的算法
             active_algorithms = backend.get_active_algorithms()
             if not active_algorithms:
-                logger.warning("[WARNING] 没有激活的算法，无法生成延时直方图")
+                logger.debug("[DEBUG] 没有激活的算法，跳过延时直方图生成")
                 return backend.plot_generator._create_empty_plot("没有激活的算法")
             
             fig = backend.generate_delay_histogram_plot()
@@ -3452,52 +3451,6 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             logger.error(f"导出匹配前数据失败: {e}")
             return html.Div(f"❌ 导出异常: {str(e)}", style={'color': '#dc3545'})
 
-    # 重复验证一致性按钮
-    @app.callback(
-        Output('repeat-verification-status', 'children'),
-        Input('repeat-verification-btn', 'n_clicks'),
-        State('session-id', 'data'),
-        prevent_initial_call=True
-    )
-    def repeat_verification(n_clicks, session_id):
-        """重复验证系统计算一致性"""
-        backend = session_manager.get_backend(session_id)
-        if not backend:
-            return html.Div("❌ 会话无效", style={'color': '#dc3545'})
-
-        try:
-            # 检查是否有之前的数据可以验证
-            if not hasattr(backend, '_last_upload_content') or not backend._last_upload_content:
-                return html.Div("❌ 没有可验证的历史数据，请先上传文件", style={'color': '#dc3545'})
-
-            logger.info(f"🔄 用户主动触发重复验证 - 第 {getattr(backend, '_analysis_count', 0) + 1} 次分析")
-
-            # 强制重新处理相同文件
-            filename = getattr(backend, '_last_upload_filename', 'unknown')
-            contents = backend._last_upload_content
-
-            # 设置重复验证标志
-            backend._is_repeat_verification = True
-
-            # 重新处理文件
-            success, result_data, error_msg = backend.process_spmid_upload(contents, filename)
-
-            if success:
-                analysis_count = getattr(backend, '_analysis_count', 1)
-                return html.Div([
-                    html.I(className="fas fa-check-circle", style={'color': '#28a745', 'marginRight': '8px'}),
-                    f"✅ 重复验证完成（第 {analysis_count} 次分析）"
-                ], style={'color': '#28a745'})
-            else:
-                return html.Div(f"❌ 重复验证失败: {error_msg}", style={'color': '#dc3545'})
-
-        except Exception as e:
-            logger.error(f"重复验证异常: {e}")
-            return html.Div(f"❌ 验证异常: {str(e)}", style={'color': '#dc3545'})
-
-        except Exception as e:
-            logger.error(f"[ERROR] 导出延时分布数据失败: {e}")
-            return html.Div(f"❌ 导出异常: {str(e)}", style={'color': '#dc3545'})
 
     # 延时分布直方图点击回调 - 显示指定延时范围内的数据点详情
     @app.callback(
@@ -3528,15 +3481,13 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
     def handle_delay_histogram_table_click(active_cell, close_modal_clicks, close_btn_clicks, table_data, session_id, current_style):
         """处理延时分布直方图详情表格点击，显示录制与播放对比曲线（悬浮窗）并支持跳转到瀑布图"""
         
-        
         # 检测触发源
         ctx = callback_context
         if not ctx.triggered:
             return current_style, [], no_update
         
         trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
-        logger.info(f"[PROCESS] 延时直方图表格点击回调触发：trigger_id={trigger_id}")
-        print(f"[PROCESS] 延时直方图表格点击回调触发：trigger_id={trigger_id}")
+        logger.debug(f"[DEBUG] 延时直方图表格点击回调触发：trigger_id={trigger_id}")
         
         # 如果点击了关闭按钮，隐藏模态框
         if trigger_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
@@ -4759,7 +4710,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             return current_style, [], no_update
         
         trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
-        logger.info(f"[PROCESS] 按键表格点击回调触发：trigger_id={trigger_id}")
+        logger.debug(f"[DEBUG] 按键表格点击回调触发：trigger_id={trigger_id}")
         
         # 如果点击了关闭按钮，隐藏模态框
         if trigger_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
@@ -5458,24 +5409,112 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                     print(f"[OK] 按键ID {key_id} 有匹配对，绘制录制+播放对比曲线（同种算法不同曲子时不显示其他算法曲线）")
                 else:
                     # 没有匹配对：只绘制这个数据点的数据（可能是录制，也可能是播放）
+                    # 对于匹配失败的音符，需要从原始数据中查找正确的音符对象
+                    print(f"[INFO] 未找到匹配对，尝试查找匹配失败的音符数据")
+
+                    # 首先尝试直接索引
+                    found_note = False
                     if data_type == 'record' and index >= 0 and index < len(valid_record_data):
                         record_note = valid_record_data[index]
                         replay_note = None
+                        # 验证按键ID是否匹配
+                        if hasattr(record_note, 'id') and record_note.id == key_id:
+                            found_note = True
+                            print(f"[OK] 通过直接索引找到录制音符: index={index}, key_id={key_id}")
+                        else:
+                            record_note = None
+                            print(f"[WARNING] 直接索引的录制音符key_id不匹配: 期望{key_id}, 实际{record_note.id if record_note else 'N/A'}")
+
                     elif data_type == 'play' and index >= 0 and index < len(valid_replay_data):
                         record_note = None
                         replay_note = valid_replay_data[index]
+                        # 验证按键ID是否匹配
+                        if hasattr(replay_note, 'id') and replay_note.id == key_id:
+                            found_note = True
+                            print(f"[OK] 通过直接索引找到播放音符: index={index}, key_id={key_id}")
+                        else:
+                            replay_note = None
+                            print(f"[WARNING] 直接索引的播放音符key_id不匹配: 期望{key_id}, 实际{replay_note.id if replay_note else 'N/A'}")
 
-                    # 计算平均延时
-                    mean_delays = {}
-                    if not algorithm or not algorithm.analyzer:
-                        print(f"[ERROR] 算法对象或分析器为空，无法计算平均延时")
+                    # 如果直接索引失败，尝试通过key_id遍历查找
+                    if not found_note:
+                        print(f"[INFO] 直接索引失败，尝试通过key_id遍历查找")
+                        if data_type == 'record':
+                            for i, note in enumerate(valid_record_data):
+                                if hasattr(note, 'id') and note.id == key_id:
+                                    record_note = note
+                                    replay_note = None
+                                    found_note = True
+                                    print(f"[OK] 通过遍历找到录制音符: array_index={i}, key_id={key_id}")
+                                    break
+                        elif data_type == 'play':
+                            for i, note in enumerate(valid_replay_data):
+                                if hasattr(note, 'id') and note.id == key_id:
+                                    record_note = None
+                                    replay_note = note
+                                    found_note = True
+                                    print(f"[OK] 通过遍历找到播放音符: array_index={i}, key_id={key_id}")
+                                    break
+
+                    # 如果仍然找不到，尝试从错误数据中查找（丢锤、多锤）
+                    if not found_note:
+                        print(f"[INFO] 在有效数据中未找到，尝试从错误数据中查找")
+                        # 获取错误数据
+                        drop_hammers = getattr(algorithm.analyzer if algorithm else backend.analyzer, 'drop_hammers', [])
+                        multi_hammers = getattr(algorithm.analyzer if algorithm else backend.analyzer, 'multi_hammers', [])
+
+                        # 检查丢锤数据
+                        for error_note in drop_hammers:
+                            if hasattr(error_note, 'infos') and error_note.infos:
+                                for note_info in error_note.infos:
+                                    if hasattr(note_info, 'keyId') and note_info.keyId == key_id:
+                                        # 对于丢锤，只显示录制数据
+                                        if data_type == 'record':
+                                            # 尝试从valid_record_data中找到对应的音符
+                                            for note in valid_record_data:
+                                                if hasattr(note, 'id') and note.id == key_id:
+                                                    record_note = note
+                                                    replay_note = None
+                                                    found_note = True
+                                                    print(f"[OK] 从丢锤数据中找到录制音符: key_id={key_id}")
+                                                    break
+                                        break
+                            if found_note:
+                                break
+
+                        # 如果还没找到，检查多锤数据
+                        if not found_note:
+                            for error_note in multi_hammers:
+                                if hasattr(error_note, 'infos') and error_note.infos:
+                                    for note_info in error_note.infos:
+                                        if hasattr(note_info, 'keyId') and note_info.keyId == key_id:
+                                            # 对于多锤，只显示播放数据
+                                            if data_type == 'play':
+                                                # 尝试从valid_replay_data中找到对应的音符
+                                                for note in valid_replay_data:
+                                                    if hasattr(note, 'id') and note.id == key_id:
+                                                        record_note = None
+                                                        replay_note = note
+                                                        found_note = True
+                                                        print(f"[OK] 从多锤数据中找到播放音符: key_id={key_id}")
+                                                        break
+                                            break
+                                if found_note:
+                                    break
+
+                    if not found_note:
+                        print(f"[ERROR] 无法找到任何匹配的音符数据: key_id={key_id}, data_type={data_type}")
                         return current_style, []
 
-                    mean_error_0_1ms = algorithm.analyzer.get_mean_error()
-                    mean_delays[algorithm_name] = mean_error_0_1ms / 10.0  # 转换为毫秒
+                    # 计算平均延时（对于匹配失败的音符，使用0作为平均延时，不进行偏移）
+                    mean_delays = {algorithm_name: 0.0}  # 不进行时间轴偏移
 
-                    detail_figure_combined = spmid.plot_note_comparison_plotly(record_note, replay_note, algorithm_name=algorithm_name, mean_delays=mean_delays)
-                    print(f"[WARNING] 按键ID {key_id} 无匹配对，只绘制单侧数据")
+                    detail_figure_combined = spmid.plot_note_comparison_plotly(
+                        record_note, replay_note,
+                        algorithm_name=algorithm_name,
+                        mean_delays=mean_delays
+                    )
+                    print(f"[OK] 匹配失败的按键ID {key_id} 找到音符数据，只绘制单侧曲线（无偏移）")
                 
                 if not detail_figure_combined:
                     print("[ERROR] 曲线生成失败")
@@ -5570,7 +5609,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             return current_style, [], no_update, no_update, no_update
         
         trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
-        logger.info(f"[PROCESS] 按键-力度交互效应图点击回调触发：trigger_id={trigger_id}")
+        logger.debug(f"[DEBUG] 按键-力度交互效应图点击回调触发：trigger_id={trigger_id}")
         
         # 如果点击了关闭按钮，隐藏模态框
         if trigger_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
@@ -5595,7 +5634,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             if not backend:
                 logger.warning("[WARNING] 没有找到backend")
                 return current_style, [], no_update, no_update, no_update
-
+            
             if not click_data or 'points' not in click_data or not click_data['points']:
                 logger.warning("[WARNING] click_data为空或没有points")
                 return current_style, [], no_update, no_update, no_update
@@ -5880,7 +5919,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 return modal_style, [html.Div([
                     html.P(f"生成曲线对比失败: {str(e)}", className="text-danger text-center")
                 ])], no_update, no_update, no_update
-
+        
         # 其他情况，保持当前状态
         return current_style, [], no_update, no_update, no_update
     
@@ -6370,7 +6409,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
     def handle_hammer_velocity_scatter_click(click_data, close_modal_clicks, close_btn_clicks, session_id, current_style):
         """处理锤速与延时散点图点击，显示曲线对比（悬浮窗）并调整瀑布图显示范围"""
         from dash import callback_context
-
+        
         # 检测触发源
         ctx = callback_context
         if not ctx.triggered:
@@ -6378,7 +6417,6 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             return current_style, [], no_update, no_update, no_update
         
         trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
-        logger.info(f"[PROCESS] 散点图点击回调触发：trigger_id={trigger_id}")
         
         # 如果点击了关闭按钮，隐藏模态框
         if trigger_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
@@ -6403,7 +6441,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             if not backend:
                 logger.warning("[WARNING] 没有找到backend")
                 return current_style, [], no_update, no_update, no_update
-
+            
             if not click_data or 'points' not in click_data or not click_data['points']:
                 logger.warning("[WARNING] click_data为空或没有points")
                 return current_style, [], no_update, no_update, no_update
@@ -6621,7 +6659,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 return modal_style, [html.Div([
                     html.P(f"生成对比图失败: {str(e)}", className="text-danger text-center")
                 ])], no_update, no_update, no_update
-
+        
         # 其他情况，保持当前状态
         return current_style, [], no_update, no_update, no_update
 
@@ -6656,7 +6694,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             return current_style, [], no_update, no_update, no_update
 
         trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
-        logger.info(f"[PROCESS] 锤速对比图点击回调触发：trigger_id={trigger_id}")
+        logger.debug(f"[DEBUG] 锤速对比图点击回调触发：trigger_id={trigger_id}")
 
         # 如果点击了关闭按钮，隐藏模态框
         if trigger_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
@@ -7229,13 +7267,29 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 if available_data == 'record':
                     # 丢锤：使用initial_valid_record_data
                     initial_data = getattr(backend.analyzer, 'initial_valid_record_data', None)
-                    if initial_data and global_index < len(initial_data):
-                        note_data = initial_data[global_index]
                 else:
                     # 多锤：使用initial_valid_replay_data
                     initial_data = getattr(backend.analyzer, 'initial_valid_replay_data', None)
-                    if initial_data and global_index < len(initial_data):
-                        note_data = initial_data[global_index]
+
+                if initial_data:
+                    # 优先通过key_id查找音符数据，确保与表格显示一致
+                    logger.info(f"[DEBUG] 单算法模式通过key_id查找音符数据: {key_id}")
+                    for i, note in enumerate(initial_data):
+                        if getattr(note, 'id', None) == key_id:
+                            note_data = note
+                            logger.info(f"[DEBUG] 单算法模式通过key_id查找成功: 索引{i}, key_id={key_id}")
+                            break
+
+                    # 如果通过key_id没找到，降级使用索引查找（向后兼容）
+                    if not note_data and 0 <= global_index < len(initial_data):
+                        candidate_note = initial_data[global_index]
+                        candidate_key_id = getattr(candidate_note, 'id', None)
+                        if candidate_key_id == key_id:
+                            # 索引查找成功且key_id匹配
+                            note_data = candidate_note
+                            logger.info(f"[DEBUG] 单算法模式索引查找成功且key_id匹配: global_index={global_index}, key_id={key_id}")
+                        else:
+                            logger.warning(f"[WARNING] 单算法模式索引位置的key_id不匹配: 期望{key_id}, 实际{candidate_key_id}, 跳过绘制")
             else:
                 # 多算法模式
                 active_algorithms = backend.get_active_algorithms()
@@ -7283,18 +7337,24 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 logger.info(f"[DEBUG] {data_type_name} - 数据长度: {len(initial_data) if initial_data else 0}, 索引: {global_index}")
 
                 if initial_data:
-                    # 首先尝试直接索引
-                    if 0 <= global_index < len(initial_data):
-                        note_data = initial_data[global_index]
-                        logger.info(f"[DEBUG] 直接索引成功: key_id={getattr(note_data, 'id', 'N/A')}")
-                    else:
-                        # 如果直接索引失败，尝试查找匹配的key_id
-                        logger.warning(f"[WARNING] 直接索引失败，尝试通过key_id查找: {key_id}")
-                        for i, note in enumerate(initial_data):
-                            if getattr(note, 'id', None) == key_id:
-                                note_data = note
-                                logger.info(f"[DEBUG] 通过key_id查找成功: 索引{i}, key_id={key_id}")
-                                break
+                    # 优先通过key_id查找音符数据，确保与表格显示一致
+                    logger.info(f"[DEBUG] 通过key_id查找音符数据: {key_id}")
+                    for i, note in enumerate(initial_data):
+                        if getattr(note, 'id', None) == key_id:
+                            note_data = note
+                            logger.info(f"[DEBUG] 通过key_id查找成功: 索引{i}, key_id={key_id}")
+                            break
+
+                    # 如果通过key_id没找到，降级使用索引查找（向后兼容）
+                    if not note_data and 0 <= global_index < len(initial_data):
+                        candidate_note = initial_data[global_index]
+                        candidate_key_id = getattr(candidate_note, 'id', None)
+                        if candidate_key_id == key_id:
+                            # 索引查找成功且key_id匹配
+                            note_data = candidate_note
+                            logger.info(f"[DEBUG] 索引查找成功且key_id匹配: global_index={global_index}, key_id={key_id}")
+                        else:
+                            logger.warning(f"[WARNING] 索引位置的key_id不匹配: 期望{key_id}, 实际{candidate_key_id}, 跳过绘制")
 
                     if not note_data:
                         logger.error(f"[ERROR] 无法找到匹配的音符数据: key_id={key_id}, 索引={global_index}, 数据长度={len(initial_data)}")

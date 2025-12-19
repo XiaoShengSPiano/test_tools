@@ -23,33 +23,48 @@ class DelayTimeSeriesHandler:
         """设置 session_manager（用于延迟初始化）"""
         self.session_manager = session_manager
 
-    def handle_delay_time_series_click_multi(self, delay_click_data, close_modal_clicks, close_btn_clicks, session_id, current_style):
+    def handle_delay_time_series_click_multi(self, raw_click_data, relative_click_data, close_modal_clicks, close_btn_clicks, session_id, current_style):
         """处理延时时间序列图点击（多算法模式），显示音符分析曲线（悬浮窗）"""
         logger.info("[START] handle_delay_time_series_click_multi 回调被触发")
 
         # 检测触发源
         ctx = dash.callback_context
         if not ctx.triggered:
-            return current_style, [], no_update, no_update
+            return current_style, [], no_update, no_update, no_update
 
         trigger_result = self._handle_trigger_detection(ctx)
         if trigger_result.get('is_close_button'):
-            return trigger_result['modal_style'], [], no_update, no_update
+            return trigger_result['modal_style'], [], no_update, no_update, no_update
 
         if trigger_result.get('should_skip'):
-            return current_style, [], no_update, no_update
+            return current_style, [], no_update, no_update, no_update
+
+        trigger_id = trigger_result.get('trigger_id')
 
         # 获取后端
         backend = self.session_manager.get_backend(session_id)
         if not backend:
             logger.warning("[WARNING] backend为空")
-            return current_style, [], no_update, no_update
+            return current_style, [], no_update, no_update, no_update
+
+        # 确定点击数据来源
+        if trigger_id == 'raw-delay-time-series-plot':
+            delay_click_data = raw_click_data
+            source_plot_id = 'raw-delay-time-series-plot'
+            logger.info("[INFO] 点击来自原始延时图")
+        elif trigger_id == 'relative-delay-time-series-plot':
+            delay_click_data = relative_click_data
+            source_plot_id = 'relative-delay-time-series-plot'
+            logger.info("[INFO] 点击来自相对延时图")
+        else:
+            logger.warning("[WARNING] 未知的触发源")
+            return current_style, [], no_update, no_update, no_update
 
         try:
             # 验证和解析点击数据
             validation_result = self._validate_click_data(delay_click_data)
             if not validation_result['valid']:
-                return current_style, [], no_update, no_update
+                return current_style, [], no_update, no_update, no_update
 
             # 提取点击点信息
             point_data = self._extract_point_data(validation_result['point'])
@@ -57,7 +72,7 @@ class DelayTimeSeriesHandler:
             # 查找匹配的算法和音符
             match_result = self._find_algorithm_match(backend, point_data)
             if not match_result['found']:
-                return current_style, [], no_update, no_update
+                return current_style, [], no_update, no_update, no_update
 
             # 计算时间信息
             time_result = self._calculate_time_info(backend, match_result, point_data)
@@ -67,18 +82,18 @@ class DelayTimeSeriesHandler:
 
             if not chart_result['success']:
                 modal_style = self._create_modal_style()
-                return modal_style, [], no_update, no_update
+                return modal_style, [], no_update, no_update, no_update
 
             # 准备返回数据
-            return_data = self._prepare_return_data(match_result, point_data, chart_result, time_result)
+            return_data = self._prepare_return_data(match_result, point_data, chart_result, time_result, source_plot_id)
 
             logger.info("[OK] 延时时间序列图点击处理成功（多算法模式）")
-            return return_data['modal_style'], return_data['rendered_row'], return_data['point_info'], no_update
+            return return_data['modal_style'], return_data['rendered_row'], return_data['point_info'], no_update, no_update
 
         except Exception as e:
             logger.error(f"[ERROR] 处理延时时间序列图点击失败（多算法模式）: {e}")
             logger.error(traceback.format_exc())
-            return current_style, [], no_update, no_update
+            return current_style, [], no_update, no_update, no_update
 
     def _handle_trigger_detection(self, ctx: CallbackContext) -> Dict[str, Any]:
         """处理触发源检测"""
@@ -103,12 +118,12 @@ class DelayTimeSeriesHandler:
                 'modal_style': modal_style
             }
 
-        # 只有在点击了 delay-time-series-plot 时才处理
-        if trigger_id != 'delay-time-series-plot' or not ctx.triggered[0]['value']:
+        # 只有在点击了时间序列图时才处理
+        if trigger_id not in ['raw-delay-time-series-plot', 'relative-delay-time-series-plot'] or not ctx.triggered[0]['value']:
             return {'should_skip': True}
 
-        logger.info("[TARGET] 检测到 delay-time-series-plot 点击")
-        return {'is_close_button': False, 'should_skip': False}
+        logger.info(f"[TARGET] 检测到 {trigger_id} 点击")
+        return {'is_close_button': False, 'should_skip': False, 'trigger_id': trigger_id}
 
     def _validate_click_data(self, delay_click_data) -> Dict[str, Any]:
         """验证点击数据"""
@@ -267,7 +282,7 @@ class DelayTimeSeriesHandler:
             'backdropFilter': 'blur(5px)'
         }
 
-    def _prepare_return_data(self, match_result, point_data, chart_result, time_result) -> Dict[str, Any]:
+    def _prepare_return_data(self, match_result, point_data, chart_result, time_result, source_plot_id) -> Dict[str, Any]:
         """准备返回数据"""
         import dash_core_components as dcc
 
@@ -277,7 +292,7 @@ class DelayTimeSeriesHandler:
             'record_idx': point_data['record_index'],
             'replay_idx': point_data['replay_index'],
             'algorithm_name': match_result['final_algorithm_name'],
-            'source_plot_id': 'delay-time-series-plot',
+            'source_plot_id': source_plot_id,
             'center_time_ms': time_result['center_time_ms']  # 预先计算的时间信息
         }
 

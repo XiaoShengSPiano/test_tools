@@ -248,3 +248,4 @@ class DelayHistogramClickHandler:
 
 # 创建全局处理器实例
 delay_histogram_click_handler = DelayHistogramClickHandler(None)  # session_manager 会在注册时设置
+

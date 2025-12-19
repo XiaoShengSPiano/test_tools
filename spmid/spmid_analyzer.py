@@ -283,12 +283,23 @@ class SPMIDAnalyzer:
     def get_offset_alignment_data(self) -> List[Dict[str, Union[int, float]]]:
         """
         获取偏移对齐数据
-        
+
         Returns:
             List[Dict[str, Any]]: 偏移对齐数据列表
         """
         if self.note_matcher:
             return self.note_matcher.get_offset_alignment_data()
+        return []
+
+    def get_precision_offset_alignment_data(self) -> List[Dict[str, Union[int, float]]]:
+        """
+        获取精确匹配的偏移对齐数据（误差 ≤ 50ms）
+
+        Returns:
+            List[Dict[str, Any]]: 精确匹配的偏移对齐数据列表
+        """
+        if self.note_matcher:
+            return self.note_matcher.get_precision_offset_alignment_data()
         return []
     
     def perform_dtw_alignment(self, window_size: Optional[int] = None) -> Dict[str, Any]:

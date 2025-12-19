@@ -543,10 +543,13 @@ class PlotGenerator:
         """配置图表布局（横轴、纵轴、图注等）"""
         # 收集所有播放锤速用于生成横轴刻度
         all_velocities = self._collect_all_velocities(analysis_result, is_multi_algorithm, algorithm_results)
-        
+
         # 生成横轴刻度
         tick_positions, tick_texts = self._generate_log_ticks(all_velocities)
-        
+
+        # 生成Y轴配置（相对延时使用固定配置）
+        y_axis_config = self._generate_adaptive_y_axis_config(None)
+
         fig.update_layout(
             xaxis_title='log₁₀(播放锤速)',
             yaxis_title='相对延时 (ms)',
@@ -563,7 +566,8 @@ class PlotGenerator:
                 gridcolor='lightgray',
                 zeroline=True,  # 显示y=0的参考线
                 zerolinecolor='red',
-                zerolinewidth=1.5
+                zerolinewidth=1.5,
+                **y_axis_config  # 使用动态配置
             ),
             showlegend=True,
             template='plotly_white',
@@ -579,7 +583,17 @@ class PlotGenerator:
             ),
             uirevision='key-force-interaction'
         )
-    
+
+    def _generate_adaptive_y_axis_config(self, delays):
+        """生成Y轴配置 - 针对相对延时数据使用固定5ms刻度"""
+        # 相对延时一般都在0ms附近，使用固定的5ms刻度间隔
+        # 范围设置为±50ms，适合大多数相对延时数据
+        return {
+            'range': [-50, 50],
+            'dtick': 5,  # 固定5ms刻度间隔
+            'tickformat': '.1f'
+        }
+
     def _collect_all_velocities(self, analysis_result, is_multi_algorithm, algorithm_results):
         """收集所有播放锤速"""
         all_velocities = []

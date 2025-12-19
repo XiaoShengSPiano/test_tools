@@ -13,6 +13,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import spmid
 from spmid import spmid_plot
+import numpy as np
 from backend.multi_algorithm_manager import AlgorithmDataset
 from utils.logger import Logger
 
@@ -242,7 +243,7 @@ class MultiAlgorithmPlotGenerator:
             go.Figure: Plotly图表对象
         """
         if not algorithms:
-            logger.warning("⚠️ 没有激活的算法，无法生成多算法瀑布图")
+            logger.debug("ℹ️ 没有激活的算法，跳过多算法瀑布图生成")
             return self._create_empty_plot("没有激活的算法")
         
     def _collect_algorithm_comprehensive_data(self, analyzer, y_offset: float, algorithm_name: str, alg_idx: int, avg_delay_ms: float = 0.0) -> List[Dict]:
@@ -387,7 +388,7 @@ class MultiAlgorithmPlotGenerator:
                 note = initial_valid_record_data[note_index] or self._create_default_note(error_note, note_index)
 
                 # 只处理有after_touch数据的note
-                if hasattr(note, 'after_touch') and note.after_touch is not None and len(note.after_touch.index) > 0:
+                if hasattr(note, 'after_touch') and note.after_touch is not None and hasattr(note.after_touch, 'index') and len(note.after_touch.index) > 0:
                     bars.extend(self._extract_note_bars_for_multi(
                         note, 'record', y_offset, 0.1, algorithm_name,
                         "失败", note_index, 0.0, 0.0, 'drop_hammer'
@@ -451,7 +452,7 @@ class MultiAlgorithmPlotGenerator:
                 note = initial_valid_replay_data[note_index] or self._create_default_note(error_note, note_index)
 
                 # 只处理有after_touch数据的note
-                if hasattr(note, 'after_touch') and note.after_touch is not None and len(note.after_touch.index) > 0:
+                if hasattr(note, 'after_touch') and note.after_touch is not None and hasattr(note.after_touch, 'index') and len(note.after_touch.index) > 0:
                     bars.extend(self._extract_note_bars_for_multi(
                         note, 'replay', y_offset, 0.1, algorithm_name,
                         "失败", note_index, 0.0, 0.0, 'multi_hammer'
@@ -521,7 +522,7 @@ class MultiAlgorithmPlotGenerator:
         从错误note中获取音符索引
         """
         note_index = error_note.global_index if hasattr(error_note, 'global_index') and error_note.global_index >= 0 else None
-        if note_index is None and error_note.infos and len(error_note.infos) > 0:
+        if note_index is None and hasattr(error_note, 'infos') and error_note.infos is not None and len(error_note.infos) > 0:
             note_index = error_note.infos[0].index
         return note_index
 
@@ -641,9 +642,9 @@ class MultiAlgorithmPlotGenerator:
             float: keyon时间（0.1ms单位）
         """
         try:
-            if hasattr(note, 'after_touch') and note.after_touch is not None and len(note.after_touch.index) > 0:
+            if hasattr(note, 'after_touch') and note.after_touch is not None and hasattr(note.after_touch, 'index') and len(note.after_touch.index) > 0:
                 return note.after_touch.index[0] + getattr(note, 'offset', 0)
-            elif hasattr(note, 'hammers') and note.hammers is not None and len(note.hammers.index) > 0:
+            elif hasattr(note, 'hammers') and note.hammers is not None and hasattr(note.hammers, 'index') and len(note.hammers.index) > 0:
                 # 如果没有after_touch，使用第一个锤子的时间作为keyon
                 return note.hammers.index[0] + getattr(note, 'offset', 0)
             else:
@@ -822,7 +823,7 @@ class MultiAlgorithmPlotGenerator:
             每个字典包含: {'title': str, 'figure': go.Figure}
         """
         if not algorithms:
-            logger.warning("⚠️ 没有激活的算法，无法生成多算法偏移对齐分析图")
+            logger.debug("ℹ️ 没有激活的算法，跳过多算法偏移对齐分析图生成")
             # 返回包含5个空图表的列表
             empty_fig = self._create_empty_plot("没有激活的算法")
             return [
@@ -874,7 +875,7 @@ class MultiAlgorithmPlotGenerator:
                 # 获取精确偏移对齐数据（误差 ≤ 50ms）
                 try:
                     # 从analyzer获取精确偏移数据
-                    offset_data = algorithm.analyzer.note_matcher.get_precision_offset_alignment_data()
+                    offset_data = algorithm.analyzer.get_precision_offset_alignment_data()
                     
                     # 按按键ID分组并计算统计信息
                     from collections import defaultdict
@@ -1082,7 +1083,7 @@ class MultiAlgorithmPlotGenerator:
             from datetime import datetime
 
             if not algorithms:
-                logger.warning("⚠️ 没有激活的算法，无法导出")
+                logger.debug("ℹ️ 没有激活的算法，跳过导出")
                 return None
 
             # 过滤出就绪的算法
@@ -1105,14 +1106,14 @@ class MultiAlgorithmPlotGenerator:
 
                 try:
                     # 从analyzer获取精确偏移数据（误差 ≤ 50ms）
-                    offset_data = algorithm.analyzer.note_matcher.get_precision_offset_alignment_data()
+                    offset_data = algorithm.analyzer.get_precision_offset_alignment_data()
 
                     if not offset_data:
                         logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有匹配数据，跳过")
                         continue
 
                     # 获取matched_pairs以便查找按键ID
-                    matched_pairs = algorithm.analyzer.note_matcher.get_matched_pairs() if hasattr(algorithm.analyzer, 'note_matcher') and algorithm.analyzer.note_matcher else []
+                    matched_pairs = algorithm.analyzer.get_matched_pairs() if hasattr(algorithm.analyzer, 'get_matched_pairs') else []
                     record_note_dict = {r_idx: r_note for r_idx, _, r_note, _ in matched_pairs} if matched_pairs else {}
                     replay_note_dict = {p_idx: p_note for _, p_idx, _, p_note in matched_pairs} if matched_pairs else {}
 
@@ -1231,7 +1232,7 @@ class MultiAlgorithmPlotGenerator:
             from datetime import datetime
 
             if not algorithms:
-                logger.warning("⚠️ 没有激活的算法，无法导出")
+                logger.debug("ℹ️ 没有激活的算法，跳过导出")
                 return None
 
             # 过滤出就绪的算法
@@ -1379,7 +1380,7 @@ class MultiAlgorithmPlotGenerator:
             go.Figure: Plotly图表对象
         """
         if not algorithms:
-            logger.warning("⚠️ 没有激活的算法，无法生成多算法延时分布直方图")
+            logger.debug("ℹ️ 没有激活的算法，跳过多算法延时分布直方图生成")
             return self._create_empty_plot("没有激活的算法")
         
         try:
@@ -1403,7 +1404,7 @@ class MultiAlgorithmPlotGenerator:
                 '#7f7f7f'   # 灰色
             ]
             
-            import plotly.graph_objects as go
+            
             import math
             fig = go.Figure()
             
@@ -1424,7 +1425,7 @@ class MultiAlgorithmPlotGenerator:
                 
                 try:
                     # 从analyzer获取精确偏移数据（误差 ≤ 50ms）
-                    offset_data = algorithm.analyzer.note_matcher.get_precision_offset_alignment_data()
+                    offset_data = algorithm.analyzer.get_precision_offset_alignment_data()
 
                     if not offset_data:
                         logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有精确匹配数据（≤50ms），跳过")
@@ -1566,7 +1567,7 @@ class MultiAlgorithmPlotGenerator:
             go.Figure: Plotly图表对象
         """
         if not algorithms:
-            logger.warning("⚠️ 没有激活的算法，无法生成多算法按键与延时散点图")
+            logger.debug("ℹ️ 没有激活的算法，跳过多算法按键与延时散点图生成")
             return self._create_empty_plot("没有激活的算法")
         
         try:
@@ -1620,7 +1621,7 @@ class MultiAlgorithmPlotGenerator:
                 '#7f7f7f'   # 灰色
             ]
             
-            import plotly.graph_objects as go
+            
             import numpy as np
             fig = go.Figure()
             
@@ -1640,7 +1641,7 @@ class MultiAlgorithmPlotGenerator:
                     continue
 
                 try:
-                    offset_data = algorithm.analyzer.note_matcher.get_precision_offset_alignment_data()
+                    offset_data = algorithm.analyzer.get_precision_offset_alignment_data()
 
                     if not offset_data:
                         logger.warning(f"⚠️ 算法 '{descriptive_name}' 没有精确匹配数据（≤50ms），跳过")
@@ -1907,7 +1908,7 @@ class MultiAlgorithmPlotGenerator:
             go.Figure: Plotly图表对象
         """
         if not algorithms:
-            logger.warning("⚠️ 没有激活的算法，无法生成Z-Score标准化散点图")
+            logger.debug("ℹ️ 没有激活的算法，跳过Z-Score标准化散点图生成")
             return self._create_empty_plot("没有激活的算法")
         
         try:
@@ -1931,7 +1932,7 @@ class MultiAlgorithmPlotGenerator:
                 '#7f7f7f'   # 灰色
             ]
             
-            import plotly.graph_objects as go
+            
             import numpy as np
             fig = go.Figure()
             
@@ -1953,7 +1954,7 @@ class MultiAlgorithmPlotGenerator:
                     continue
                 
                 try:
-                    offset_data = algorithm.analyzer.note_matcher.get_precision_offset_alignment_data()
+                    offset_data = algorithm.analyzer.get_precision_offset_alignment_data()
 
                     if not offset_data:
                         logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有精确匹配数据（≤50ms），跳过")
@@ -2203,7 +2204,7 @@ class MultiAlgorithmPlotGenerator:
             return self._create_empty_plot("请选择一个按键进行分析")
             
         try:
-            import plotly.graph_objects as go
+            
             fig = go.Figure()
             
             # 颜色列表
@@ -2228,7 +2229,7 @@ class MultiAlgorithmPlotGenerator:
                 if not algorithm.analyzer or not algorithm.analyzer.note_matcher:
                     continue
 
-                offset_data = algorithm.analyzer.note_matcher.get_precision_offset_alignment_data()
+                offset_data = algorithm.analyzer.get_precision_offset_alignment_data()
                 if not offset_data:
                     continue
                 
@@ -2328,7 +2329,7 @@ class MultiAlgorithmPlotGenerator:
             go.Figure: Plotly图表对象
         """
         if not algorithms:
-            logger.warning("⚠️ 没有激活的算法，无法生成多算法锤速与延时散点图")
+            logger.debug("ℹ️ 没有激活的算法，跳过多算法锤速与延时散点图生成")
             return self._create_empty_plot("没有激活的算法")
         
         try:
@@ -2352,7 +2353,7 @@ class MultiAlgorithmPlotGenerator:
                 '#7f7f7f'   # 灰色
             ]
             
-            import plotly.graph_objects as go
+            
             fig = go.Figure()
 
             for alg_idx, algorithm in enumerate(ready_algorithms):
@@ -2368,13 +2369,13 @@ class MultiAlgorithmPlotGenerator:
                     continue
 
                 try:
-                    matched_pairs = algorithm.analyzer.note_matcher.get_matched_pairs()
+                    matched_pairs = algorithm.analyzer.get_matched_pairs()
 
                     if not matched_pairs:
                         logger.warning(f"⚠️ 算法 '{descriptive_name}' 没有匹配数据，跳过")
                         continue
 
-                    offset_data = algorithm.analyzer.note_matcher.get_precision_offset_alignment_data()
+                    offset_data = algorithm.analyzer.get_precision_offset_alignment_data()
 
                     # 提取锤速和延时数据，并计算Z-Score（与按键与延时Z-Score散点图相同）
                     hammer_velocities = []
@@ -2401,12 +2402,9 @@ class MultiAlgorithmPlotGenerator:
                         if (record_idx, replay_idx) in offset_map:
                             keyon_offset = offset_map[(record_idx, replay_idx)].get('keyon_offset', 0)
                         else:
-                            try:
-                                record_keyon, _ = algorithm.analyzer.note_matcher._calculate_note_times(record_note)
-                                replay_keyon, _ = algorithm.analyzer.note_matcher._calculate_note_times(replay_note)
-                                keyon_offset = replay_keyon - record_keyon
-                            except:
-                                continue
+                            # 如果偏移数据中没有这个匹配对，跳过处理
+                            # 这是为了避免使用私有API
+                            continue
                         
                         # 将延时从0.1ms转换为ms（带符号，用于Z-Score计算）
                         delay_ms = keyon_offset / 10.0
@@ -2611,7 +2609,7 @@ class MultiAlgorithmPlotGenerator:
             go.Figure: Plotly图表对象
         """
         if not algorithms:
-            logger.warning("⚠️ 没有激活的算法，无法生成多算法按键与锤速散点图")
+            logger.debug("ℹ️ 没有激活的算法，跳过多算法按键与锤速散点图生成")
             return self._create_empty_plot("没有激活的算法")
         
         try:
@@ -2627,7 +2625,7 @@ class MultiAlgorithmPlotGenerator:
             marker_symbols = ['circle', 'square', 'diamond', 'triangle-up', 'x', 'star', 'cross', 'pentagon']
             colorscales = ['Viridis', 'Plasma', 'Inferno', 'Magma', 'Cividis', 'Turbo', 'Blues', 'Reds']
             
-            import plotly.graph_objects as go
+            
             fig = go.Figure()
             
             # 收集所有算法的延时范围，用于统一颜色条
@@ -2646,13 +2644,13 @@ class MultiAlgorithmPlotGenerator:
                     continue
 
                 try:
-                    matched_pairs = algorithm.analyzer.note_matcher.get_matched_pairs()
+                    matched_pairs = algorithm.analyzer.get_matched_pairs()
 
                     if not matched_pairs:
                         logger.warning(f"⚠️ 算法 '{descriptive_name}' 没有匹配数据，跳过")
                         continue
 
-                    offset_data = algorithm.analyzer.note_matcher.get_precision_offset_alignment_data()
+                    offset_data = algorithm.analyzer.get_precision_offset_alignment_data()
                     
                     # 提取按键ID、锤速和延时数据
                     key_ids = []
@@ -2679,12 +2677,8 @@ class MultiAlgorithmPlotGenerator:
                         if (record_idx, replay_idx) in offset_map:
                             keyon_offset = offset_map[(record_idx, replay_idx)].get('keyon_offset', 0)
                         else:
-                            try:
-                                record_keyon, _ = algorithm.analyzer.note_matcher._calculate_note_times(record_note)
-                                replay_keyon, _ = algorithm.analyzer.note_matcher._calculate_note_times(replay_note)
-                                keyon_offset = replay_keyon - record_keyon
-                            except:
-                                continue
+                            # 如果偏移数据中没有这个匹配对，跳过处理
+                            continue
                         
                         delay_ms = abs(keyon_offset) / 10.0
                         
@@ -2854,351 +2848,681 @@ class MultiAlgorithmPlotGenerator:
         # 但为了安全，返回False
         return False, "所有算法名称和文件名都相同，无法进行算法对比"
     
+    def _filter_ready_algorithms(self, algorithms: List[AlgorithmDataset]) -> List[AlgorithmDataset]:
+        """
+        过滤出就绪的算法
+
+        Args:
+            algorithms: 原始算法列表
+
+        Returns:
+            List[AlgorithmDataset]: 就绪的算法列表
+        """
+        return [alg for alg in algorithms if alg.is_ready()]
+
+    def _prepare_algorithm_colors(self) -> List[str]:
+        """
+        准备算法颜色列表
+
+        Returns:
+            List[str]: 颜色列表
+        """
+        return [
+            '#1f77b4',  # 蓝色
+            '#ff7f0e',  # 橙色
+            '#2ca02c',  # 绿色
+            '#d62728',  # 红色
+            '#9467bd',  # 紫色
+            '#8c564b',  # 棕色
+            '#e377c2',  # 粉色
+            '#7f7f7f'   # 灰色
+        ]
+
+    def _process_single_algorithm_data(self, algorithm: AlgorithmDataset) -> Optional[Dict[str, Any]]:
+        """
+        处理单个算法的时间序列数据
+
+        Args:
+            algorithm: 算法数据集
+
+        Returns:
+            Optional[Dict[str, Any]]: 处理后的数据，包含时间、延时等信息，如果处理失败返回None
+        """
+        algorithm_name = algorithm.metadata.algorithm_name
+        display_name = algorithm.metadata.display_name
+
+        if not algorithm.analyzer or not algorithm.analyzer.note_matcher:
+            logger.warning(f"⚠️ 算法 '{display_name}' 没有分析器或匹配器，跳过")
+            return None
+
+        try:
+            offset_data = algorithm.analyzer.note_matcher.get_precision_offset_alignment_data()
+
+            if not offset_data:
+                logger.warning(f"⚠️ 算法 '{display_name}' 没有匹配数据，跳过")
+                return None
+
+            # 提取时间和延时数据
+            data_points = []
+
+            for item in offset_data:
+                record_keyon_raw = item.get('record_keyon')  # 单位：0.1ms
+                keyon_offset_raw = item.get('keyon_offset')  # 单位：0.1ms
+                key_id = item.get('key_id')
+                record_index = item.get('record_index')
+                replay_index = item.get('replay_index')
+
+                # 详细记录原始数据用于调试
+                logger.debug(f"[DEBUG] 处理记录: record_keyon_raw={record_keyon_raw} (type: {type(record_keyon_raw)}), keyon_offset_raw={keyon_offset_raw} (type: {type(keyon_offset_raw)})")
+
+                # 检查数据类型有效性（支持 numpy 类型）
+                record_keyon_is_valid = isinstance(record_keyon_raw, (int, float, np.integer, np.floating))
+                keyon_offset_is_valid = isinstance(keyon_offset_raw, (int, float, np.integer, np.floating))
+
+                logger.debug(f"[DEBUG] 类型检查: record_keyon_is_valid={record_keyon_is_valid}, keyon_offset_is_valid={keyon_offset_is_valid}")
+
+                if not record_keyon_is_valid:
+                    logger.debug(f"[DEBUG] 跳过记录: record_keyon无效 ({record_keyon_raw}, type: {type(record_keyon_raw)})")
+                    continue
+                if not keyon_offset_is_valid:
+                    logger.debug(f"[DEBUG] 跳过记录: keyon_offset无效 ({keyon_offset_raw}, type: {type(keyon_offset_raw)})")
+                    continue
+
+                # 使用原始数据
+                record_keyon = record_keyon_raw
+                keyon_offset = keyon_offset_raw
+
+                # 转换为ms单位
+                time_ms = record_keyon / 10.0
+                delay_ms = keyon_offset / 10.0
+
+                data_points.append({
+                    'time': time_ms,
+                    'delay': delay_ms,
+                    'key_id': key_id if key_id is not None else 'N/A',
+                    'record_index': record_index,
+                    'replay_index': replay_index
+                })
+
+            if not data_points:
+                logger.warning(f"⚠️ 算法 '{display_name}' 没有有效时间序列数据，跳过")
+                return None
+
+            # 按时间排序，确保按时间顺序显示
+            data_points.sort(key=lambda x: x['time'])
+
+            # 计算该算法的平均延时
+            me_0_1ms = algorithm.analyzer.get_mean_error() if hasattr(algorithm.analyzer, 'get_mean_error') else 0.0
+            mean_delay = me_0_1ms / 10.0  # 平均延时（ms，带符号）
+
+            # 计算相对延时
+            relative_delays_ms = []
+            for point in data_points:
+                delay_ms = point['delay']
+                relative_delay = delay_ms - mean_delay
+                relative_delays_ms.append(relative_delay)
+
+            # 提取排序后的数据
+            times_ms = [point['time'] for point in data_points]
+            delays_ms = [point['delay'] for point in data_points]
+            replay_times_ms = [point['time'] + point['delay'] for point in data_points]
+            replay_times_offset_ms = [replay_time - mean_delay for replay_time in replay_times_ms]
+
+            # customdata 包含 [key_id, record_index, replay_index, algorithm_name, 原始延时, 平均延时, 播放时间, 录制时间]
+            customdata_list = [[point['key_id'], point['record_index'], point['replay_index'],
+                               algorithm_name, point['delay'], mean_delay, replay_time, point['time']]
+                              for point, replay_time in zip(data_points, replay_times_ms)]
+
+            return {
+                'algorithm_name': algorithm_name,
+                'display_name': display_name,
+                'data_points': data_points,
+                'times_ms': times_ms,
+                'delays_ms': delays_ms,
+                'relative_delays_ms': relative_delays_ms,
+                'replay_times_ms': replay_times_ms,
+                'replay_times_offset_ms': replay_times_offset_ms,
+                'customdata_list': customdata_list,
+                'mean_delay': mean_delay
+            }
+
+        except Exception as e:
+            logger.warning(f"⚠️ 获取算法 '{display_name}' 的时间序列数据失败: {e}")
+            return None
+
+    def _create_relative_delay_traces(self, fig, algorithm_data: Dict[str, Any], color: str) -> None:
+        """
+        为相对延时图创建trace
+
+        Args:
+            fig: Plotly图表对象
+            algorithm_data: 算法数据
+            color: 算法颜色
+        """
+        algorithm_name = algorithm_data['algorithm_name']
+        display_name = algorithm_data['display_name']
+        replay_times_ms = algorithm_data['replay_times_ms']
+        replay_times_offset_ms = algorithm_data['replay_times_offset_ms']
+        relative_delays_ms = algorithm_data['relative_delays_ms']
+        customdata_list = algorithm_data['customdata_list']
+        mean_delay = algorithm_data['mean_delay']
+
+        # 添加偏移前的播放音轨散点图（X轴=原始播放时间，Y轴=相对延时）
+        fig.add_trace(go.Scatter(
+            x=replay_times_ms,  # X轴使用原始播放时间
+            y=relative_delays_ms,  # Y轴使用相对延时
+            mode='markers+lines',
+            name=f'{display_name} (原始时间)',
+            marker=dict(
+                size=4,
+                color=color,
+                symbol='circle-open',  # 使用空心圆圈
+                line=dict(width=1.5, color=color)
+            ),
+            line=dict(color=color, width=1, dash='dot'),  # 使用虚线
+            legendgroup=f"{algorithm_name}_raw",
+            showlegend=True,
+            hovertemplate='<b>算法</b>: ' + display_name + ' (原始时间)<br>' +
+                         '<b>播放时间（X轴）</b>: %{x:.2f}ms<br>' +
+                         '<b>相对延时（Y轴）</b>: %{y:.2f}ms<br>' +
+                         '<b>录制时间</b>: %{customdata[7]:.2f}ms<br>' +
+                         '<b>原始延时</b>: %{customdata[4]:.2f}ms<br>' +
+                         '<b>按键ID</b>: %{customdata[0]}<br>' +
+                         '<b>平均延时</b>: %{customdata[5]:.2f}ms<extra></extra>',
+            customdata=customdata_list
+        ))
+
+        # 添加偏移后的播放音轨散点图（X轴=偏移后的播放时间，Y轴=相对延时）
+        fig.add_trace(go.Scatter(
+            x=replay_times_offset_ms,  # X轴使用偏移后的播放时间（播放时间 - 平均延时）
+            y=relative_delays_ms,  # Y轴使用相对延时
+            mode='markers+lines',
+            name=f'{display_name} (偏移后，平均延时: {mean_delay:.2f}ms)',
+            marker=dict(
+                size=5,
+                color=color,
+                line=dict(width=0.5, color=color)
+            ),
+            line=dict(color=color, width=1.5),
+            legendgroup=f"{algorithm_name}_offset",
+            showlegend=True,
+            hovertemplate='<b>算法</b>: ' + display_name + ' (偏移后)<br>' +
+                         '<b>偏移后播放时间（X轴）</b>: %{x:.2f}ms<br>' +
+                         '<b>相对延时（Y轴）</b>: %{y:.2f}ms<br>' +
+                         '<b>实际播放时间</b>: %{customdata[6]:.2f}ms<br>' +
+                         '<b>录制时间</b>: %{customdata[7]:.2f}ms<br>' +
+                         '<b>原始延时</b>: %{customdata[4]:.2f}ms<br>' +
+                         '<b>按键ID</b>: %{customdata[0]}<br>' +
+                         '<extra></extra>',
+            customdata=customdata_list
+        ))
+
+    def _add_algorithm_reference_lines(self, fig, algorithm_data: Dict[str, Any], color: str) -> None:
+        """
+        为算法添加参考线
+
+        Args:
+            fig: Plotly图表对象
+            algorithm_data: 算法数据
+            color: 算法颜色
+        """
+        algorithm_name = algorithm_data['algorithm_name']
+        display_name = algorithm_data['display_name']
+        delays_ms = algorithm_data['delays_ms']
+        replay_times_offset_ms = algorithm_data['replay_times_offset_ms']
+        algorithm = algorithm_data.get('algorithm_instance')
+
+        if not delays_ms or len(delays_ms) == 0 or not algorithm or not algorithm.analyzer:
+            return
+
+        # 计算标准差
+        std_0_1ms = algorithm.analyzer.get_standard_deviation() if hasattr(algorithm.analyzer, 'get_standard_deviation') else 0.0
+        std_delay = std_0_1ms / 10.0
+
+        # 获取时间范围
+        replay_time_offset_min = min(replay_times_offset_ms) if replay_times_offset_ms else 0
+        replay_time_offset_max = max(replay_times_offset_ms) if replay_times_offset_ms else 1
+
+        # 添加零线参考线
+        fig.add_trace(go.Scatter(
+            x=[replay_time_offset_min, replay_time_offset_max],
+            y=[0, 0],
+            mode='lines',
+            name=f'{display_name} - 零线',
+            line=dict(dash='dash', color=color, width=1.5),
+            hovertemplate=f'<b>{display_name} 零线</b>: 0.00ms<extra></extra>',
+            showlegend=False,
+            legendgroup=algorithm_name
+        ))
+
+        # 添加±3σ参考线
+        if std_delay > 0:
+            fig.add_trace(go.Scatter(
+                x=[replay_time_offset_min, replay_time_offset_max],
+                y=[3 * std_delay, 3 * std_delay],
+                mode='lines',
+                name=f'{display_name} - +3σ',
+                line=dict(dash='dot', color=color, width=1),
+                hovertemplate=f'<b>{display_name} +3σ</b>: {3 * std_delay:.2f}ms<extra></extra>',
+                showlegend=False,
+                legendgroup=algorithm_name
+            ))
+            fig.add_trace(go.Scatter(
+                x=[replay_time_offset_min, replay_time_offset_max],
+                y=[-3 * std_delay, -3 * std_delay],
+                mode='lines',
+                name=f'{display_name} - -3σ',
+                line=dict(dash='dot', color=color, width=1),
+                hovertemplate=f'<b>{display_name} -3σ</b>: {-3 * std_delay:.2f}ms<extra></extra>',
+                showlegend=False,
+                legendgroup=algorithm_name
+            ))
+
+    def _configure_multi_algorithm_axes(self, fig, all_relative_delays: List[float]) -> None:
+        """
+        配置多算法图表的轴
+
+        Args:
+            fig: Plotly图表对象
+            all_relative_delays: 所有相对延时数据
+        """
+        if not all_relative_delays:
+            y_axis_min, y_axis_max, dtick = (-25, 25, 5)
+        else:
+            y_min = min(all_relative_delays)
+            y_max = max(all_relative_delays)
+
+            # 计算整体标准差
+            import numpy as np
+            delays_array = np.array(all_relative_delays)
+            overall_std_dev = np.std(delays_array)
+
+            # 根据标准差确定显示范围
+            if overall_std_dev <= 3:  # 各算法数据高度集中
+                y_half_range = 12  # ±12ms
+                dtick = 3
+            elif overall_std_dev <= 8:  # 中等集中
+                y_half_range = 20  # ±20ms
+                dtick = 4
+            elif overall_std_dev <= 20:  # 适中离散
+                y_half_range = 35  # ±35ms
+                dtick = 7
+            elif overall_std_dev <= 40:  # 较大离散
+                y_half_range = 60  # ±60ms
+                dtick = 10
+            else:  # 超大离散
+                y_half_range = max(60, overall_std_dev * 1.5)  # 至少±60ms，或1.5倍标准差
+                dtick = 15
+
+            # 以0为中心对称显示，但确保显示所有算法的数据
+            y_axis_min = min(y_min - 2, -y_half_range)
+            y_axis_max = max(y_max + 2, y_half_range)
+
+            # 多算法比较时，确保有足够的对比空间
+            actual_range = y_axis_max - y_axis_min
+            if actual_range < 20:
+                y_axis_min = -10
+                y_axis_max = 10
+                dtick = 2
+
+        # 设置布局
+        fig.update_layout(
+            xaxis_title='偏移后播放时间 (播放时间 - 平均延时) (ms)',
+            yaxis_title='相对延时 (ms)',
+            plot_bgcolor='white',
+            paper_bgcolor='white',
+            font=dict(size=12),
+            height=500,
+            hovermode='closest',
+            legend=dict(
+                orientation='h',
+                yanchor='bottom',
+                y=1.05,
+                xanchor='left',
+                x=0.0,
+                bgcolor='rgba(255, 255, 255, 0.9)',
+                bordercolor='gray',
+                borderwidth=1
+            ),
+            margin=dict(t=100, b=60, l=60, r=60)
+        )
+
+        # 设置Y轴
+        fig.update_yaxes(
+            range=[y_axis_min, y_axis_max],
+            dtick=dtick,
+            tickformat='.1f'
+        )
+
+    def _collect_all_relative_delay_data(self, ready_algorithms: List[AlgorithmDataset], colors: List[str], apply_time_offset: bool = False) -> List[Tuple[float, float, List, str, str]]:
+        """
+        收集所有算法的相对延时数据
+
+        Args:
+            ready_algorithms: 就绪的算法列表
+            colors: 颜色列表
+            apply_time_offset: 是否应用时间轴偏移（减去平均延时）
+
+        Returns:
+            List[Tuple[float, float, List, str, str]]: 相对数据列表 (time_ms, relative_delay_ms, customdata, descriptive_name, color)
+        """
+        all_relative_data = []
+
+        for alg_idx, algorithm in enumerate(ready_algorithms):
+            algorithm_name = algorithm.metadata.algorithm_name
+            display_name = algorithm.metadata.display_name
+            filename = algorithm.metadata.filename
+            descriptive_name = f"{display_name} ({filename})"
+            color = colors[alg_idx % len(colors)]
+
+            if not algorithm.analyzer or not algorithm.analyzer.note_matcher:
+                continue
+
+            try:
+                offset_data = algorithm.analyzer.get_precision_offset_alignment_data()
+
+                if not offset_data:
+                    continue
+
+                # 计算该算法的平均延时（用于相对延时计算）
+                me_0_1ms = algorithm.analyzer.note_matcher.get_mean_error()
+                mean_delay = me_0_1ms / 10.0  # 平均延时（ms）
+
+                # 提取相对延时数据
+                for item in offset_data:
+                    record_keyon_raw = item.get('record_keyon')
+                    keyon_offset_raw = item.get('keyon_offset')
+                    key_id = item.get('key_id')
+                    record_index = item.get('record_index')
+                    replay_index = item.get('replay_index')
+
+                    # 类型检查
+                    record_keyon_is_valid = isinstance(record_keyon_raw, (int, float, np.integer, np.floating))
+                    keyon_offset_is_valid = isinstance(keyon_offset_raw, (int, float, np.integer, np.floating))
+
+                    if not record_keyon_is_valid or not keyon_offset_is_valid:
+                        continue
+
+                    # 转换为ms单位
+                    time_ms = record_keyon_raw / 10.0
+                    delay_ms = keyon_offset_raw / 10.0
+
+                    # 计算相对延时
+                    relative_delay_ms = delay_ms - mean_delay
+
+                    # 如果需要应用时间轴偏移
+                    if apply_time_offset:
+                        time_ms = time_ms + delay_ms - mean_delay  # 原始时间 + 延时 - 平均延时
+
+                    customdata = [key_id, record_index, replay_index, algorithm_name, delay_ms, mean_delay, time_ms + delay_ms, time_ms]
+
+                    all_relative_data.append((time_ms, relative_delay_ms, customdata, descriptive_name, color))
+
+            except Exception as e:
+                logger.warning(f"⚠️ 处理算法 '{algorithm_name}' 的相对延时数据失败: {e}")
+
+        return all_relative_data
+        all_raw_data = []
+
+        for alg_idx, algorithm in enumerate(ready_algorithms):
+            algorithm_name = algorithm.metadata.algorithm_name
+            display_name = algorithm.metadata.display_name
+            filename = algorithm.metadata.filename
+            descriptive_name = f"{display_name} ({filename})"
+            color = colors[alg_idx % len(colors)]
+
+            if not algorithm.analyzer or not algorithm.analyzer.note_matcher:
+                continue
+
+            try:
+                matched_pairs = algorithm.analyzer.note_matcher.get_matched_pairs()
+                offset_data = algorithm.analyzer.get_precision_offset_alignment_data()
+
+                if not matched_pairs or not offset_data:
+                    continue
+
+                # 创建偏移映射
+                offset_map = {}
+                for item in offset_data:
+                    record_idx = item.get('record_index')
+                    replay_idx = item.get('replay_index')
+                    if record_idx is not None and replay_idx is not None:
+                        offset_map[(record_idx, replay_idx)] = item
+
+                # 提取原始延时数据
+                for record_idx, replay_idx, record_note, replay_note in matched_pairs:
+                    if (record_idx, replay_idx) in offset_map:
+                        item = offset_map[(record_idx, replay_idx)]
+                        record_keyon = item.get('record_keyon', 0)
+                        keyon_offset = item.get('keyon_offset', 0.0)
+
+                        time_ms = record_keyon / 10.0
+                        delay_ms = keyon_offset / 10.0
+                        customdata = [item.get('key_id'), record_idx, replay_idx]
+
+                        all_raw_data.append((time_ms, delay_ms, customdata, descriptive_name, color))
+
+            except Exception as e:
+                logger.warning(f"⚠️ 处理算法 '{algorithm_name}' 的原始延时数据失败: {e}")
+                continue
+
+        # 按时间排序
+        all_raw_data.sort(key=lambda x: x[0])
+        return all_raw_data
+
+    def _create_raw_delay_plot_for_algorithms(self, all_raw_data: List[Tuple[float, float, List, str, str]]) -> Any:
+        """
+        为多算法创建原始延时图表
+
+        Args:
+            all_raw_data: 所有原始延时数据
+
+        Returns:
+            Any: Plotly图表对象
+        """
+        
+
+        raw_delay_fig = go.Figure()
+
+        # 按算法分组数据
+        algorithm_data = {}
+        for time_ms, delay_ms, customdata, descriptive_name, color in all_raw_data:
+            if descriptive_name not in algorithm_data:
+                algorithm_data[descriptive_name] = {
+                    'times': [], 'delays': [], 'customdata': [], 'color': color
+                }
+            algorithm_data[descriptive_name]['times'].append(time_ms)
+            algorithm_data[descriptive_name]['delays'].append(delay_ms)
+            algorithm_data[descriptive_name]['customdata'].append(customdata)
+
+        # 添加每个算法的trace
+        for descriptive_name, data in algorithm_data.items():
+            if data['times'] and data['delays']:
+                raw_delay_fig.add_trace(go.Scatter(
+                    x=data['times'],
+                    y=data['delays'],
+                    mode='markers+lines',
+                    name=f'{descriptive_name} (原始)',
+                    marker=dict(
+                        size=4,
+                        color=data['color'],
+                        symbol='circle'  # 实心圆点
+                    ),
+                    line=dict(color=data['color'], width=1, dash='dot'),
+                    hovertemplate='<b>算法</b>: ' + descriptive_name + '<br>' +
+                                 '<b>录制时间</b>: %{x:.2f}ms<br>' +
+                                 '<b>原始延时</b>: %{y:.2f}ms<br>' +
+                                 '<b>按键ID</b>: %{customdata[0]}<br>' +
+                                 '<extra></extra>',
+                    customdata=data['customdata']
+                ))
+
+        # 配置布局
+        raw_delay_fig.update_layout(
+            xaxis_title='录制时间 (ms)',
+            yaxis_title='原始延时 (ms)',
+            showlegend=True,
+            template='plotly_white',
+            height=400,
+            hovermode='closest',
+            legend=dict(
+                orientation='h',
+                yanchor='bottom',
+                y=1.02,
+                xanchor='left',
+                x=0.0,
+                bgcolor='rgba(255, 255, 255, 0.9)',
+                bordercolor='gray',
+                borderwidth=1
+            ),
+            margin=dict(t=100, b=60, l=60, r=60)
+        )
+
+        return raw_delay_fig
+
+    def _process_all_algorithms_data(self, ready_algorithms: List[AlgorithmDataset], colors: List[str]) -> Tuple[Any, List[Tuple[Dict[str, Any], str]]]:
+        """
+        处理所有算法的数据并创建相对延时图的traces
+
+        Args:
+            ready_algorithms: 就绪的算法列表
+            colors: 颜色列表
+
+        Returns:
+            Tuple[Any, List[Tuple[Dict[str, Any], str]]]: (图表对象, 算法结果列表)
+        """
+        
+        fig = go.Figure()
+
+        all_delays = []
+        algorithm_results = []
+
+        logger.info(f"[DEBUG] _process_all_algorithms_data 开始处理 {len(ready_algorithms)} 个算法")
+
+        for alg_idx, algorithm in enumerate(ready_algorithms):
+            logger.info(f"[DEBUG] 处理算法 {alg_idx}: {algorithm.metadata.display_name}")
+            algorithm_data = self._process_single_algorithm_data(algorithm)
+            if algorithm_data is None:
+                logger.warning(f"[DEBUG] 算法 {algorithm.metadata.display_name} 返回None，跳过")
+                continue
+
+            logger.info(f"[DEBUG] 算法 {algorithm.metadata.display_name} 返回数据: relative_delays_ms长度={len(algorithm_data.get('relative_delays_ms', []))}")
+
+            # 添加算法实例引用（用于后续参考线计算）
+            algorithm_data['algorithm_instance'] = algorithm
+
+            color = colors[alg_idx % len(colors)]
+
+            # 创建相对延时图的trace
+            logger.info(f"[DEBUG] 为算法 {algorithm.metadata.display_name} 创建traces")
+            self._create_relative_delay_traces(fig, algorithm_data, color)
+
+            # 添加参考线
+            self._add_algorithm_reference_lines(fig, algorithm_data, color)
+
+            # 收集数据用于统计
+            relative_delays = algorithm_data.get('relative_delays_ms', [])
+            all_delays.extend(relative_delays)
+            algorithm_results.append((algorithm_data, color))
+
+            logger.info(f"[DEBUG] 算法 {algorithm.metadata.display_name} 处理完成，添加了 {len(relative_delays)} 个数据点")
+
+        logger.info(f"[DEBUG] _process_all_algorithms_data 处理完成: 成功处理 {len(algorithm_results)} 个算法，fig.data长度={len(fig.data) if fig.data else 0}")
+
+        # 总是返回图表对象，即使没有数据也要创建空图表
+        # algorithm_results 为空时，图表将只包含空的traces
+
+        return fig, algorithm_results
+
+    def _configure_multi_algorithm_plot_axes(self, fig: Any, algorithm_results: List[Tuple[Dict[str, Any], str]]) -> None:
+        """
+        配置多算法图表的轴
+
+        Args:
+            fig: Plotly图表对象
+            algorithm_results: 算法结果列表
+        """
+        # 收集所有相对延时数据并配置轴
+        all_relative_delays = []
+        for trace in fig.data:
+            all_relative_delays.extend(trace.y)
+
+        self._configure_multi_algorithm_axes(fig, all_relative_delays)
+
+    def _create_multi_algorithm_relative_plot(self, ready_algorithms: List[AlgorithmDataset], colors: List[str], apply_time_offset: bool = False) -> Any:
+        """
+        创建多算法相对延时图
+
+        Args:
+            ready_algorithms: 就绪的算法列表
+            colors: 颜色列表
+            apply_time_offset: 是否应用时间轴偏移
+
+        Returns:
+            Any: 相对延时图表对象
+        """
+        all_relative_data = self._collect_all_relative_delay_data(ready_algorithms, colors, apply_time_offset)
+        return self._create_raw_delay_plot_for_algorithms(all_relative_data)
+
     def generate_multi_algorithm_delay_time_series_plot(
         self,
         algorithms: List[AlgorithmDataset]
     ) -> Any:
         """
-        生成多算法延时时间序列图（叠加显示，不同颜色，图例控制）
-        
+        生成多算法延时时间序列图（两张相对延时图：上方横轴未偏移，下方横轴已偏移）
+
         注意：仅当存在不同算法且是同一首曲子时才绘制
-        
+
         Args:
             algorithms: 激活的算法数据集列表
-            
+
         Returns:
-            go.Figure: Plotly图表对象
+            Dict[str, Any]: 包含上方相对延时图和下方相对延时图的字典
         """
         if not algorithms:
-            logger.warning("⚠️ 没有激活的算法，无法生成多算法延时时间序列图")
+            logger.debug("ℹ️ 没有激活的算法，跳过多算法延时时间序列图生成")
             return self._create_empty_plot("没有激活的算法")
-        
+
         try:
-            # 过滤出就绪的算法
-            ready_algorithms = [alg for alg in algorithms if alg.is_ready()]
+            # 1. 过滤就绪的算法
+            ready_algorithms = self._filter_ready_algorithms(algorithms)
             if not ready_algorithms:
                 logger.warning("⚠️ 没有就绪的算法，无法生成多算法延时时间序列图")
                 return self._create_empty_plot("没有就绪的算法")
-            
-            # 检查是否应该生成图表
+
+            # 2. 检查是否应该生成图表
             should_generate, reason = self._should_generate_time_series_plot(ready_algorithms)
             if not should_generate:
                 logger.info(f"ℹ️ 跳过延时时间序列图生成: {reason}")
                 return self._create_empty_plot(reason)
-            
+
             logger.info(f"📊 开始生成多算法延时时间序列图，共 {len(ready_algorithms)} 个算法")
-            
-            # 为每个算法分配颜色
-            colors = [
-                '#1f77b4',  # 蓝色
-                '#ff7f0e',  # 橙色
-                '#2ca02c',  # 绿色
-                '#d62728',  # 红色
-                '#9467bd',  # 紫色
-                '#8c564b',  # 棕色
-                '#e377c2',  # 粉色
-                '#7f7f7f'   # 灰色
-            ]
-            
-            import plotly.graph_objects as go
-            fig = go.Figure()
-            
-            # 收集所有算法的数据，用于计算全局统计量
-            all_delays = []
-            
-            # 不绘制录制音轨，直接绘制各算法的播放音轨
-            for alg_idx, algorithm in enumerate(ready_algorithms):
-                algorithm_name = algorithm.metadata.algorithm_name  # 内部唯一标识
-                display_name = algorithm.metadata.display_name  # 显示名称
-                
-                if not algorithm.analyzer or not algorithm.analyzer.note_matcher:
-                    logger.warning(f"⚠️ 算法 '{display_name}' 没有分析器或匹配器，跳过")
-                    continue
-                
-                try:
-                    offset_data = algorithm.analyzer.get_offset_alignment_data()
-                    
-                    if not offset_data:
-                        logger.warning(f"⚠️ 算法 '{display_name}' 没有匹配数据，跳过")
-                        continue
-                    
-                    # 提取时间和延时数据
-                    data_points = []
-                    
-                    for item in offset_data:
-                        record_keyon = item.get('record_keyon', 0)  # 单位：0.1ms
-                        keyon_offset = item.get('keyon_offset', 0.0)  # 单位：0.1ms
-                        key_id = item.get('key_id')
-                        record_index = item.get('record_index')
-                        replay_index = item.get('replay_index')
-                        
-                        if record_keyon is None or keyon_offset is None:
-                            continue
-                        
-                        # 转换为ms单位
-                        time_ms = record_keyon / 10.0
-                        delay_ms = keyon_offset / 10.0
-                        
-                        data_points.append({
-                            'time': time_ms,
-                            'delay': delay_ms,
-                            'key_id': key_id if key_id is not None else 'N/A',
-                            'record_index': record_index,
-                            'replay_index': replay_index
-                        })
-                    
-                    if not data_points:
-                        logger.warning(f"⚠️ 算法 '{display_name}' 没有有效时间序列数据，跳过")
-                        continue
-                    
-                    # 按时间排序，确保按时间顺序显示
-                    data_points.sort(key=lambda x: x['time'])
-                    
-                    # 计算该算法的平均延时（用于计算相对延时）
-                    me_0_1ms = algorithm.analyzer.get_mean_error() if hasattr(algorithm.analyzer, 'get_mean_error') else 0.0
-                    mean_delay = me_0_1ms / 10.0  # 平均延时（ms，带符号）
-                    
-                    # 计算相对延时：每个点的延时减去该算法的平均延时
-                    # 标准公式：相对延时 = 延时 - 平均延时（对所有点统一适用）
-                    relative_delays_ms = []
-                    for point in data_points:
-                        delay_ms = point['delay']
-                        relative_delay = delay_ms - mean_delay
-                        relative_delays_ms.append(relative_delay)
-                    
-                    # 提取排序后的数据
-                    times_ms = [point['time'] for point in data_points]  # 录制时间
-                    delays_ms = [point['delay'] for point in data_points]  # 保留原始延时用于hover显示
-                    # 计算播放时间 = 录制时间 + 延时
-                    replay_times_ms = [point['time'] + point['delay'] for point in data_points]
-                    # X轴使用偏移后的播放时间：播放时间 - 平均延时 = 录制时间 + 相对延时
-                    replay_times_offset_ms = [replay_time - mean_delay for replay_time in replay_times_ms]
-                    # customdata 包含 [key_id, record_index, replay_index, algorithm_name, 原始延时, 平均延时, 播放时间, 录制时间]，用于点击时查找匹配对和显示原始值
-                    customdata_list = [[point['key_id'], point['record_index'], point['replay_index'], algorithm_name, point['delay'], mean_delay, replay_time, point['time']] 
-                                      for point, replay_time in zip(data_points, replay_times_ms)]
-                    
-                    all_delays.extend(relative_delays_ms)  # 使用相对延时用于统计
-                    color = colors[alg_idx % len(colors)]
-                    
-                    # 添加偏移前的播放音轨散点图（X轴=原始播放时间，Y轴=相对延时）
-                    fig.add_trace(go.Scatter(
-                        x=replay_times_ms,  # X轴使用原始播放时间
-                        y=relative_delays_ms,  # Y轴使用相对延时
-                        mode='markers+lines',
-                        name=f'{display_name} (原始时间)',
-                        marker=dict(
-                            size=4,
-                            color=color,
-                            symbol='circle-open',  # 使用空心圆圈
-                            line=dict(width=1.5, color=color)
-                        ),
-                        line=dict(color=color, width=1, dash='dot'),  # 使用虚线
-                        legendgroup=f"{algorithm_name}_raw",
-                        showlegend=True,
-                        hovertemplate='<b>算法</b>: ' + display_name + ' (原始时间)<br>' +
-                                     '<b>播放时间（X轴）</b>: %{x:.2f}ms<br>' +
-                                     '<b>相对延时（Y轴）</b>: %{y:.2f}ms<br>' +
-                                     '<b>录制时间</b>: %{customdata[7]:.2f}ms<br>' +
-                                     '<b>原始延时</b>: %{customdata[4]:.2f}ms<br>' +
-                                     '<b>按键ID</b>: %{customdata[0]}<br>' +
-                                     '<b>平均延时</b>: %{customdata[5]:.2f}ms<extra></extra>',
-                        customdata=customdata_list
-                    ))
 
-                    # 添加偏移后的播放音轨散点图（X轴=偏移后的播放时间，Y轴=相对延时）
-                    fig.add_trace(go.Scatter(
-                        x=replay_times_offset_ms,  # X轴使用偏移后的播放时间（播放时间 - 平均延时）
-                        y=relative_delays_ms,  # Y轴使用相对延时
-                        mode='markers+lines',
-                        name=f'{display_name} (偏移后，平均延时: {mean_delay:.2f}ms)',
-                        marker=dict(
-                            size=5,
-                            color=color,
-                            line=dict(width=0.5, color=color)
-                        ),
-                        line=dict(color=color, width=1.5),
-                        legendgroup=f"{algorithm_name}_offset",
-                        showlegend=True,
-                        hovertemplate='<b>算法</b>: ' + display_name + ' (偏移后)<br>' +
-                                     '<b>偏移后播放时间（X轴）</b>: %{x:.2f}ms<br>' +
-                                     '<b>相对延时（Y轴）</b>: %{y:.2f}ms<br>' +
-                                     '<b>实际播放时间</b>: %{customdata[6]:.2f}ms<br>' +
-                                     '<b>录制时间</b>: %{customdata[7]:.2f}ms<br>' +
-                                     '<b>原始延时</b>: %{customdata[4]:.2f}ms<br>' +
-                                     '<b>按键ID</b>: %{customdata[0]}<br>' +
-                                     '<extra></extra>',
-                        customdata=customdata_list
-                    ))
-                    
-                    # 为每个算法计算独立的统计量，添加独立的参考线
-                    if delays_ms and len(delays_ms) > 0:
-                        # 使用该算法自己的数据计算标准差
-                        std_0_1ms = algorithm.analyzer.get_standard_deviation() if hasattr(algorithm.analyzer, 'get_standard_deviation') else 0.0
-                        
-                        # 转换为ms单位
-                        std_delay = std_0_1ms / 10.0
-                        
-                        # 获取该算法的偏移后播放时间范围（用于参考线）
-                        replay_time_offset_min = min(replay_times_offset_ms) if replay_times_offset_ms else 0
-                        replay_time_offset_max = max(replay_times_offset_ms) if replay_times_offset_ms else 1
-                        
-                        # 添加该算法的零线参考线（相对延时的均值应该为0）
-                        fig.add_trace(go.Scatter(
-                            x=[replay_time_offset_min, replay_time_offset_max],
-                            y=[0, 0],
-                            mode='lines',
-                            name=f'{display_name} - 零线',
-                            line=dict(dash='dash', color=color, width=1.5),
-                            hovertemplate=f'<b>{display_name} 零线</b>: 0.00ms<extra></extra>',
-                            showlegend=False,
-                            legendgroup=algorithm_name
-                        ))
-                        
-                        # 添加该算法的±3σ参考线（相对延时的±3σ，以0为中心）
-                        if std_delay > 0:
-                            fig.add_trace(go.Scatter(
-                                x=[replay_time_offset_min, replay_time_offset_max],
-                                y=[3 * std_delay, 3 * std_delay],
-                                mode='lines',
-                                name=f'{display_name} - +3σ',
-                                line=dict(dash='dot', color=color, width=1),
-                                hovertemplate=f'<b>{display_name} +3σ</b>: {3 * std_delay:.2f}ms<extra></extra>',
-                                showlegend=False,
-                                legendgroup=algorithm_name
-                            ))
-                            fig.add_trace(go.Scatter(
-                                x=[replay_time_offset_min, replay_time_offset_max],
-                                y=[-3 * std_delay, -3 * std_delay],
-                                mode='lines',
-                                name=f'{display_name} - -3σ',
-                                line=dict(dash='dot', color=color, width=1),
-                                hovertemplate=f'<b>{display_name} -3σ</b>: {-3 * std_delay:.2f}ms<extra></extra>',
-                                showlegend=False,
-                                legendgroup=algorithm_name
-                            ))
-                    
-                except Exception as e:
-                    logger.warning(f"⚠️ 获取算法 '{display_name}' 的时间序列数据失败: {e}")
-                    continue
-            
-            if not all_delays:
+            # 3. 准备颜色
+            colors = self._prepare_algorithm_colors()
+
+            # 4. 处理所有算法数据并创建相对延时图
+            logger.info(f"[DEBUG] 调用 _process_all_algorithms_data，算法数量: {len(ready_algorithms)}")
+            fig, algorithm_results = self._process_all_algorithms_data(ready_algorithms, colors)
+
+            logger.info(f"[DEBUG] _process_all_algorithms_data 返回: fig.data长度={len(fig.data) if fig.data else 0}, algorithm_results长度={len(algorithm_results)}")
+
+            # 检查是否有实际的数据用于绘图
+            has_data = any(len(trace.y) > 0 for trace in fig.data) if fig.data else False
+            logger.info(f"[DEBUG] has_data检查: fig.data存在={fig.data is not None}, traces数量={len(fig.data) if fig.data else 0}, has_data={has_data}")
+
+            if not has_data:
                 logger.warning("⚠️ 没有有效的时间序列数据，无法生成图表")
+                # 记录更多调试信息
+                for i, alg in enumerate(ready_algorithms):
+                    logger.warning(f"  算法 {i}: {alg.metadata.display_name}")
                 return self._create_empty_plot("没有有效的时间序列数据")
-            
-            # 设置布局
+
+            # 5. 配置下方相对延时图的图注（横轴已偏移）
             fig.update_layout(
-                # 删除title，因为UI区域已有标题
-                xaxis_title='偏移后播放时间 (播放时间 - 平均延时) (ms)',
-                yaxis_title='相对延时 (ms)',
-                plot_bgcolor='white',
-                paper_bgcolor='white',
-                font=dict(size=12),
+                title='相对延时时间序列图（横轴已偏移）',
                 height=500,
-                hovermode='closest',
-                legend=dict(
-                    orientation='h',
-                    yanchor='bottom',
-                    y=1.05,
-                    xanchor='left',
-                    x=0.0,
-                    bgcolor='rgba(255, 255, 255, 0.9)',
-                    bordercolor='gray',
-                    borderwidth=1
-                ),
-                margin=dict(t=100, b=60, l=60, r=60)
-            )
-            
-            # 创建原始延时时间序列图（偏移前）
-            raw_delay_fig = go.Figure()
-
-            # 收集所有算法的原始延时数据，然后按时间排序
-            all_raw_data = []  # 存储格式: [(time_ms, delay_ms, customdata, algorithm_name, color), ...]
-
-            for alg_idx, algorithm in enumerate(ready_algorithms):
-                algorithm_name = algorithm.metadata.algorithm_name
-                display_name = algorithm.metadata.display_name
-                filename = algorithm.metadata.filename
-                descriptive_name = f"{display_name} ({filename})"
-                color = colors[alg_idx % len(colors)]
-
-                if not algorithm.analyzer or not algorithm.analyzer.note_matcher:
-                    continue
-
-                try:
-                    matched_pairs = algorithm.analyzer.note_matcher.get_matched_pairs()
-                    offset_data = algorithm.analyzer.note_matcher.get_precision_offset_alignment_data()
-
-                    if not matched_pairs or not offset_data:
-                        continue
-
-                    # 提取原始延时数据
-                    offset_map = {}
-                    for item in offset_data:
-                        record_idx = item.get('record_index')
-                        replay_idx = item.get('replay_index')
-                        if record_idx is not None and replay_idx is not None:
-                            offset_map[(record_idx, replay_idx)] = item
-
-                    for record_idx, replay_idx, record_note, replay_note in matched_pairs:
-                        if (record_idx, replay_idx) in offset_map:
-                            item = offset_map[(record_idx, replay_idx)]
-                            record_keyon = item.get('record_keyon', 0)
-                            keyon_offset = item.get('keyon_offset', 0.0)
-
-                            time_ms = record_keyon / 10.0
-                            delay_ms = keyon_offset / 10.0
-                            customdata = [item.get('key_id'), record_idx, replay_idx]
-
-                            all_raw_data.append((time_ms, delay_ms, customdata, descriptive_name, color))
-
-                except Exception as e:
-                    logger.warning(f"⚠️ 处理算法 '{algorithm_name}' 的原始延时数据失败: {e}")
-                    continue
-
-            # 按时间排序所有数据点
-            all_raw_data.sort(key=lambda x: x[0])
-
-            # 为每个算法创建单独的trace（保持每条线代表一个算法）
-            algorithm_data = {}  # {algorithm_name: {'times': [], 'delays': [], 'customdata': [], 'color': color}}
-            for time_ms, delay_ms, customdata, descriptive_name, color in all_raw_data:
-                if descriptive_name not in algorithm_data:
-                    algorithm_data[descriptive_name] = {
-                        'times': [], 'delays': [], 'customdata': [], 'color': color
-                    }
-                algorithm_data[descriptive_name]['times'].append(time_ms)
-                algorithm_data[descriptive_name]['delays'].append(delay_ms)
-                algorithm_data[descriptive_name]['customdata'].append(customdata)
-
-            # 添加每个算法的trace到图表
-            for descriptive_name, data in algorithm_data.items():
-                if data['times'] and data['delays']:
-                    raw_delay_fig.add_trace(go.Scatter(
-                        x=data['times'],
-                        y=data['delays'],
-                        mode='markers+lines',
-                        name=f'{descriptive_name} (原始)',
-                        marker=dict(
-                            size=4,
-                            color=data['color'],
-                            symbol='circle'  # 实心圆点
-                        ),
-                        line=dict(color=data['color'], width=1, dash='dot'),
-                        hovertemplate='<b>算法</b>: ' + descriptive_name + '<br>' +
-                                     '<b>录制时间</b>: %{x:.2f}ms<br>' +
-                                     '<b>原始延时</b>: %{y:.2f}ms<br>' +
-                                     '<b>按键ID</b>: %{customdata[0]}<br>' +
-                                     '<extra></extra>',
-                        customdata=data['customdata']
-                    ))
-
-            # 配置原始延时图表布局
-            raw_delay_fig.update_layout(
-                xaxis_title='录制时间 (ms)',
-                yaxis_title='原始延时 (ms)',
                 showlegend=True,
-                template='plotly_white',
-                height=400,
-                hovermode='closest',
                 legend=dict(
                     orientation='h',
                     yanchor='bottom',
@@ -3207,317 +3531,49 @@ class MultiAlgorithmPlotGenerator:
                     x=0.0,
                     bgcolor='rgba(255, 255, 255, 0.9)',
                     bordercolor='gray',
-                    borderwidth=1
+                    borderwidth=1,
+                    title='算法图例'
                 ),
-                margin=dict(t=100, b=60, l=60, r=60)
+                template='plotly_white',
+                hovermode='closest'
             )
+
+            # 6. 创建上方相对延时图（横轴未偏移）
+            raw_delay_plot = self._create_multi_algorithm_relative_plot(ready_algorithms, colors, apply_time_offset=False)
+            if raw_delay_plot:
+                raw_delay_plot.update_layout(
+                    title='相对延时时间序列图（横轴未偏移）',
+                    height=500,
+                    showlegend=True,
+                    legend=dict(
+                        orientation='h',
+                        yanchor='bottom',
+                        y=1.02,
+                        xanchor='left',
+                        x=0.0,
+                        bgcolor='rgba(255, 255, 255, 0.9)',
+                        bordercolor='gray',
+                        borderwidth=1,
+                        title='算法图例'
+                    ),
+                    template='plotly_white',
+                    hovermode='closest'
+                )
 
             logger.info(f"✅ 多算法延时时间序列图生成成功，共 {len(ready_algorithms)} 个算法")
             return {
-                'raw_delay_plot': raw_delay_fig,
-                'relative_delay_plot': fig  # fig是之前创建的相对延时图表
+                'raw_delay_plot': raw_delay_plot,
+                'relative_delay_plot': fig
             }
 
         except Exception as e:
             logger.error(f"❌ 生成多算法延时时间序列图失败: {e}")
-
             logger.error(traceback.format_exc())
             empty_plot = self._create_empty_plot(f"生成失败: {str(e)}")
             return {
                 'raw_delay_plot': empty_plot,
                 'relative_delay_plot': empty_plot
             }
-    
-    def generate_relative_delay_distribution_plot(self, analysis_result: Dict[str, Any]) -> Any:
-        """
-        生成相对延时分布直方图 + 密度曲线
-        
-        每个曲子单独一个子图，最后是汇总图
-        
-        Args:
-            analysis_result: get_same_algorithm_relative_delay_analysis()的返回结果
-            
-        Returns:
-            go.Figure: Plotly图表对象（包含多个子图）
-        """
-        try:
-            if analysis_result.get('status') != 'success':
-                return self._create_empty_plot(analysis_result.get('message', '分析失败'))
-            
-            algorithm_groups = analysis_result.get('algorithm_groups', {})
-            overall_relative_delays = analysis_result.get('overall_relative_delays', [])
-            statistics = analysis_result.get('statistics', {})
-            
-            if not overall_relative_delays:
-                return self._create_empty_plot("没有有效的相对延时数据")
-            
-            import numpy as np
-            from scipy import stats
-            
-            # 收集所有需要绘制的曲子信息
-            all_songs = []  # [(display_name, filename_display, relative_delays, group_relative_delays), ...]
-            for display_name, group_data in algorithm_groups.items():
-                song_data = group_data.get('song_data', [])
-                group_relative_delays = group_data.get('relative_delays', [])
-                
-                if not group_relative_delays:
-                    continue
-                
-                # 添加每个曲子
-                for song_info in song_data:
-                    song_relative_delays = song_info.get('relative_delays', [])
-                    if song_relative_delays:
-                        filename_display = song_info.get('filename_display', song_info.get('filename', '未知文件'))
-                        all_songs.append((display_name, filename_display, song_relative_delays, None))
-                
-                # 添加汇总（每个算法组一个汇总）
-                all_songs.append((display_name, '汇总', None, group_relative_delays))
-            
-            if not all_songs:
-                return self._create_empty_plot("没有有效的相对延时数据")
-            
-            # 创建子图：每个曲子一个子图 + 每个算法组一个汇总子图
-            num_subplots = len(all_songs)
-            subplot_titles = []
-            for display_name, filename_display, _, _ in all_songs:
-                if filename_display == '汇总':
-                    subplot_titles.append(f'{display_name} (汇总)')
-                else:
-                    subplot_titles.append(f'{display_name} - {filename_display}')
-            
-            # 创建子图
-            fig = make_subplots(
-                rows=num_subplots,
-                cols=1,
-                subplot_titles=subplot_titles,
-                vertical_spacing=0.06,  # 减小子图之间的间距
-                row_heights=[1.0] * num_subplots  # 每个子图高度相等
-            )
-            
-            # 颜色方案
-            colors = [
-                '#1f77b4',  # 蓝色
-                '#ff7f0e',  # 橙色
-                '#2ca02c',  # 绿色
-                '#d62728',  # 红色
-                '#9467bd',  # 紫色
-                '#8c564b',  # 棕色
-                '#e377c2',  # 粉色
-                '#7f7f7f'   # 灰色
-            ]
-            
-            # 为每个子图绘制数据
-            algorithm_color_map = {}  # 记录每个算法使用的颜色
-            color_idx = 0
-            
-            for subplot_idx, (display_name, filename_display, song_relative_delays, group_relative_delays) in enumerate(all_songs, 1):
-                # 确定使用的数据
-                if filename_display == '汇总':
-                    # 汇总图：使用合并后的数据
-                    delays_array = np.array(group_relative_delays)
-                else:
-                    # 单个曲子：使用该曲子的数据
-                    delays_array = np.array(song_relative_delays)
-                
-                # 获取或分配颜色
-                if display_name not in algorithm_color_map:
-                    algorithm_color_map[display_name] = colors[color_idx % len(colors)]
-                    color_idx += 1
-                base_color = algorithm_color_map[display_name]
-                r = int(base_color[1:3], 16)
-                g = int(base_color[3:5], 16)
-                b = int(base_color[5:7], 16)
-                
-                # 计算直方图数据
-                hist, bin_edges = np.histogram(delays_array, bins=50, density=False)
-                bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-                
-                # 为每个bin创建customdata，包含子图信息
-                customdata_list = []
-                for i, bin_center in enumerate(bin_centers):
-                    bin_left = bin_edges[i]
-                    bin_right = bin_edges[i + 1]
-                    customdata_list.append([
-                        subplot_idx,  # 子图索引
-                        display_name,  # 算法显示名称
-                        filename_display,  # 文件名显示
-                        bin_center,  # bin中心值
-                        bin_left,  # bin左边界
-                        bin_right  # bin右边界
-                    ])
-                
-                # 计算密度曲线（KDE）
-                kde = stats.gaussian_kde(delays_array)
-                x_density = np.linspace(delays_array.min(), delays_array.max(), 200)
-                y_density = kde(x_density) * len(delays_array)  # 转换为频数
-                
-                # 添加直方图
-                fig.add_trace(
-                    go.Bar(
-                        x=bin_centers,
-                        y=hist,
-                        name='相对延时分布',
-                        marker=dict(
-                            color=f'rgba({r}, {g}, {b}, 0.6)',
-                            line=dict(color=base_color, width=1.5 if filename_display == '汇总' else 1)
-                        ),
-                        opacity=0.7,
-                        showlegend=False,  # 不在图注中显示，因为每个子图独立
-                        hovertemplate=f'相对延时: %{{x:.2f}} ms<br>频数: %{{y}}<extra></extra>',
-                        customdata=customdata_list  # 添加customdata用于点击回调
-                    ),
-                    row=subplot_idx,
-                    col=1
-                )
-                
-                # 添加密度曲线
-                fig.add_trace(
-                    go.Scatter(
-                        x=x_density,
-                        y=y_density,
-                        mode='lines',
-                        name='密度曲线',
-                        line=dict(
-                            color=base_color,
-                            width=3 if filename_display == '汇总' else 2,
-                            dash='dash' if filename_display == '汇总' else 'solid'
-                        ),
-                        showlegend=False,  # 不在图注中显示
-                        hovertemplate=f'相对延时: %{{x:.2f}} ms<br>密度: %{{y:.2f}}<extra></extra>'
-                    ),
-                    row=subplot_idx,
-                    col=1
-                )
-            
-            # 为每个子图添加统计量标注和布局设置
-            for subplot_idx, (display_name, filename_display, song_relative_delays, group_relative_delays) in enumerate(all_songs, 1):
-                # 确定使用的数据
-                if filename_display == '汇总':
-                    delays_array = np.array(group_relative_delays)
-                else:
-                    delays_array = np.array(song_relative_delays)
-                
-                # 计算统计量
-                mean = np.mean(delays_array)
-                std = np.std(delays_array)
-                median = np.median(delays_array)
-                count = len(delays_array)
-                
-                # 计算±1σ、±2σ、±3σ的百分比
-                within_1sigma = np.sum(np.abs(delays_array - mean) <= std) / count * 100
-                within_2sigma = np.sum(np.abs(delays_array - mean) <= 2 * std) / count * 100
-                within_3sigma = np.sum(np.abs(delays_array - mean) <= 3 * std) / count * 100
-                
-                # 添加±1σ、±2σ、±3σ区间（简洁显示：只显示背景色区域，不显示文字标注）
-                for sigma, color in [(1, 'rgba(255, 0, 0, 0.08)'),   # ±1σ：浅红色，透明度低
-                                     (2, 'rgba(255, 0, 0, 0.12)'),   # ±2σ：稍深红色
-                                     (3, 'rgba(255, 0, 0, 0.15)')]:  # ±3σ：更深红色
-                    fig.add_vrect(
-                        x0=mean - sigma * std,
-                        x1=mean + sigma * std,
-                        fillcolor=color,
-                        layer="below",
-                        line_width=0,
-                        row=subplot_idx,
-                        col=1
-                    )
-                
-                # 获取子图的Y轴范围，用于绘制参考线
-                y_min, y_max = delays_array.min(), delays_array.max()
-                y_range = y_max - y_min
-                y_line_max = y_max + y_range * 0.1  # 稍微超出数据范围
-
-                # 添加均值线（使用Scatter实现带悬停信息的垂直线）
-                fig.add_trace(
-                    go.Scatter(
-                        x=[mean, mean],
-                        y=[0, y_line_max],
-                        mode='lines',
-                        name=f'均值: {mean:.2f}ms',
-                        line=dict(
-                            color='#2E8B57',  # 深绿色，更明显
-                            width=2.5,       # 增加线宽
-                            dash='dash'
-                        ),
-                        showlegend=False,
-                        hovertemplate=f'均值: {mean:.2f} ms<extra></extra>',
-                        hoverlabel=dict(bgcolor='rgba(46, 139, 87, 0.8)')
-                    ),
-                    row=subplot_idx,
-                    col=1
-                )
-
-                # 添加中位数线（使用Scatter实现带悬停信息的垂直线）
-                fig.add_trace(
-                    go.Scatter(
-                        x=[median, median],
-                        y=[0, y_line_max],
-                        mode='lines',
-                        name=f'中位数: {median:.2f}ms',
-                        line=dict(
-                            color='#FF8C00',  # 深橙色，更明显
-                            width=2.5,       # 增加线宽
-                            dash='dot'
-                        ),
-                        showlegend=False,
-                        hovertemplate=f'中位数: {median:.2f} ms<extra></extra>',
-                        hoverlabel=dict(bgcolor='rgba(255, 140, 0, 0.8)')
-                    ),
-                    row=subplot_idx,
-                    col=1
-                )
-                
-                # 添加统计信息文本标注（只在最后一个子图添加整体统计信息）
-                if subplot_idx == len(all_songs):
-                    # 使用整体统计信息
-                    overall_mean = statistics.get('mean', 0)
-                    overall_std = statistics.get('std', 0)
-                    overall_median = statistics.get('median', 0)
-                    overall_count = statistics.get('count', 0)
-                    overall_1sigma = statistics.get('within_1sigma_percent', 0)
-                    overall_2sigma = statistics.get('within_2sigma_percent', 0)
-                    overall_3sigma = statistics.get('within_3sigma_percent', 0)
-                    
-                    fig.add_annotation(
-                        x=0.02,
-                        y=0.98,
-                        xref=f'x{subplot_idx} domain',
-                        yref=f'y{subplot_idx} domain',
-                        text=f"整体统计:<br>均值: {overall_mean:.2f} ms<br>标准差: {overall_std:.2f} ms<br>中位数: {overall_median:.2f} ms<br>数据点数: {overall_count}<br>±1σ: {overall_1sigma:.1f}%<br>±2σ: {overall_2sigma:.1f}%<br>±3σ: {overall_3sigma:.1f}%",
-                        showarrow=False,
-                        align='left',
-                        bgcolor='rgba(255, 255, 255, 0.8)',
-                        bordercolor='rgba(0, 0, 0, 0.3)',
-                        borderwidth=1,
-                        font=dict(size=9)
-                    )
-                
-                # 更新每个子图的坐标轴
-                fig.update_xaxes(title_text='相对延时 (ms)', row=subplot_idx, col=1)
-                fig.update_yaxes(title_text='频数', row=subplot_idx, col=1)
-            
-            # 根据子图数量调整图表高度（增加每个子图的高度，避免挤压）
-            base_height_per_subplot = 500  # 增加每个子图的高度
-            total_height = base_height_per_subplot * num_subplots
-            
-            # 更新整体布局
-            fig.update_layout(
-                title='',
-                height=total_height,
-                hovermode='x unified',
-                template='plotly_white',
-                showlegend=False,  # 不使用图注，因为每个子图独立
-                margin=dict(l=80, r=60, t=60, b=80)  # 增加上下边距
-            )
-            
-            logger.info(f"✅ 相对延时分布图生成成功，共 {len(overall_relative_delays)} 个数据点")
-            return fig
-            
-        except Exception as e:
-            logger.error(f"❌ 生成相对延时分布图失败: {e}")
-            
-            logger.error(traceback.format_exc())
-            return self._create_empty_plot(f"生成失败: {str(e)}")
 
     def _configure_unified_waterfall_layout(self, fig: go.Figure, all_bars_by_algorithm: List[Dict], is_multi_algorithm: bool) -> None:
         """
