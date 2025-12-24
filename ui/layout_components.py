@@ -204,6 +204,8 @@ def create_main_layout():
         dcc.Store(id='multi-algorithm-files-store', data={'contents': [], 'filenames': []}),
         # 触发算法列表更新的 Store（当算法添加/删除时更新）
         dcc.Store(id='algorithm-list-trigger', data=0),
+        # 触发算法管理更新的 Store（当算法添加成功时更新文件列表）
+        dcc.Store(id='algorithm-management-trigger', data=0),
         # 存储当前点击的数据点信息，用于跳转到瀑布图
         dcc.Store(id='current-clicked-point-info', data=None),
 
