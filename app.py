@@ -17,7 +17,7 @@ from utils.logger import Logger
 
 # 常量定义
 HOST = '0.0.0.0'
-PORT = 9999
+PORT = 10000
 DEBUG = True
 
 # 抑制来自 dash 及其依赖库的日期解析弃用警告

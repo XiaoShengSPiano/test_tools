@@ -488,6 +488,16 @@ def _handle_waterfall_button(backend):
 def register_callbacks(app, session_manager: SessionManager, history_manager):
     """注册所有回调函数"""
 
+    # 导入回调模块
+    from ui.session_callbacks import register_session_callbacks
+    from ui.upload_history_callbacks import register_upload_history_callbacks
+
+    # 注册会话和初始化管理回调
+    register_session_callbacks(app, session_manager, history_manager)
+
+    # 注册文件上传和历史记录管理回调
+    register_upload_history_callbacks(app, session_manager)
+
     # 创建瀑布图跳转处理器实例
     waterfall_jump_handler = WaterfallJumpHandler(session_manager)
 
@@ -503,177 +513,8 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
     # 创建延时直方图点击处理器实例
     delay_histogram_click_handler = DelayHistogramClickHandler(session_manager)
 
-    # 初始化回调：自动启用多算法模式
-    @app.callback(
-        Output('session-id', 'data'),
-        Input('session-id', 'data'),
-        prevent_initial_call=False
-    )
-    def init_session_and_enable_multi_algorithm(session_data):
-        """初始化会话ID并自动启用多算法模式"""
-        if session_data is None:
-            session_id = str(uuid.uuid4())
-        else:
-            session_id = session_data
-        
-        # 多算法模式始终启用
-        session_id, backend = session_manager.get_or_create_backend(session_id)
-        if backend:
-            # 确保multi_algorithm_manager已初始化
-            if not backend.multi_algorithm_manager:
-                backend._ensure_multi_algorithm_manager()
-            logger.info("[OK] 多算法模式已就绪")
-        
-        return session_id
 
-    # 添加时间滑块初始化回调 - 当数据加载完成后自动设置合理的时间范围
-    @app.callback(
-        [Output('time-filter-slider', 'min', allow_duplicate=True),
-         Output('time-filter-slider', 'max', allow_duplicate=True),
-         Output('time-filter-slider', 'value', allow_duplicate=True),
-         Output('time-filter-slider', 'marks', allow_duplicate=True)],
-        Input('report-content', 'children'),
-        [State('session-id', 'data')],
-        prevent_initial_call=True
-    )
-    def initialize_time_slider_on_data_load(report_content, session_id):
-        """当数据加载完成后初始化时间滑块"""
-        backend = session_manager.get_backend(session_id)
-        if not backend:
-            return no_update, no_update, no_update, no_update
-        
-        # 只有当有分析数据时才更新滑块
-        if not hasattr(backend, 'all_error_notes') or not backend.all_error_notes:
-            return no_update, no_update, no_update, no_update
-        
-        try:
-            # 获取实际的时间范围
-            time_range = backend.get_time_range()
-            time_min, time_max = time_range
-            
-            # 确保时间范围是有效的
-            if not isinstance(time_min, (int, float)) or not isinstance(time_max, (int, float)):
-                return no_update, no_update, no_update, no_update
-            
-            if time_min >= time_max:
-                return no_update, no_update, no_update, no_update
-            
-            # 转换为整数，避免滑块精度问题
-            time_min, time_max = int(time_min), int(time_max)
-            
-            # 创建合理的标记点
-            range_size = time_max - time_min
-            if range_size <= 1000:
-                step = max(1, range_size // 5)
-            elif range_size <= 10000:
-                step = max(10, range_size // 10)
-            else:
-                step = max(100, range_size // 20)
-            
-            marks = {}
-            for i in range(time_min, time_max + 1, step):
-                if i == time_min or i == time_max or (i - time_min) % (step * 2) == 0:
-                    marks[i] = str(i)
-            
-            logger.info(f"⏰ 初始化时间滑块: min={time_min}, max={time_max}, 范围={range_size}")
-            
-            return time_min, time_max, [time_min, time_max], marks
-            
-        except Exception as e:
-            logger.warning(f"[WARNING] 初始化时间滑块失败: {e}")
-            return no_update, no_update, no_update, no_update
 
-    # 添加初始化历史记录下拉菜单的回调 - 只在应用启动时初始化一次
-    @app.callback(
-        [Output('history-dropdown', 'options', allow_duplicate=True),
-         Output('history-dropdown', 'value', allow_duplicate=True)],
-        Input('session-id', 'data'),
-        prevent_initial_call='initial_duplicate'  # 修复：使用 initial_duplicate 允许初始调用和重复输出
-    )
-    def initialize_history_dropdown(session_id):
-        """初始化历史记录下拉框选项 - 只在会话初始化时调用一次"""
-        # 检查是否已经初始化过
-        if hasattr(initialize_history_dropdown, '_initialized'):
-            return no_update, no_update
-        
-        try:
-            # 检查数据库功能是否已禁用
-            if hasattr(history_manager, 'disable_database') and history_manager.disable_database:
-                disabled_option = {
-                    'label': '⚠️ 数据库功能已禁用',
-                    'value': 'disabled',
-                    'disabled': True
-                }
-                initialize_history_dropdown._initialized = True
-                return [disabled_option], None
-
-            # 获取历史记录列表
-            history_list = history_manager.get_history_list(limit=100)
-
-            if not history_list:
-                initialize_history_dropdown._initialized = True
-                return [], None
-
-            # 转换为下拉框选项格式
-            options = []
-            for record in history_list:
-                label = f"{record['filename']} ({record['timestamp'][:19] if record['timestamp'] else '未知时间'}) - 多锤:{record['multi_hammers']} 丢锤:{record['drop_hammers']}"
-                options.append({
-                    'label': label,
-                    'value': record['id']
-                })
-
-            logger.info(f"[OK] 初始化历史记录下拉菜单，找到 {len(options)} 条记录")
-            initialize_history_dropdown._initialized = True
-            return options, None  # 返回选项列表，但不预选任何项
-
-        except Exception as e:
-            logger.error(f"[ERROR] 初始化历史记录下拉框失败: {e}")
-            initialize_history_dropdown._initialized = True
-            return [], None
-
-    @app.callback(
-        Output('history-dropdown', 'options', allow_duplicate=True),
-        [Input('history-search', 'value'),
-         Input('session-id', 'data')],
-        prevent_initial_call=True  # 修改为True，防止初始化时重复调用
-    )
-    def update_history_dropdown_search(search_value, session_id):
-        """更新历史记录下拉框选项 - 仅搜索触发"""
-        try:
-            # 检查数据库功能是否已禁用
-            if hasattr(history_manager, 'disable_database') and history_manager.disable_database:
-                return [{
-                    'label': '⚠️ 数据库功能已禁用',
-                    'value': 'disabled',
-                    'disabled': True
-                }]
-
-            # 获取历史记录列表
-            history_list = history_manager.get_history_list(limit=100)
-
-            if not history_list:
-                return []
-
-            # 转换为下拉框选项格式
-            options = []
-            for record in history_list:
-                label = f"{record['filename']} ({record['timestamp'][:19] if record['timestamp'] else '未知时间'}) - 多锤:{record['multi_hammers']} 丢锤:{record['drop_hammers']}"
-
-                # 如果有搜索值，则过滤选项
-                if search_value and search_value.lower() not in label.lower():
-                    continue
-
-                options.append({
-                    'label': label,
-                    'value': record['id']
-                })
-
-            return options
-
-        except Exception as e:
-            logger.error(f"[ERROR] 更新历史记录下拉框失败: {e}")
-            return []
 
 
     def _validate_zscore_click_data(zscore_scatter_clickData: Dict[str, Any], backend: PianoAnalysisBackend) -> Optional[Dict[str, Any]]:
@@ -3925,55 +3766,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 no_update
             )
     
-    @app.callback(
-        [Output('upload-multi-algorithm-data', 'contents', allow_duplicate=True),
-         Output('upload-multi-algorithm-data', 'filename', allow_duplicate=True),
-         Output('multi-algorithm-file-list', 'children', allow_duplicate=True),
-         Output('multi-algorithm-upload-status', 'children', allow_duplicate=True)],
-        [Input('reset-multi-algorithm-upload', 'n_clicks')],
-        prevent_initial_call=True
-    )
-    def reset_multi_algorithm_upload(n_clicks):
-        """重置多算法上传区域，清除上传状态"""
-        if not n_clicks:
-            return no_update, no_update, no_update, no_update
 
-        # 重置上传组件和状态
-        return None, None, html.Div(), html.Span("上传区域已重置，可以重新选择文件", style={'color': '#17a2b8'})
-
-    @app.callback(
-        [Output('multi-algorithm-upload-area', 'style', allow_duplicate=True),
-         Output('multi-algorithm-management-area', 'style', allow_duplicate=True),
-         Output('multi-algorithm-file-list', 'children', allow_duplicate=True),
-         Output('multi-algorithm-upload-status', 'children', allow_duplicate=True),
-         Output('multi-algorithm-files-store', 'data', allow_duplicate=True)],
-        [Input('upload-multi-algorithm-data', 'contents')],
-        [State('upload-multi-algorithm-data', 'filename'),
-         State('session-id', 'data'),
-         State('multi-algorithm-files-store', 'data')],
-        prevent_initial_call=True
-    )
-    def handle_multi_file_upload(contents_list, filename_list, session_id, store_data):
-        """处理多文件上传，显示文件列表供用户输入算法名称"""
-        # 获取后端实例
-        backend = session_manager.get_backend(session_id)
-        if not backend:
-            return no_update, no_update, no_update, no_update, no_update
-        
-        # 确保多算法模式已启用
-        # 确保multi_algorithm_manager已初始化
-        if not backend.multi_algorithm_manager:
-            backend._ensure_multi_algorithm_manager()
-        
-        # 确保上传区域和管理区域始终显示
-        upload_style = {'display': 'block'}
-        management_style = {'display': 'block'}
-        
-        # 使用MultiFileUploadHandler处理文件上传
-        upload_handler = MultiFileUploadHandler()
-        file_list, status_text, new_store_data = upload_handler.process_uploaded_files(contents_list, filename_list, store_data, backend)
-        
-        return upload_style, management_style, file_list, status_text, new_store_data
     
     @app.callback(
         Output({'type': 'algorithm-status', 'index': dash.dependencies.MATCH}, 'children'),
