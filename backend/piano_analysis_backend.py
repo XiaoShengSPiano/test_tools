@@ -2191,7 +2191,13 @@ class PianoAnalysisBackend:
                 except (ValueError, TypeError) as e:
                     logger.warning(f"⚠️ 跳过无效数据点: key_id={key_id}, error={e}")
                     continue
-            
+
+            # 对数据按照按键ID排序，确保横轴按键ID有序递增
+            sorted_indices = sorted(range(len(key_ids)), key=lambda i: key_ids[i])
+            key_ids[:] = [key_ids[i] for i in sorted_indices]
+            delays_ms[:] = [delays_ms[i] for i in sorted_indices]
+            customdata_list[:] = [customdata_list[i] for i in sorted_indices]
+
             if not key_ids:
                 logger.warning("⚠️ 没有有效的散点图数据")
                 return self.plot_generator._create_empty_plot("没有有效的散点图数据")
@@ -2227,8 +2233,11 @@ class PianoAnalysisBackend:
                     marker_colors.append('#2e7d32')  # 绿色
                     marker_sizes.append(8)
             
+            # 将按键ID转换为字符串格式，只显示ID数字
+            key_id_strings = [str(kid) for kid in key_ids]
+
             fig.add_trace(go.Scatter(
-                x=key_ids,
+                x=key_id_strings,
                 y=delays_ms,
                 mode='markers',
                 name='匹配对',
@@ -2239,19 +2248,19 @@ class PianoAnalysisBackend:
                     line=dict(width=1, color='#1b5e20')
                 ),
                 customdata=customdata_list,  # 添加customdata，包含record_index和replay_index
-                hovertemplate='键位: %{x}<br>延时: %{y:.2f}ms<extra></extra>'
+                hovertemplate='按键: %{customdata[2]}<br>延时: %{y:.2f}ms<extra></extra>'
             ))
             
             # 注意：已删除平均延时的趋势线
             
-            # 获取x轴范围，用于确定标注位置
-            x_max = max(key_ids) if key_ids else 90
-            x_min = min(key_ids) if key_ids else 1
-            
+            # 获取所有唯一的按键ID，用于确定阈值线的范围
+            unique_key_ids = sorted(set(key_ids))
+            key_labels = [str(kid) for kid in unique_key_ids]
+
             # 添加总体均值参考线（μ）- 使用Scatter创建，支持悬停显示
             fig.add_trace(go.Scatter(
-                x=[x_min, x_max],
-                y=[mu, mu],
+                x=key_labels,
+                y=[mu] * len(key_labels),
                 mode='lines',
                 name='μ',
                 line=dict(
@@ -2262,11 +2271,11 @@ class PianoAnalysisBackend:
                 showlegend=True,
                 hovertemplate=f"μ = {mu:.2f}ms<extra></extra>"
             ))
-            
+
             # 添加上阈值线（μ + 3σ）- 使用Scatter创建，支持悬停显示
             fig.add_trace(go.Scatter(
-                x=[x_min, x_max],
-                y=[upper_threshold, upper_threshold],
+                x=key_labels,
+                y=[upper_threshold] * len(key_labels),
                 mode='lines',
                 name='μ+3σ',
                 line=dict(
@@ -2277,11 +2286,11 @@ class PianoAnalysisBackend:
                 showlegend=True,
                 hovertemplate=f"μ+3σ = {upper_threshold:.2f}ms<extra></extra>"
             ))
-            
+
             # 添加下阈值线（μ - 3σ）- 使用Scatter创建，支持悬停显示
             fig.add_trace(go.Scatter(
-                x=[x_min, x_max],
-                y=[lower_threshold, lower_threshold],
+                x=key_labels,
+                y=[lower_threshold] * len(key_labels),
                 mode='lines',
                 name='μ-3σ',
                 line=dict(
@@ -2301,7 +2310,7 @@ class PianoAnalysisBackend:
                     showgrid=True,
                     gridcolor='lightgray',
                     gridwidth=1,
-                    dtick=10  # 每10个按键显示一个刻度
+                    type='category'  # 设置为类别轴，因为x轴现在是字符串
                 ),
                 yaxis=dict(
                     showgrid=True,
@@ -2399,9 +2408,29 @@ class PianoAnalysisBackend:
             if not active_algorithms:
                 logger.debug("ℹ️ 多算法模式下没有激活的算法，返回空图表")
                 return self.plot_generator._create_empty_plot("没有激活的算法")
-            
+
             # 使用多算法图表生成器
             return self.multi_algorithm_plot_generator.generate_multi_algorithm_hammer_velocity_delay_scatter_plot(
+                active_algorithms
+            )
+
+    def generate_hammer_velocity_relative_delay_scatter_plot(self) -> Any:
+        """
+        生成锤速与相对延时的散点图（支持单算法和多算法模式）
+        x轴：log₁₀(锤速)（播放锤速的对数值）
+        y轴：相对延时（keyon_offset - μ，转换为ms）
+        数据来源：所有已匹配的按键对
+        """
+        # 检查是否在多算法模式
+        if self.multi_algorithm_mode and self.multi_algorithm_manager:
+            # 多算法模式：生成多算法对比散点图
+            active_algorithms = self.multi_algorithm_manager.get_active_algorithms()
+            if not active_algorithms:
+                logger.debug("ℹ️ 多算法模式下没有激活的算法，返回空图表")
+                return self.plot_generator._create_empty_plot("没有激活的算法")
+
+            # 使用多算法图表生成器
+            return self.multi_algorithm_plot_generator.generate_multi_algorithm_hammer_velocity_relative_delay_scatter_plot(
                 active_algorithms
             )
         
@@ -2612,7 +2641,6 @@ class PianoAnalysisBackend:
             
         except Exception as e:
             logger.error(f"❌ 生成散点图失败: {e}")
-            
             logger.error(traceback.format_exc())
             return self.plot_generator._create_empty_plot(f"生成散点图失败: {str(e)}")
     
@@ -3234,7 +3262,13 @@ class PianoAnalysisBackend:
             logger.warning("⚠️ 不在多算法模式，无法生成多算法详细曲线图")
             return None, None, None
         
-        algorithm = self.multi_algorithm_manager.get_algorithm(algorithm_name)
+        # 根据 display_name 查找算法
+        algorithm = None
+        for alg in self.multi_algorithm_manager.get_all_algorithms():
+            if alg.metadata.display_name == algorithm_name:
+                algorithm = alg
+                break
+
         if not algorithm or not algorithm.analyzer or not algorithm.analyzer.note_matcher:
             logger.warning(f"⚠️ 算法 '{algorithm_name}' 不存在或没有分析器，无法生成详细曲线图")
             return None, None, None
@@ -3300,7 +3334,13 @@ class PianoAnalysisBackend:
                     logger.warning("⚠️ 不在多算法模式，无法获取音符时间范围")
                     return None
                 
-                algorithm = self.multi_algorithm_manager.get_algorithm(algorithm_name)
+                # 根据 display_name 查找算法
+                algorithm = None
+                for alg in self.multi_algorithm_manager.get_all_algorithms():
+                    if alg.metadata.display_name == algorithm_name:
+                        algorithm = alg
+                        break
+
                 if not algorithm or not algorithm.analyzer or not algorithm.analyzer.note_matcher:
                     logger.warning(f"⚠️ 算法 '{algorithm_name}' 不存在或没有分析器")
                     return None
@@ -4461,7 +4501,13 @@ class PianoAnalysisBackend:
         if not self.multi_algorithm_mode or not self.multi_algorithm_manager:
             return []
         
-        algorithm = self.multi_algorithm_manager.get_algorithm(algorithm_name)
+        # 根据 display_name 查找算法
+        algorithm = None
+        for alg in self.multi_algorithm_manager.get_all_algorithms():
+            if alg.metadata.display_name == algorithm_name:
+                algorithm = alg
+                break
+
         if not algorithm or not algorithm.is_ready() or not algorithm.analyzer:
             return []
         

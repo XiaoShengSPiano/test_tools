@@ -1951,37 +1951,29 @@ def create_report_layout(backend):
                     dcc.Graph(
                         id='key-delay-scatter-plot',
                         figure={},
-                        style={'height': '500px'}
+                        style={'height': '800px'}  # 增加高度，从500px改为800px
                     ),
                 ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
             ], width=12)
         ]),
 
-        # 单键多曲延时对比区域
+        # 锤速与相对延时散点图区域
         dbc.Row([
             dbc.Col([
                 html.Div([
                     dbc.Row([
                         dbc.Col([
-                            html.H6("单键多曲延时对比", className="mb-2",
-                                   style={'color': '#009688', 'fontWeight': 'bold', 'borderBottom': '2px solid #009688', 'paddingBottom': '5px'}),
-                        ], width=8),
-                        dbc.Col([
-                            dcc.Dropdown(
-                                id='single-key-selector',
-                                placeholder='选择要分析的按键',
-                                clearable=True,
-                                style={'fontSize': '12px'}
-                            )
-                        ], width=4)
+                    html.H6("锤速与相对延时散点图", className="mb-2",
+                           style={'color': '#9c27b0', 'fontWeight': 'bold', 'borderBottom': '2px solid #9c27b0', 'paddingBottom': '5px'}),
+                        ], width=12)
                     ]),
                     dcc.Graph(
-                        id='single-key-delay-comparison-plot',
+                id='hammer-velocity-relative-delay-scatter-plot',
                         figure={},
-                        style={'height': '400px'}
+                        style={'height': '500px'}
                     ),
                 ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
-            ], width=12)
+    ], width=12)
         ]),
 
         # 按键与延时Z-Score标准化散点图区域
@@ -1997,19 +1989,19 @@ def create_report_layout(backend):
                     dcc.Graph(
                                 id='key-delay-zscore-scatter-plot',
                         figure={},
-                        style={'height': '500px'}
+                        style={'height': '800px'}
                     ),
                 ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
                     ], width=12)
                 ]),
-                
-                # 锤速与延时散点图区域
+
+                # 锤速与延时Z-Score标准化散点图区域
                 dbc.Row([
                     dbc.Col([
                         html.Div([
                             dbc.Row([
                                 dbc.Col([
-                            html.H6("锤速与延时散点图", className="mb-2",
+                            html.H6("锤速与延时Z-Score标准化散点图", className="mb-2",
                                    style={'color': '#d32f2f', 'fontWeight': 'bold', 'borderBottom': '2px solid #d32f2f', 'paddingBottom': '5px'}),
                                 ], width=12)
                             ]),
@@ -2022,7 +2014,7 @@ def create_report_layout(backend):
             ], width=12)
         ]),
 
-        # 锤速对比图区域
+                # 锤速对比图区域
         dbc.Row([
             dbc.Col([
                 html.Div([
@@ -2069,7 +2061,34 @@ def create_report_layout(backend):
                 ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
             ], width=12)
         ]),
-        
+
+        # 单键多曲延时对比区域
+        dbc.Row([
+            dbc.Col([
+                html.Div([
+                    dbc.Row([
+                        dbc.Col([
+                            html.H6("单键多曲延时对比", className="mb-2",
+                                   style={'color': '#009688', 'fontWeight': 'bold', 'borderBottom': '2px solid #009688', 'paddingBottom': '5px'}),
+                        ], width=8),
+                        dbc.Col([
+                            dcc.Dropdown(
+                                id='single-key-selector',
+                                placeholder='选择要分析的按键',
+                                clearable=True,
+                                style={'fontSize': '12px'}
+                            )
+                        ], width=4)
+                    ]),
+                    dcc.Graph(
+                        id='single-key-delay-comparison-plot',
+                        figure={},
+                        style={'height': '400px'}
+                    ),
+                ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'})
+            ], width=12)
+        ]),
+
         # 同种算法相对延时分布图
         dbc.Row([
             dbc.Col([
