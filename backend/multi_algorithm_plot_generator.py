@@ -715,6 +715,16 @@ class MultiAlgorithmPlotGenerator:
             # 调试：检查坐标值是否在合理范围内
             logger.info(f"📍 绘制数据点: key_id={key_id}, y_offset={y_offset}, label={label}, actual_key_id={actual_key_id:.2f}, 时间范围=[{key_on_time/10:.1f}, {key_off_time/10:.1f}]ms")
 
+            # 将match_index转换为整数作为source_index
+            source_index = 0
+            try:
+                if isinstance(match_index, str) and match_index != "N/A":
+                    source_index = int(match_index)
+                elif isinstance(match_index, int):
+                    source_index = match_index
+            except (ValueError, TypeError):
+                source_index = 0
+
             bar = {
                 't_on': float(key_on_time),
                 't_off': float(key_off_time),
@@ -729,6 +739,7 @@ class MultiAlgorithmPlotGenerator:
                 'hammer_index': 0,                # 固定为0，因为只有一个bar
                 'grade_name': grade_name,         # 评价等级
                 'match_index': match_index,       # 匹配系统评级时的索引
+                'source_index': source_index,     # 音符在原始数据数组中的索引（用于点击处理）
                 'delay_ms': delay_ms,             # 延时（毫秒）
                 'relative_delay_ms': relative_delay_ms,  # 相对延时（延时 - 平均延时）
                 'first_hammer_time': key_on_time  # 第一个锤子的锤击时间

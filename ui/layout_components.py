@@ -1874,8 +1874,6 @@ def create_report_layout(backend):
     # 数据源信息已在前面获取
     data_source = source_info.get('filename') or "多算法对比"
     
-    # 注意：由于这些UI组件（dcc.Graph、dash_table.DataTable等）需要在布局中定义
-    # 否则回调函数无法找到它们，所以我们必须在这里包含它们
     
     return html.Div([
         dcc.Download(id='download-pdf'),
@@ -1970,7 +1968,7 @@ def create_report_layout(backend):
                     dcc.Graph(
                 id='hammer-velocity-relative-delay-scatter-plot',
                         figure={},
-                        style={'height': '500px'}
+                        style={'height': '800px'}  # 增加高度，从500px改为800px，与其他散点图保持一致
                     ),
                 ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
     ], width=12)
@@ -2008,13 +2006,13 @@ def create_report_layout(backend):
                             dcc.Graph(
                         id='hammer-velocity-delay-scatter-plot',
                                 figure={},
-                                style={'height': '500px'}
+                                style={'height': '800px'}  # 增加高度，从500px改为800px，与其他散点图保持一致
                             ),
                         ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
             ], width=12)
         ]),
 
-                # 锤速对比图区域
+        # 锤速对比图区域
         dbc.Row([
             dbc.Col([
                 html.Div([
@@ -2027,7 +2025,7 @@ def create_report_layout(backend):
                     dcc.Graph(
                         id='hammer-velocity-comparison-plot',
                         figure={},
-                        style={'height': '500px'}
+                        style={'height': '800px'}
                     ),
                 ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
             ], width=12)

@@ -4392,6 +4392,40 @@ class PianoAnalysisBackend:
     def is_multi_algorithm_mode(self) -> bool:
         """检查是否处于多算法对比模式（始终返回True）"""
         return True
+
+    def get_current_analysis_mode(self) -> Tuple[str, int]:
+        """
+        获取当前的分析模式和活跃算法数量
+
+        Returns:
+            Tuple[str, int]: (模式名称, 活跃算法数量)
+                           模式: "multi" (多算法), "single" (单算法), "none" (无数据)
+        """
+        # 检查活跃的多算法
+        active_algorithms = []
+        if self.multi_algorithm_manager:
+            active_algorithms = self.multi_algorithm_manager.get_active_algorithms()
+
+        if active_algorithms:
+            # 有活跃的多算法
+            return "multi", len(active_algorithms)
+        elif self.analyzer:
+            # 没有活跃的多算法，但有单算法分析器
+            return "single", 1
+        else:
+            # 两者都没有
+            return "none", 0
+
+    def has_active_multi_algorithm_data(self) -> bool:
+        """检查是否有活跃的多算法数据"""
+        if self.multi_algorithm_manager:
+            active_algorithms = self.multi_algorithm_manager.get_active_algorithms()
+            return len(active_algorithms) > 0
+        return False
+
+    def has_single_algorithm_data(self) -> bool:
+        """检查是否有单算法数据"""
+        return self.analyzer is not None
     
     async def add_algorithm(self, algorithm_name: str, filename: str, 
                            contents: str) -> Tuple[bool, str]:

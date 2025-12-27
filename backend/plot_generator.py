@@ -665,57 +665,6 @@ class PlotGenerator:
                 hoverinfo='skip'
             ))
     
-    def _create_key_control_legends(self, fig, all_key_ids, key_color_hex, key_piece_stats=None):
-        """创建按键控制图注（独立的图例组）
-        
-        Args:
-            fig: Plotly图表对象
-            all_key_ids: 所有按键ID列表
-            key_color_hex: 按键颜色列表
-            key_piece_stats: 每个按键在每个曲子中的出现次数统计（可选）
-               格式: {key_id: {piece_name: count}}
-        """
-        
-        for key_idx, key_id in enumerate(all_key_ids):
-            key_color = key_color_hex[key_idx % len(key_color_hex)]
-            
-            # 构建按键名称和hover信息，如果有统计信息则添加
-            if key_piece_stats and key_id in key_piece_stats:
-                piece_stats = key_piece_stats[key_id]
-                # 构建统计文本：例如 "曲子A: 5次, 曲子B: 3次"
-                stats_text = ', '.join([f'{piece}: {count}次' for piece, count in sorted(piece_stats.items())])
-                # 计算总次数
-                total_count = sum(piece_stats.values())
-                # 在图例名称中显示统计信息（格式：按键 {key_id} (曲子A:5, 曲子B:3)）
-                # 如果统计信息太长，可以只显示总次数
-                if len(stats_text) > 40:  # 如果统计文本太长，只显示总次数
-                    key_name = f'按键 {key_id} (总计:{total_count}次)'
-                else:
-                    key_name = f'按键 {key_id} ({stats_text})'
-                # 在hover中显示详细统计
-                hover_text = f'<b>按键 {key_id}</b><br>统计: {stats_text}<br>总计: {total_count}次<br>点击选择/取消选择此按键<extra></extra>'
-            else:
-                key_name = f'按键 {key_id}'
-                hover_text = f'<b>按键 {key_id}</b><br>点击选择/取消选择此按键<extra></extra>'
-            
-            # 控制图注：空数据，只在图例中显示
-            fig.add_trace(go.Scatter(
-                x=[],  # 空数组，不绘制任何点
-                y=[],
-                mode='markers',
-                name=key_name,
-                marker=dict(
-                    size=14,
-                    color=key_color,
-                    symbol='square',
-                    opacity=0.6
-                ),
-                legendgroup='key_control',
-                visible=True,
-                showlegend=True,
-                hoverinfo='skip'
-            ))
-    
     def _add_multi_algorithm_data_traces(self, fig, algorithm_results, algo_info, key_stats, algorithm_colors, key_colors):
         """为多算法模式添加数据散点
         
