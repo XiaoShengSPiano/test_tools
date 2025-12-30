@@ -6,13 +6,10 @@
 
 负责生成支持多算法对比的图表，使用面向对象设计。
 """
-
+import math
 import traceback
 from typing import List, Optional, Any, Dict, Tuple
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import spmid
-from spmid import spmid_plot
 import numpy as np
 from backend.multi_algorithm_manager import AlgorithmDataset
 from utils.logger import Logger
@@ -302,15 +299,15 @@ class MultiAlgorithmPlotGenerator:
         bars = []
 
         if not hasattr(analyzer, 'note_matcher') or not analyzer.note_matcher:
-            logger.info("ℹ️ 没有note_matcher，跳过匹配对数据收集")
+            logger.info("没有note_matcher，跳过匹配对数据收集")
             return bars
 
         note_matcher = analyzer.note_matcher
         if not hasattr(note_matcher, 'match_results'):
-            logger.info("ℹ️ 没有match_results，跳过匹配对数据收集")
+            logger.info("没有match_results，跳过匹配对数据收集")
             return bars
 
-        logger.info(f"🎯 开始收集匹配对数据，共 {len(note_matcher.match_results)} 个匹配结果")
+        logger.info(f"开始收集匹配对数据，共 {len(note_matcher.match_results)} 个匹配结果")
 
         for result in note_matcher.match_results:
             try:
@@ -348,10 +345,10 @@ class MultiAlgorithmPlotGenerator:
                         bars.extend(replay_bars)
 
             except (IndexError, AttributeError, TypeError) as e:
-                logger.warning(f"⚠️ 处理匹配结果失败: {e}")
+                logger.warning(f"处理匹配结果失败: {e}")
                 continue
 
-        logger.info(f"✅ 匹配对数据收集完成: {len(bars)} 个bars")
+        logger.info(f"匹配对数据收集完成: {len(bars)} 个bars")
         return bars
 
     def _collect_drop_hammer_data(self, analyzer, y_offset: float, algorithm_name: str) -> List[Dict]:
@@ -371,7 +368,7 @@ class MultiAlgorithmPlotGenerator:
         initial_valid_record_data = getattr(analyzer, 'initial_valid_record_data', [])
 
         if not drop_hammers:
-            logger.info("ℹ️ 没有丢锤数据")
+            logger.info("没有丢锤数据")
             return bars
 
         logger.info(f"🪓 开始收集丢锤数据: {len(drop_hammers)} 个")
@@ -407,7 +404,7 @@ class MultiAlgorithmPlotGenerator:
                                      f'按键释放: {bar["t_off"]/10:.2f}ms<br>' + \
                                      f'错误类型: 丢锤 (播放数据缺失)<br>'
 
-                    logger.info(f"✅ 丢锤 #{idx} 处理完成")
+                    logger.info(f"丢锤 #{idx} 处理完成")
                 else:
                     logger.warning(f"⚠️ 丢锤 #{idx} 缺少after_touch数据，跳过")
 
@@ -1416,7 +1413,7 @@ class MultiAlgorithmPlotGenerator:
             ]
             
             
-            import math
+            
             fig = go.Figure()
             
             # 收集所有算法的数据
@@ -2390,7 +2387,7 @@ class MultiAlgorithmPlotGenerator:
 
 
             import numpy as np
-            import math
+            
             fig = go.Figure()
 
             for alg_idx, algorithm in enumerate(ready_algorithms):
@@ -2741,7 +2738,7 @@ class MultiAlgorithmPlotGenerator:
                     
                     # 计算Z-Score（与按键与延时Z-Score散点图相同的计算方式）
                     import numpy as np
-                    import math
+                    
                     me_0_1ms = algorithm.analyzer.get_mean_error() if hasattr(algorithm.analyzer, 'get_mean_error') else 0.0
                     std_0_1ms = algorithm.analyzer.get_standard_deviation() if hasattr(algorithm.analyzer, 'get_standard_deviation') else 0.0
                     
@@ -3130,37 +3127,21 @@ class MultiAlgorithmPlotGenerator:
     def _should_generate_time_series_plot(self, algorithms: List[AlgorithmDataset]) -> Tuple[bool, str]:
         """
         判断是否应该生成延时时间序列图
-        
+
         条件：
         1. 至少有2个算法
-        2. 如果算法名称（display_name）不同，直接允许生成（不同算法的同首曲子）
-        3. 如果算法名称相同，需要检查文件名，确保是同一首曲子（同种算法的不同曲子不绘制）
-        
+
         Args:
             algorithms: 算法数据集列表
-            
+
         Returns:
             Tuple[bool, str]: (是否应该生成, 原因说明)
         """
         if not algorithms or len(algorithms) < 2:
             return False, "需要至少2个算法才能进行对比"
-        
-        # 检查算法名称（display_name）
-        display_names = set(alg.metadata.display_name for alg in algorithms)
-        
-        # 如果算法名称不同，说明是不同算法的同首曲子，直接允许生成（不需要检查文件名）
-        if len(display_names) >= 2:
-            return True, ""
-        
-        # 如果算法名称相同，需要检查文件名，确保是同一首曲子
-        # 如果文件名不同，说明是同种算法的不同曲子，不应该绘制
-        song_identifiers = set(self._extract_song_identifier(alg.metadata.filename) for alg in algorithms)
-        if len(song_identifiers) > 1:
-            return False, f"检测到同种算法的不同曲子（{len(song_identifiers)}首），延时时间序列图仅支持同一首曲子的不同算法对比"
-        
-        # 算法名称相同且文件名相同（这种情况理论上不应该出现，因为内部标识是唯一的）
-        # 但为了安全，返回False
-        return False, "所有算法名称和文件名都相同，无法进行算法对比"
+
+        # 只要有至少2个算法就可以生成图表，不再限制同种算法的不同曲子
+        return True, ""
     
     def _filter_ready_algorithms(self, algorithms: List[AlgorithmDataset]) -> List[AlgorithmDataset]:
         """
@@ -3321,36 +3302,11 @@ class MultiAlgorithmPlotGenerator:
         customdata_list = algorithm_data['customdata_list']
         mean_delay = algorithm_data['mean_delay']
 
-        # 添加偏移前的播放音轨散点图（X轴=原始播放时间，Y轴=相对延时）
-        fig.add_trace(go.Scatter(
-            x=replay_times_ms,  # X轴使用原始播放时间
-            y=relative_delays_ms,  # Y轴使用相对延时
-            mode='markers+lines',
-            name=f'{display_name} (原始时间)',
-            marker=dict(
-                size=4,
-                color=color,
-                symbol='circle-open',  # 使用空心圆圈
-                line=dict(width=1.5, color=color)
-            ),
-            line=dict(color=color, width=1, dash='dot'),  # 使用虚线
-            legendgroup=f"{algorithm_name}_raw",
-            showlegend=True,
-            hovertemplate='<b>算法</b>: ' + display_name + ' (原始时间)<br>' +
-                         '<b>播放时间（X轴）</b>: %{x:.2f}ms<br>' +
-                         '<b>相对延时（Y轴）</b>: %{y:.2f}ms<br>' +
-                         '<b>录制时间</b>: %{customdata[7]:.2f}ms<br>' +
-                         '<b>原始延时</b>: %{customdata[4]:.2f}ms<br>' +
-                         '<b>按键ID</b>: %{customdata[0]}<br>' +
-                         '<b>平均延时</b>: %{customdata[5]:.2f}ms<extra></extra>',
-            customdata=customdata_list
-        ))
-
         # 添加偏移后的播放音轨散点图（X轴=偏移后的播放时间，Y轴=相对延时）
         fig.add_trace(go.Scatter(
             x=replay_times_offset_ms,  # X轴使用偏移后的播放时间（播放时间 - 平均延时）
             y=relative_delays_ms,  # Y轴使用相对延时
-            mode='markers+lines',
+            mode='markers+lines',  # 显示数据点并按时间顺序连接
             name=f'{display_name} (偏移后，平均延时: {mean_delay:.2f}ms)',
             marker=dict(
                 size=5,
@@ -3366,6 +3322,7 @@ class MultiAlgorithmPlotGenerator:
                          '<b>实际播放时间</b>: %{customdata[6]:.2f}ms<br>' +
                          '<b>录制时间</b>: %{customdata[7]:.2f}ms<br>' +
                          '<b>原始延时</b>: %{customdata[4]:.2f}ms<br>' +
+                         '<b>平均延时</b>: %{customdata[5]:.2f}ms<br>' +
                          '<b>按键ID</b>: %{customdata[0]}<br>' +
                          '<extra></extra>',
             customdata=customdata_list
@@ -3542,87 +3499,50 @@ class MultiAlgorithmPlotGenerator:
                 me_0_1ms = algorithm.analyzer.note_matcher.get_mean_error()
                 mean_delay = me_0_1ms / 10.0  # 平均延时（ms）
 
-                # 提取相对延时数据
+                # 提取播放音轨数据
                 for item in offset_data:
                     record_keyon_raw = item.get('record_keyon')
-                    keyon_offset_raw = item.get('keyon_offset')
+                    replay_keyon_raw = item.get('replay_keyon')  # 播放时间
                     key_id = item.get('key_id')
                     record_index = item.get('record_index')
                     replay_index = item.get('replay_index')
+                    record_velocity = item.get('record_velocity')
+                    replay_velocity = item.get('replay_velocity')
+                    velocity_diff = item.get('velocity_diff')
+                    relative_delay = item.get('relative_delay', 0)
 
                     # 类型检查
                     record_keyon_is_valid = isinstance(record_keyon_raw, (int, float, np.integer, np.floating))
-                    keyon_offset_is_valid = isinstance(keyon_offset_raw, (int, float, np.integer, np.floating))
+                    replay_keyon_is_valid = isinstance(replay_keyon_raw, (int, float, np.integer, np.floating))
 
-                    if not record_keyon_is_valid or not keyon_offset_is_valid:
+                    if not record_keyon_is_valid or not replay_keyon_is_valid:
                         continue
 
                     # 转换为ms单位
-                    time_ms = record_keyon_raw / 10.0
-                    delay_ms = keyon_offset_raw / 10.0
+                    time_ms = record_keyon_raw / 10.0  # X轴：录制时间
+                    replay_time_ms = replay_keyon_raw / 10.0  # 播放时间
 
-                    # 计算相对延时
-                    relative_delay_ms = delay_ms - mean_delay
+                    # 计算相对延时（绝对延时 - 平均延时）
+                    relative_delay_ms = (replay_time_ms - time_ms) - mean_delay
 
-                    # 如果需要应用时间轴偏移
+                    # 如果需要时间轴偏移，使用偏移后的播放时间轴
                     if apply_time_offset:
-                        time_ms = time_ms + delay_ms - mean_delay  # 原始时间 + 延时 - 平均延时
+                        time_ms = replay_time_ms - mean_delay  # 播放时间 - 平均延时
+                        y_value = relative_delay_ms  # Y轴：相对延时
+                    else:
+                        time_ms = replay_time_ms  # X轴：播放时间
+                        y_value = relative_delay_ms  # Y轴：相对延时
 
-                    customdata = [key_id, record_index, replay_index, algorithm_name, delay_ms, mean_delay, time_ms + delay_ms, time_ms]
+                    # 存储原始时间值（在修改time_ms之前）
+                    original_record_time = record_keyon_raw / 10.0
+                    customdata = [key_id, record_index, replay_index, algorithm_name, replay_time_ms - original_record_time, relative_delay, mean_delay, record_velocity, replay_velocity, velocity_diff, replay_time_ms, original_record_time]
 
-                    all_relative_data.append((time_ms, relative_delay_ms, customdata, descriptive_name, color))
+                    all_relative_data.append((time_ms, y_value, customdata, descriptive_name, color))
 
             except Exception as e:
                 logger.warning(f"⚠️ 处理算法 '{algorithm_name}' 的相对延时数据失败: {e}")
 
         return all_relative_data
-        all_raw_data = []
-
-        for alg_idx, algorithm in enumerate(ready_algorithms):
-            algorithm_name = algorithm.metadata.algorithm_name
-            display_name = algorithm.metadata.display_name
-            filename = algorithm.metadata.filename
-            descriptive_name = f"{display_name} ({filename})"
-            color = colors[alg_idx % len(colors)]
-
-            if not algorithm.analyzer or not algorithm.analyzer.note_matcher:
-                continue
-
-            try:
-                matched_pairs = algorithm.analyzer.note_matcher.get_matched_pairs()
-                offset_data = algorithm.analyzer.get_precision_offset_alignment_data()
-
-                if not matched_pairs or not offset_data:
-                    continue
-
-                # 创建偏移映射
-                offset_map = {}
-                for item in offset_data:
-                    record_idx = item.get('record_index')
-                    replay_idx = item.get('replay_index')
-                    if record_idx is not None and replay_idx is not None:
-                        offset_map[(record_idx, replay_idx)] = item
-
-                # 提取原始延时数据
-                for record_idx, replay_idx, record_note, replay_note in matched_pairs:
-                    if (record_idx, replay_idx) in offset_map:
-                        item = offset_map[(record_idx, replay_idx)]
-                        record_keyon = item.get('record_keyon', 0)
-                        keyon_offset = item.get('keyon_offset', 0.0)
-
-                        time_ms = record_keyon / 10.0
-                        delay_ms = keyon_offset / 10.0
-                        customdata = [item.get('key_id'), record_idx, replay_idx]
-
-                        all_raw_data.append((time_ms, delay_ms, customdata, descriptive_name, color))
-
-            except Exception as e:
-                logger.warning(f"⚠️ 处理算法 '{algorithm_name}' 的原始延时数据失败: {e}")
-                continue
-
-        # 按时间排序
-        all_raw_data.sort(key=lambda x: x[0])
-        return all_raw_data
 
     def _create_raw_delay_plot_for_algorithms(self, all_raw_data: List[Tuple[float, float, List, str, str]]) -> Any:
         """
@@ -3652,11 +3572,17 @@ class MultiAlgorithmPlotGenerator:
         # 添加每个算法的trace
         for descriptive_name, data in algorithm_data.items():
             if data['times'] and data['delays']:
+                # 确保数据按时间排序
+                sorted_indices = sorted(range(len(data['times'])), key=lambda i: data['times'][i])
+                sorted_times = [data['times'][i] for i in sorted_indices]
+                sorted_delays = [data['delays'][i] for i in sorted_indices]
+                sorted_customdata = [data['customdata'][i] for i in sorted_indices]
+
                 raw_delay_fig.add_trace(go.Scatter(
-                    x=data['times'],
-                    y=data['delays'],
+                    x=sorted_times,
+                    y=sorted_delays,
                     mode='markers+lines',
-                    name=f'{descriptive_name} (原始)',
+                    name=f'{descriptive_name} (相对延时)',
                     marker=dict(
                         size=4,
                         color=data['color'],
@@ -3664,17 +3590,22 @@ class MultiAlgorithmPlotGenerator:
                     ),
                     line=dict(color=data['color'], width=1, dash='dot'),
                     hovertemplate='<b>算法</b>: ' + descriptive_name + '<br>' +
-                                 '<b>录制时间</b>: %{x:.2f}ms<br>' +
-                                 '<b>原始延时</b>: %{y:.2f}ms<br>' +
+                                 '<b>播放时间</b>: %{x:.2f}ms<br>' +
+                                 '<b>录制时间</b>: %{customdata[11]:.2f}ms<br>' +
+                                 '<b>相对延时</b>: %{y:.2f}ms<br>' +
+                                 '<b>平均延时</b>: %{customdata[6]:.2f}ms<br>' +
+                                 '<b>录制锤速</b>: %{customdata[7]}<br>' +
+                                 '<b>播放锤速</b>: %{customdata[8]}<br>' +
+                                 '<b>锤速差值</b>: %{customdata[9]}<br>' +
                                  '<b>按键ID</b>: %{customdata[0]}<br>' +
                                  '<extra></extra>',
-                    customdata=data['customdata']
+                    customdata=sorted_customdata
                 ))
 
         # 配置布局
         raw_delay_fig.update_layout(
-            xaxis_title='录制时间 (ms)',
-            yaxis_title='原始延时 (ms)',
+            xaxis_title='播放时间 (ms)',
+            yaxis_title='相对延时 (ms)',
             showlegend=True,
             template='plotly_white',
             height=400,
@@ -3711,8 +3642,6 @@ class MultiAlgorithmPlotGenerator:
         all_delays = []
         algorithm_results = []
 
-        logger.info(f"[DEBUG] _process_all_algorithms_data 开始处理 {len(ready_algorithms)} 个算法")
-
         for alg_idx, algorithm in enumerate(ready_algorithms):
             logger.info(f"[DEBUG] 处理算法 {alg_idx}: {algorithm.metadata.display_name}")
             algorithm_data = self._process_single_algorithm_data(algorithm)
@@ -3740,11 +3669,6 @@ class MultiAlgorithmPlotGenerator:
             algorithm_results.append((algorithm_data, color))
 
             logger.info(f"[DEBUG] 算法 {algorithm.metadata.display_name} 处理完成，添加了 {len(relative_delays)} 个数据点")
-
-        logger.info(f"[DEBUG] _process_all_algorithms_data 处理完成: 成功处理 {len(algorithm_results)} 个算法，fig.data长度={len(fig.data) if fig.data else 0}")
-
-        # 总是返回图表对象，即使没有数据也要创建空图表
-        # algorithm_results 为空时，图表将只包含空的traces
 
         return fig, algorithm_results
 
@@ -3783,9 +3707,7 @@ class MultiAlgorithmPlotGenerator:
         algorithms: List[AlgorithmDataset]
     ) -> Any:
         """
-        生成多算法延时时间序列图（两张相对延时图：上方横轴未偏移，下方横轴已偏移）
-
-        注意：仅当存在不同算法且是同一首曲子时才绘制
+        生成多算法延时时间序列图（两张相对延时图：播放时间轴对比）
 
         Args:
             algorithms: 激活的算法数据集列表
@@ -3794,47 +3716,44 @@ class MultiAlgorithmPlotGenerator:
             Dict[str, Any]: 包含上方相对延时图和下方相对延时图的字典
         """
         if not algorithms:
-            logger.debug("ℹ️ 没有激活的算法，跳过多算法延时时间序列图生成")
+            logger.debug("没有激活的算法，跳过多算法延时时间序列图生成")
             return self._create_empty_plot("没有激活的算法")
 
         try:
             # 1. 过滤就绪的算法
             ready_algorithms = self._filter_ready_algorithms(algorithms)
             if not ready_algorithms:
-                logger.warning("⚠️ 没有就绪的算法，无法生成多算法延时时间序列图")
+                logger.warning("没有就绪的算法，无法生成多算法延时时间序列图")
                 return self._create_empty_plot("没有就绪的算法")
 
             # 2. 检查是否应该生成图表
             should_generate, reason = self._should_generate_time_series_plot(ready_algorithms)
             if not should_generate:
-                logger.info(f"ℹ️ 跳过延时时间序列图生成: {reason}")
+                logger.info(f"跳过延时时间序列图生成: {reason}")
                 return self._create_empty_plot(reason)
 
-            logger.info(f"📊 开始生成多算法延时时间序列图，共 {len(ready_algorithms)} 个算法")
+            logger.info(f"开始生成多算法延时时间序列图，共 {len(ready_algorithms)} 个算法")
 
             # 3. 准备颜色
             colors = self._prepare_algorithm_colors()
 
             # 4. 处理所有算法数据并创建相对延时图
-            logger.info(f"[DEBUG] 调用 _process_all_algorithms_data，算法数量: {len(ready_algorithms)}")
             fig, algorithm_results = self._process_all_algorithms_data(ready_algorithms, colors)
-
-            logger.info(f"[DEBUG] _process_all_algorithms_data 返回: fig.data长度={len(fig.data) if fig.data else 0}, algorithm_results长度={len(algorithm_results)}")
 
             # 检查是否有实际的数据用于绘图
             has_data = any(len(trace.y) > 0 for trace in fig.data) if fig.data else False
             logger.info(f"[DEBUG] has_data检查: fig.data存在={fig.data is not None}, traces数量={len(fig.data) if fig.data else 0}, has_data={has_data}")
 
             if not has_data:
-                logger.warning("⚠️ 没有有效的时间序列数据，无法生成图表")
+                logger.warning("没有有效的时间序列数据，无法生成图表")
                 # 记录更多调试信息
                 for i, alg in enumerate(ready_algorithms):
                     logger.warning(f"  算法 {i}: {alg.metadata.display_name}")
                 return self._create_empty_plot("没有有效的时间序列数据")
 
-            # 5. 配置下方相对延时图的图注（横轴已偏移）
+            # 5. 配置相对延时图的图注
             fig.update_layout(
-                title='相对延时时间序列图（横轴已偏移）',
+                title='相对延时时间序列图（播放时间轴）',
                 height=500,
                 showlegend=True,
                 legend=dict(
@@ -3852,11 +3771,11 @@ class MultiAlgorithmPlotGenerator:
                 hovermode='closest'
             )
 
-            # 6. 创建上方相对延时图（横轴未偏移）
+            # 6. 创建上方相对延时图（播放时间轴）
             raw_delay_plot = self._create_multi_algorithm_relative_plot(ready_algorithms, colors, apply_time_offset=False)
             if raw_delay_plot:
                 raw_delay_plot.update_layout(
-                    title='相对延时时间序列图（横轴未偏移）',
+                    title='相对延时时间序列图（播放时间轴）',
                     height=500,
                     showlegend=True,
                     legend=dict(
@@ -3874,14 +3793,14 @@ class MultiAlgorithmPlotGenerator:
                     hovermode='closest'
                 )
 
-            logger.info(f"✅ 多算法延时时间序列图生成成功，共 {len(ready_algorithms)} 个算法")
+            logger.info(f"多算法延时时间序列图生成成功，共 {len(ready_algorithms)} 个算法")
             return {
                 'raw_delay_plot': raw_delay_plot,
                 'relative_delay_plot': fig
             }
 
         except Exception as e:
-            logger.error(f"❌ 生成多算法延时时间序列图失败: {e}")
+            logger.error(f"生成多算法延时时间序列图失败: {e}")
             logger.error(traceback.format_exc())
             empty_plot = self._create_empty_plot(f"生成失败: {str(e)}")
             return {

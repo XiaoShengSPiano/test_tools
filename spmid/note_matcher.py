@@ -61,6 +61,7 @@ SPMID音符匹配器
 - 基于两阶段匹配后的剩余音符直接判断，无需复杂统计
 """
 
+import pandas as pd
 import numpy as np
 from .spmid_reader import Note
 from typing import List, Tuple, Dict, Union, Optional
@@ -1420,6 +1421,10 @@ class NoteMatcher:
             record_keyon, record_keyoff = self._calculate_note_times(record_note)
             replay_keyon, replay_keyoff = self._calculate_note_times(replay_note)
 
+            # 获取锤速信息
+            record_velocity = self._get_velocity_from_note(record_note)
+            replay_velocity = self._get_velocity_from_note(replay_note)
+
             # 计算原始偏移量
             keyon_offset = replay_keyon - record_keyon
 
@@ -1431,14 +1436,21 @@ class NoteMatcher:
             duration_diff = replay_duration - record_duration
             duration_offset = duration_diff
 
+            # 计算相对延时（用于悬停显示）
+            relative_delay = corrected_offset / 10.0  # 转换为ms
+
             offset_data.append({
                 'record_index': record_idx,
                 'replay_index': replay_idx,
                 'key_id': record_note.id,
                 'record_keyon': record_keyon,
                 'replay_keyon': replay_keyon,
+                'record_velocity': record_velocity,    # 录制锤速
+                'replay_velocity': replay_velocity,    # 播放锤速
+                'velocity_diff': (replay_velocity - record_velocity) if record_velocity is not None and replay_velocity is not None else None,  # 锤速差值
                 'keyon_offset': keyon_offset,       # 原始偏移
                 'corrected_offset': corrected_offset, # 校准后偏移（用于分析）
+                'relative_delay': relative_delay,     # 相对延时（ms）
                 'record_keyoff': record_keyoff,
                 'replay_keyoff': replay_keyoff,
                 'duration_offset': duration_offset,
@@ -1449,6 +1461,29 @@ class NoteMatcher:
             })
 
         return offset_data
+
+    def _get_velocity_from_note(self, note) -> Optional[float]:
+        """从音符中获取锤速"""
+        try:
+            if not note:
+                return None
+
+            # 只从hammers数据中获取锤速
+            if hasattr(note, 'hammers') and note.hammers is not None:
+                if hasattr(note.hammers, 'values') and len(note.hammers.values) > 0:
+                    hammer_velocity = note.hammers.values[0]
+                    if hammer_velocity is not None and not pd.isna(hammer_velocity):
+                        return float(hammer_velocity)
+                elif hasattr(note.hammers, 'iloc') and len(note.hammers) > 0:
+                    hammer_velocity = note.hammers.iloc[0]
+                    if hammer_velocity is not None and not pd.isna(hammer_velocity):
+                        return float(hammer_velocity)
+
+            return None
+
+        except Exception as e:
+            logger.warning(f"[WARNING] 从音符提取锤速失败: {e}")
+            return None
 
     def get_normal_offset_alignment_data(self) -> List[Dict[str, Union[int, float]]]:
         """

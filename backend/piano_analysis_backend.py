@@ -849,6 +849,10 @@ class PianoAnalysisBackend:
             key_id = item.get('key_id')
             record_index = item.get('record_index')
             replay_index = item.get('replay_index')
+            record_velocity = item.get('record_velocity')
+            replay_velocity = item.get('replay_velocity')
+            velocity_diff = item.get('velocity_diff')
+            relative_delay = item.get('relative_delay')
 
             # 检查必要字段是否存在且不为None
             if record_keyon is None or keyon_offset is None:
@@ -873,6 +877,10 @@ class PianoAnalysisBackend:
             data_points.append({
                 'time': time_ms,
                 'delay': delay_ms,
+                'relative_delay': relative_delay,
+                'record_velocity': record_velocity,
+                'replay_velocity': replay_velocity,
+                'velocity_diff': velocity_diff,
                 'key_id': key_id if key_id is not None else 'N/A',
                 'record_index': record_index,
                 'replay_index': replay_index
@@ -926,9 +934,18 @@ class PianoAnalysisBackend:
         # 提取排序后的数据
         times_ms = [point['time'] for point in data_points]
         delays_ms = [point['delay'] for point in data_points]  # 保留原始延时用于hover显示
-        # customdata 包含 [key_id, record_index, replay_index, 原始延时, 平均延时]，用于点击时查找匹配对和显示原始值
-        customdata_list = [[point['key_id'], point['record_index'], point['replay_index'], point['delay'], mean_delay]
-                          for point in data_points]
+        # customdata 包含 [key_id, record_index, replay_index, 原始延时, 相对延时, 平均延时, 录制锤速, 播放锤速, 锤速差值]
+        customdata_list = [[
+            point['key_id'],
+            point['record_index'],
+            point['replay_index'],
+            point['delay'],              # 原始延时
+            point.get('relative_delay', 0),  # 相对延时
+            mean_delay,                  # 平均延时
+            point.get('record_velocity'),    # 录制锤速
+            point.get('replay_velocity'),    # 播放锤速
+            point.get('velocity_diff')       # 锤速差值
+        ] for point in data_points]
 
         return times_ms, delays_ms, customdata_list
 
@@ -1026,7 +1043,7 @@ class PianoAnalysisBackend:
         raw_delay_fig.add_trace(go.Scatter(
             x=times_ms,  # X轴使用录制时间
             y=delays_ms,  # Y轴使用原始延时
-            mode='markers+lines',
+            mode='markers+lines',  # 显示数据点并按时间顺序连接
             name='原始延时时间序列',
             marker=dict(
                 size=6,
@@ -1036,6 +1053,11 @@ class PianoAnalysisBackend:
             line=dict(color='#FF9800', width=1.5),
             hovertemplate='<b>录制时间</b>: %{x:.2f}ms<br>' +
                          '<b>原始延时</b>: %{y:.2f}ms<br>' +
+                         '<b>相对延时</b>: %{customdata[4]:.2f}ms<br>' +
+                         '<b>平均延时</b>: %{customdata[5]:.2f}ms<br>' +
+                         '<b>录制锤速</b>: %{customdata[6]}<br>' +
+                         '<b>播放锤速</b>: %{customdata[7]}<br>' +
+                         '<b>锤速差值</b>: %{customdata[8]}<br>' +
                          '<b>按键ID</b>: %{customdata[0]}<br>' +
                          '<extra></extra>',
             customdata=customdata_list
@@ -1084,7 +1106,7 @@ class PianoAnalysisBackend:
         relative_delay_fig.add_trace(go.Scatter(
             x=times_ms,
             y=relative_delays_ms,
-            mode='markers+lines',  # 同时显示点和线，便于观察趋势
+            mode='markers+lines',  # 显示数据点并按时间顺序连接
             name=f'相对延时时间序列 (平均延时: {mean_delay:.2f}ms)',
             marker=dict(
                 size=6,
