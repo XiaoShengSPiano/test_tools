@@ -2248,7 +2248,7 @@ class PianoAnalysisBackend:
                     line=dict(width=1, color='#1b5e20')
                 ),
                 customdata=customdata_list,  # 添加customdata，包含record_index和replay_index
-                hovertemplate='按键: %{customdata[2]}<br>延时: %{y:.2f}ms<extra></extra>'
+                hovertemplate=f'按键: %{{customdata[2]}}<br>延时: %{{y:.2f}}ms<br>平均延时: {mu:.2f}ms<extra></extra>'
             ))
             
             # 注意：已删除平均延时的趋势线
@@ -2419,7 +2419,7 @@ class PianoAnalysisBackend:
         生成锤速与相对延时的散点图（支持单算法和多算法模式）
         x轴：log₁₀(锤速)（播放锤速的对数值）
         y轴：相对延时（keyon_offset - μ，转换为ms）
-        数据来源：所有已匹配的按键对
+        数据来源：精确匹配对（≤50ms）
         """
         # 检查是否在多算法模式
         if self.multi_algorithm_mode and self.multi_algorithm_manager:
@@ -2433,70 +2433,65 @@ class PianoAnalysisBackend:
             return self.multi_algorithm_plot_generator.generate_multi_algorithm_hammer_velocity_relative_delay_scatter_plot(
                 active_algorithms
             )
-        
-        # 向后兼容：使用原有逻辑（已废弃）
+
+        # 单算法模式：使用精确匹配数据
         try:
-            # 从分析器获取原始偏移对齐数据和匹配对
+            # 从分析器获取精确匹配数据（≤50ms）
             if not self.analyzer or not self.analyzer.note_matcher:
                 logger.warning("⚠️ 分析器或匹配器不存在，无法生成散点图")
                 return self.plot_generator._create_empty_plot("分析器或匹配器不存在")
+
+            # 获取精确偏移对齐数据（只包含精确匹配对 ≤50ms）
+            offset_data = self.analyzer.note_matcher.get_precision_offset_alignment_data()
+
+            if not offset_data:
+                logger.warning("⚠️ 没有精确匹配数据，无法生成散点图")
+                return self.plot_generator._create_empty_plot("没有精确匹配数据")
             
-            matched_pairs = self.analyzer.note_matcher.get_matched_pairs()
-            
-            if not matched_pairs:
-                logger.warning("⚠️ 没有匹配数据，无法生成散点图")
-                return self.plot_generator._create_empty_plot("没有匹配数据")
-            
-            # 获取偏移对齐数据（已包含延时信息）
-            offset_data = self.analyzer.note_matcher.get_offset_alignment_data()
-            
-            # 提取锤速和延时数据，并计算Z-Score（与按键与延时Z-Score散点图相同）
+            # 提取锤速和延时数据，直接使用精确匹配数据
             hammer_velocities = []  # 锤速（播放音符的第一个锤速值）
-            delays_ms = []  # 延时（ms单位，用于计算Z-Score）
+            delays_ms = []  # 延时（ms单位，用于计算相对延时）
             scatter_customdata = []  # 存储record_idx和replay_idx，用于点击事件识别
-            
-            # 创建匹配对索引到偏移数据的映射
-            offset_map = {}
+
+            # 直接遍历精确匹配数据
             for item in offset_data:
                 record_idx = item.get('record_index')
                 replay_idx = item.get('replay_index')
-                if record_idx is not None and replay_idx is not None:
-                    offset_map[(record_idx, replay_idx)] = item
-            
-            for record_idx, replay_idx, record_note, replay_note in matched_pairs:
+                keyon_offset = item.get('keyon_offset', 0)  # 延时（0.1ms单位）
+
+                if record_idx is None or replay_idx is None:
+                    continue
+
+                # 从精确匹配数据中查找对应的Note对象
+                record_note = None
+                replay_note = None
+
+                # 查找precision_matched_pairs中的Note对象
+                for r_idx, p_idx, r_note, p_note in self.analyzer.note_matcher.precision_matched_pairs:
+                    if r_idx == record_idx and p_idx == replay_idx:
+                        record_note = r_note
+                        replay_note = p_note
+                        break
+
+                if not record_note or not replay_note:
+                    continue
+
                 # 获取播放音符的锤速（第一个锤速值）
                 if len(replay_note.hammers) > 0 and len(replay_note.hammers.values) > 0:
                     hammer_velocity = replay_note.hammers.values[0]
                 else:
                     continue  # 跳过没有锤速数据的音符
-                
-                # 从偏移数据中获取延时（keyon_offset），如果找不到则计算
-                keyon_offset = None
-                if (record_idx, replay_idx) in offset_map:
-                    keyon_offset = offset_map[(record_idx, replay_idx)].get('keyon_offset', 0)
-                else:
-                    # 备用方案：直接计算（使用私有方法）
-                    try:
-                        record_keyon, _ = self.analyzer.note_matcher._calculate_note_times(record_note)
-                        replay_keyon, _ = self.analyzer.note_matcher._calculate_note_times(replay_note)
-                        keyon_offset = replay_keyon - record_keyon
-                    except:
-                        continue  # 如果计算失败，跳过该数据点
-                
-                # 将延时从0.1ms转换为ms（带符号，用于Z-Score计算）
+
+                # 将延时从0.1ms转换为ms（带符号）
                 delay_ms = keyon_offset / 10.0
-                
+
                 # 跳过锤速为0或负数的数据点（对数无法处理）
                 if hammer_velocity <= 0:
                     continue
-                
-                # 获取按键ID
-                key_id = record_note.id if hasattr(record_note, 'id') else None
-                
+
                 hammer_velocities.append(hammer_velocity)
                 delays_ms.append(delay_ms)
-                # 存储record_idx、replay_idx和key_id，用于点击事件识别和显示
-                scatter_customdata.append([record_idx, replay_idx, key_id])
+                scatter_customdata.append([record_idx, replay_idx])
             
             if not hammer_velocities:
                 logger.warning("⚠️ 没有有效的散点图数据")
@@ -2527,10 +2522,10 @@ class PianoAnalysisBackend:
             fig = go.Figure()
             
             # 添加散点图数据（x轴使用对数形式的锤速，y轴使用Z-Score值）
-            # customdata格式: [delay_ms, original_velocity, record_idx, replay_idx, key_id]
-            # 第一个元素用于hover显示延时，第二个元素用于hover显示原始锤速，后三个用于点击事件识别和显示
-            combined_customdata = [[delay_ms, orig_vel, record_idx, replay_idx, key_id] 
-                                  for delay_ms, orig_vel, (record_idx, replay_idx, key_id) 
+            # customdata格式: [delay_ms, original_velocity, record_idx, replay_idx]
+            # 第一个元素用于hover显示延时，第二个元素用于hover显示原始锤速，后两个用于点击事件识别
+            combined_customdata = [[delay_ms, orig_vel, record_idx, replay_idx]
+                                  for delay_ms, orig_vel, (record_idx, replay_idx)
                                   in zip(delays_ms, hammer_velocities, scatter_customdata)]
             
             fig.add_trace(go.Scatter(
@@ -2544,7 +2539,7 @@ class PianoAnalysisBackend:
                     opacity=0.6,
                     line=dict(width=1, color='#b71c1c')
                 ),
-                hovertemplate='按键: %{customdata[4]}<br>锤速: %{customdata[1]:.0f} (log: %{x:.2f})<br>延时: %{customdata[0]:.2f}ms<br>Z-Score: %{y:.2f}<extra></extra>',
+                hovertemplate='锤速: %{customdata[1]:.0f} (log: %{x:.2f})<br>延时: %{customdata[0]:.2f}ms<br>Z-Score: %{y:.2f}<extra></extra>',
                 customdata=combined_customdata
             ))
             
@@ -3194,12 +3189,12 @@ class PianoAnalysisBackend:
             logger.warning("⚠️ 分析器或匹配器不存在，无法生成详细曲线图")
             return None, None, None
         
-        # 从matched_pairs中查找对应的Note对象
-        matched_pairs = self.analyzer.matched_pairs
+        # 从precision_matched_pairs中查找对应的Note对象（确保只使用精确匹配对）
+        precision_matched_pairs = self.analyzer.note_matcher.precision_matched_pairs
         record_note = None
         play_note = None
-        
-        for r_idx, p_idx, r_note, p_note in matched_pairs:
+
+        for r_idx, p_idx, r_note, p_note in precision_matched_pairs:
             if r_idx == record_index and p_idx == replay_index:
                 record_note = r_note
                 play_note = p_note
@@ -3263,22 +3258,28 @@ class PianoAnalysisBackend:
             return None, None, None
         
         # 根据 display_name 查找算法
+        logger.info(f"🔍 generate_multi_algorithm_scatter_detail_plot_by_indices: 查找算法 display_name='{algorithm_name}'")
         algorithm = None
         for alg in self.multi_algorithm_manager.get_all_algorithms():
+            logger.debug(f"🔍 检查算法: display_name='{alg.metadata.display_name}', algorithm_name='{alg.metadata.algorithm_name}'")
             if alg.metadata.display_name == algorithm_name:
                 algorithm = alg
+                logger.info(f"✅ 找到匹配算法: {alg.metadata.display_name}")
                 break
 
         if not algorithm or not algorithm.analyzer or not algorithm.analyzer.note_matcher:
             logger.warning(f"⚠️ 算法 '{algorithm_name}' 不存在或没有分析器，无法生成详细曲线图")
+            # 调试：列出所有可用算法
+            all_algs = self.multi_algorithm_manager.get_all_algorithms()
+            logger.warning(f"⚠️ 可用算法列表: {[f'{alg.metadata.display_name}({alg.metadata.algorithm_name})' for alg in all_algs]}")
             return None, None, None
         
-        # 从matched_pairs中查找对应的Note对象
-        matched_pairs = algorithm.analyzer.matched_pairs
+        # 从precision_matched_pairs中查找对应的Note对象（锤速对比图使用precision数据）
+        precision_matched_pairs = algorithm.analyzer.note_matcher.precision_matched_pairs
         record_note = None
         play_note = None
-        
-        for r_idx, p_idx, r_note, p_note in matched_pairs:
+
+        for r_idx, p_idx, r_note, p_note in precision_matched_pairs:
             if r_idx == record_index and p_idx == replay_index:
                 record_note = r_note
                 play_note = p_note
@@ -3286,6 +3287,9 @@ class PianoAnalysisBackend:
         
         if record_note is None or play_note is None:
             logger.warning(f"⚠️ 未找到匹配对: 算法={algorithm_name}, record_index={record_index}, replay_index={replay_index}")
+            logger.warning(f"⚠️ precision_matched_pairs 数量: {len(precision_matched_pairs)}")
+            for i, (r_idx, p_idx, r_note, p_note) in enumerate(precision_matched_pairs[:5]):  # 只显示前5个
+                logger.warning(f"⚠️ 匹配对 {i}: record_idx={r_idx}, replay_idx={p_idx}, has_notes={r_note is not None and p_note is not None}")
             return None, None, None
 
         # 计算平均延时
@@ -3408,7 +3412,8 @@ class PianoAnalysisBackend:
         except Exception as e:
             logger.error(f"❌ 获取音符时间范围失败: {e}")
             return None
-    
+
+
     def generate_multi_algorithm_detail_plot_by_index(
         self,
         algorithm_name: str,

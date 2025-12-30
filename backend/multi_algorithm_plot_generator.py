@@ -1657,7 +1657,11 @@ class MultiAlgorithmPlotGenerator:
                     if not offset_data:
                         logger.warning(f"⚠️ 算法 '{descriptive_name}' 没有精确匹配数据（≤50ms），跳过")
                         continue
-                    
+
+                    # 获取该算法的平均延时，用于hovertemplate显示
+                    mean_error_0_1ms = algorithm.analyzer.get_mean_error()
+                    algorithm_mean_delay_ms = mean_error_0_1ms / 10.0
+
                     # 获取matched_pairs以便查找时间信息
                     matched_pairs = algorithm.analyzer.matched_pairs
                     record_note_dict = {r_idx: r_note for r_idx, _, r_note, _ in matched_pairs}
@@ -1763,6 +1767,7 @@ class MultiAlgorithmPlotGenerator:
                         'color': color,
                         'mu': mu,
                         'sigma': sigma,
+                        'algorithm_mean_delay_ms': algorithm_mean_delay_ms,  # 添加算法平均延时
                         'relative_mu': relative_mu,
                         'relative_sigma': relative_sigma,
                         'upper_threshold': upper_threshold,
@@ -1804,7 +1809,7 @@ class MultiAlgorithmPlotGenerator:
                     customdata=alg_data['customdata'],  # 添加customdata，包含record_index、replay_index和算法名称
                     legendgroup=alg_data['descriptive_name'],
                     showlegend=True,
-                    hovertemplate=f"算法: {alg_data['descriptive_name']}<br>按键: %{{customdata[2]}}<br>相对延时: %{{y:.2f}}ms<br>绝对延时: %{{customdata[3]:.2f}}ms<br>录制锤子时间: %{{customdata[5]:.2f}}ms<br>播放锤子时间: %{{customdata[6]:.2f}}ms<extra></extra>"
+                    hovertemplate=f"算法: {alg_data['descriptive_name']}<br>按键: %{{customdata[2]}}<br>相对延时: %{{y:.2f}}ms<br>绝对延时: %{{customdata[3]:.2f}}ms<br>平均延时: {alg_data['algorithm_mean_delay_ms']:.2f}ms<br>录制锤子时间: %{{customdata[5]:.2f}}ms<br>播放锤子时间: %{{customdata[6]:.2f}}ms<extra></extra>"
                 ))
             
             # 获取所有唯一的按键ID，用于确定阈值线的范围

@@ -513,7 +513,6 @@ def create_main_layout():
         dcc.Graph(id='key-delay-zscore-scatter-plot', figure={}, style={'display': 'none'}),
         dcc.Graph(id='hammer-velocity-delay-scatter-plot', figure={}, style={'display': 'none'}),
         dcc.Graph(id='key-force-interaction-plot', figure={}, style={'display': 'none'}),
-        dcc.Store(id='key-force-interaction-selected-algorithms', data=[]),  # 存储选中的算法列表
         dcc.Store(id='key-force-interaction-selected-keys', data=[]),  # 存储选中的按键列表
         dcc.Graph(id='relative-delay-distribution-plot', figure={}, style={'display': 'none'}),
         html.Div(id='offset-alignment-plot', style={'display': 'none'}),
@@ -998,14 +997,8 @@ def _create_single_algorithm_error_stats_row(algorithm, algorithm_name):
         rmse_0_1ms = algorithm.analyzer.get_root_mean_squared_error() if hasattr(algorithm.analyzer, 'get_root_mean_squared_error') else 0.0
         cv = algorithm.analyzer.get_coefficient_of_variation() if hasattr(algorithm.analyzer, 'get_coefficient_of_variation') else 0.0
 
-        # 添加日志输出，便于调试数据一致性
-        logger.info(f"📊 [{algorithm_name}] 延时误差统计指标 (精确匹配数据):")
-        logger.info(f"   MAE: {mae_0_1ms/10:.2f}ms ({mae_0_1ms:.1f}单位)")
-        logger.info(f"   方差: {variance_0_1ms_squared/100:.4f}ms² ({variance_0_1ms_squared:.1f}单位²)")
-        logger.info(f"   标准差: {std_0_1ms/10:.2f}ms ({std_0_1ms:.1f}单位)")
-        logger.info(f"   平均误差: {me_0_1ms/10:.2f}ms ({me_0_1ms:.1f}单位)")
-        logger.info(f"   RMSE: {rmse_0_1ms/10:.2f}ms ({rmse_0_1ms:.1f}单位)")
-        logger.info(f"   变异系数: {cv:.2f}%")
+        # 记录平均误差用于调试
+        logger.debug(f"📊 [{algorithm_name}] 平均误差ME: {me_0_1ms/10:.2f}ms")
         
         variance_ms_squared = variance_0_1ms_squared / 100.0
         std_ms = std_0_1ms / 10.0
@@ -2052,9 +2045,8 @@ def create_report_layout(backend):
                     dcc.Graph(
                         id='key-force-interaction-plot',
                         figure={},
-                        style={'height': '600px'}
+                        style={'height': '800px'}  # 增加高度，与锤速对比图和其他散点图保持一致
                     ),
-                    dcc.Store(id='key-force-interaction-selected-algorithms', data=[]),  # 存储选中的算法列表
                     dcc.Store(id='key-force-interaction-selected-keys', data=[]),  # 存储选中的按键列表
                 ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
             ], width=12)

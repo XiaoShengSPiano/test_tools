@@ -454,9 +454,7 @@ class PlotGenerator:
         # 生成按键颜色
         key_colors = self._generate_key_colors(len(key_stats['all_keys']))
         
-        # 创建算法控制图注（按键用下拉菜单选择）
-        self._create_algorithm_control_legends(fig, algo_info['display_names'], algorithm_colors)
-        # 不再需要按键控制图注，改用UI中的下拉菜单
+        # 不需要算法控制图注，算法选择已移除
         
         # 添加数据散点
         self._add_multi_algorithm_data_traces(fig, algorithm_results, algo_info, key_stats, algorithm_colors, key_colors)
@@ -571,26 +569,28 @@ class PlotGenerator:
             ),
             showlegend=True,
             template='plotly_white',
-            height=600,
+            height=800,  # 增加高度，与其他散点图保持一致
             hovermode='closest',
             legend=dict(
-                orientation='v',
-                yanchor='top',
-                y=1,
+                x=0.01,  # 更靠左
+                y=1.02,  # 移到图表上方
                 xanchor='left',
-                x=1.02,
-                font=dict(size=11, color='rgba(0,0,0,1.0)')
+                yanchor='bottom',  # 从图注底部定位，这样会完全在图表上方
+                bgcolor='rgba(255,255,255,0.95)',
+                bordercolor='gray',
+                borderwidth=1,
+                font=dict(size=10),
+                orientation='h'  # 水平排列图注
             ),
             uirevision='key-force-interaction'
         )
 
     def _generate_adaptive_y_axis_config(self, delays):
-        """生成Y轴配置 - 针对相对延时数据使用固定5ms刻度"""
-        # 相对延时一般都在0ms附近，使用固定的5ms刻度间隔
-        # 范围设置为±50ms，适合大多数相对延时数据
+        """生成Y轴配置 - 相对延时使用合理的固定范围"""
+        # 相对延时一般都在0附近，使用 ±10ms 范围，比原来的 ±50ms 更合理
         return {
-            'range': [-50, 50],
-            'dtick': 5,  # 固定5ms刻度间隔
+            'range': [-10, 10],
+            'dtick': 2,  # 2ms刻度间隔
             'tickformat': '.1f'
         }
 
@@ -641,33 +641,10 @@ class PlotGenerator:
 
         return tick_positions, tick_texts
     
-    def _create_algorithm_control_legends(self, fig, algorithm_names, algorithm_colors):
-        """创建算法控制图注（独立的图例组）"""
-        
-        for alg_idx, algorithm_name in enumerate(algorithm_names):
-            algorithm_color = algorithm_colors[alg_idx % len(algorithm_colors)]
-            
-            # 控制图注：空数据，只在图例中显示
-            fig.add_trace(go.Scatter(
-                x=[],  # 空数组，不绘制任何点
-                y=[],
-                mode='markers',
-                name=algorithm_name,  # 算法名称
-                marker=dict(
-                    size=12,
-                    color=algorithm_color,
-                    symbol='circle',
-                    opacity=0.6
-                ),
-                legendgroup='algorithm_control',
-                visible=True,
-                showlegend=True,
-                hoverinfo='skip'
-            ))
     
     def _add_multi_algorithm_data_traces(self, fig, algorithm_results, algo_info, key_stats, algorithm_colors, key_colors):
         """为多算法模式添加数据散点
-        
+
         数据源：已配对的按键数据
         横轴：log₁₀(播放锤速)
         纵轴：锤速差值（播放锤速 - 录制锤速）
@@ -675,25 +652,34 @@ class PlotGenerator:
         internal_names = algo_info['internal_names']
         display_names = algo_info['display_names']
         all_keys = key_stats['all_keys']
-        
+
+        # 跟踪已添加图注的算法，避免重复显示
+        legend_added_algorithms = set()
+
         # 为每个算法的每个按键创建散点trace
         for alg_idx, alg_internal_name in enumerate(internal_names):
             alg_result = algorithm_results[alg_internal_name]
             alg_display_name = display_names[alg_idx]
             alg_color = algorithm_colors[alg_idx % len(algorithm_colors)]
-            
+
             interaction_data = alg_result.get('interaction_plot_data', {})
             key_data = interaction_data.get('key_data', {})
-            
+
+            # 决定是否为此算法显示图注（每个算法只显示一次）
+            show_legend_for_algorithm = alg_display_name not in legend_added_algorithms
+            if show_legend_for_algorithm:
+                legend_added_algorithms.add(alg_display_name)
+
             for key_idx, key_id in enumerate(all_keys):
                 if key_id not in key_data:
                     continue
-                
+
                 # 提取数据并添加trace
                 self._add_single_trace(
                     fig, key_data[key_id], key_id,
                     alg_display_name, alg_color,
-                    key_idx, key_colors
+                    key_idx, key_colors,
+                    show_legend_for_algorithm if key_idx == 0 else False  # 只为每个算法的第一个按键显示图注
                 )
     
     def _add_single_algorithm_data_traces(self, fig, key_data, key_colors):
@@ -713,7 +699,7 @@ class PlotGenerator:
                 key_colors=key_colors
             )
     
-    def _add_single_trace(self, fig, data, key_id, algorithm_name, algorithm_color, key_idx, key_colors):
+    def _add_single_trace(self, fig, data, key_id, algorithm_name, algorithm_color, key_idx, key_colors, show_legend=None):
         """添加单个散点trace
         
         Args:
@@ -744,27 +730,41 @@ class PlotGenerator:
         # 计算log10锤速
         log10_vels = [math.log10(v) for v in replay_vels]
         
-        # 构建customdata: [key_id, replay_velocity, relative_delay, absolute_delay, algorithm_name, mean_delay]
-        customdata = [[key_id, rv, rd, ad, algorithm_name if algorithm_name else '', mean_delay] 
-                     for rv, rd, ad in zip(replay_vels, rel_delays, abs_delays)]
+        # 构建customdata: [key_id, algorithm_name, replay_velocity, relative_delay, absolute_delay, record_index, replay_index]
+        # 从数据中提取索引信息
+        record_indices = data.get('record_indices', [])
+        replay_indices = data.get('replay_indices', [])
+
+        if len(record_indices) == len(replay_vels) and len(replay_indices) == len(replay_vels):
+            # 如果有对应的索引信息，使用它
+            customdata = [[key_id, algorithm_name if algorithm_name else '', rv, rd, ad, record_indices[i], replay_indices[i]]
+                         for i, (rv, rd, ad) in enumerate(zip(replay_vels, rel_delays, abs_delays))]
+        else:
+            # 如果没有索引信息，填充None
+            logger.warning(f"⚠️ 按键 {key_id} 缺少索引信息: record_indices={len(record_indices)}, replay_indices={len(replay_indices)}, data_points={len(replay_vels)}")
+            customdata = [[key_id, algorithm_name if algorithm_name else '', rv, rd, ad, None, None]
+                         for rv, rd, ad in zip(replay_vels, rel_delays, abs_delays)]
         
         # 确定颜色和图例
         if algorithm_name:  # 多算法模式
             color = algorithm_color
-            showlegend = False
-            legendgroup = f'data_{algorithm_name}_key_{key_id}'
+            showlegend = show_legend if show_legend is not None else True
+            # 所有同一个算法的trace使用相同的legendgroup，确保图注点击能控制所有相关数据点
+            legendgroup = f'algorithm_{algorithm_name}'
+            name = algorithm_name  # 使用算法名称作为图注
             hover_prefix = f'<b>{algorithm_name}</b><br>'
         else:  # 单算法模式
             color = key_colors[key_idx % len(key_colors)]
             showlegend = True
             legendgroup = f'key_{key_id}'
+            name = f'按键 {key_id}'
             hover_prefix = ''
         
         fig.add_trace(go.Scatter(
             x=log10_vels,
             y=rel_delays,
             mode='markers',
-            name=f'按键 {key_id}' if not algorithm_name else None,
+            name=name,
             marker=dict(
                 size=8 if algorithm_name else 10,
                 color=color,
