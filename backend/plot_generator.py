@@ -15,6 +15,7 @@ import traceback
 import numpy as np
 from typing import Optional, Tuple, Any, Dict
 from utils.logger import Logger
+from utils.colors import ALGORITHM_COLOR_PALETTE
 
 # 绘图相关导入
 import spmid
@@ -247,24 +248,6 @@ class PlotGenerator:
 
         return detail_figure1, detail_figure2, detail_figure_combined
     
-    def get_note_image_base64(self, global_index: int) -> str:
-        """
-        获取音符图像Base64编码
-        
-        Args:
-            global_index: 全局索引
-            
-        Returns:
-            str: Base64编码的图像
-        """
-        try:
-            # 这里需要根据global_index找到对应的错误音符
-            # 暂时返回空字符串，具体实现需要根据数据结构调整
-            return ""
-        except Exception as e:
-            logger.error(f"获取音符图像失败: {e}")
-            return ""
-    
     def _create_empty_plot(self, message: str) -> Any:
         """
         创建空图表
@@ -355,8 +338,6 @@ class PlotGenerator:
             Any: Plotly图表对象
         """
         try:
-
-            
             descriptive_stats = analysis_result.get('descriptive_stats', [])
             if not descriptive_stats:
                 return self._create_empty_plot("没有描述性统计数据")
@@ -453,8 +434,6 @@ class PlotGenerator:
         
         # 生成按键颜色
         key_colors = self._generate_key_colors(len(key_stats['all_keys']))
-        
-        # 不需要算法控制图注，算法选择已移除
         
         # 添加数据散点
         self._add_multi_algorithm_data_traces(fig, algorithm_results, algo_info, key_stats, algorithm_colors, key_colors)
@@ -644,7 +623,7 @@ class PlotGenerator:
     
     def _add_multi_algorithm_data_traces(self, fig, algorithm_results, algo_info, key_stats, algorithm_colors, key_colors):
         """为多算法模式添加数据散点
-
+        
         数据源：已配对的按键数据
         横轴：log₁₀(播放锤速)
         纵轴：锤速差值（播放锤速 - 录制锤速）
@@ -655,16 +634,16 @@ class PlotGenerator:
 
         # 跟踪已添加图注的算法，避免重复显示
         legend_added_algorithms = set()
-
+        
         # 为每个算法的每个按键创建散点trace
         for alg_idx, alg_internal_name in enumerate(internal_names):
             alg_result = algorithm_results[alg_internal_name]
             alg_display_name = display_names[alg_idx]
             alg_color = algorithm_colors[alg_idx % len(algorithm_colors)]
-
+            
             interaction_data = alg_result.get('interaction_plot_data', {})
             key_data = interaction_data.get('key_data', {})
-
+            
             # 决定是否为此算法显示图注（每个算法只显示一次）
             show_legend_for_algorithm = alg_display_name not in legend_added_algorithms
             if show_legend_for_algorithm:
@@ -673,7 +652,7 @@ class PlotGenerator:
             for key_idx, key_id in enumerate(all_keys):
                 if key_id not in key_data:
                     continue
-
+                
                 # 提取数据并添加trace
                 self._add_single_trace(
                     fig, key_data[key_id], key_id,
@@ -743,7 +722,7 @@ class PlotGenerator:
             # 如果没有索引信息，填充None
             logger.warning(f"⚠️ 按键 {key_id} 缺少索引信息: record_indices={len(record_indices)}, replay_indices={len(replay_indices)}, data_points={len(replay_vels)}")
             customdata = [[key_id, algorithm_name if algorithm_name else '', rv, rd, ad, None, None]
-                         for rv, rd, ad in zip(replay_vels, rel_delays, abs_delays)]
+                     for rv, rd, ad in zip(replay_vels, rel_delays, abs_delays)]
         
         # 确定颜色和图例
         if algorithm_name:  # 多算法模式
@@ -809,9 +788,8 @@ class PlotGenerator:
             
             fig = go.Figure()
             
-            # 定义算法颜色
-            algorithm_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', 
-                              '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
+            # 使用全局算法颜色方案
+            algorithm_colors = ALGORITHM_COLOR_PALETTE
             
             if is_multi_algorithm and algorithm_results:
                 # 多算法模式

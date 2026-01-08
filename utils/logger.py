@@ -243,17 +243,3 @@ class Logger:
             stats = {'error': str(e)}
         
         return stats
-
-    @classmethod
-    def log_system_info(cls):
-        """记录系统信息"""
-        if cls._logger:
-            import sys
-            import platform
-            cls._logger.info("=" * 50)
-            cls._logger.info("🖥️ 系统信息")
-            cls._logger.info(f"Python版本: {sys.version}")
-            cls._logger.info(f"操作系统: {platform.system()} {platform.release()}")
-            cls._logger.info(f"架构: {platform.machine()}")
-            cls._logger.info(f"当前时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            cls._logger.info("=" * 50)

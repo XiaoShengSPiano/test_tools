@@ -169,7 +169,8 @@ class WaterfallJumpHandler:
 
     def _calculate_time_multi_algorithm(self, algorithm_name, record_idx, replay_idx, is_error_table, backend):
         """多算法模式下的时间计算"""
-        if not (backend.multi_algorithm_mode and backend.multi_algorithm_manager):
+        active_algorithms = backend.multi_algorithm_manager.get_active_algorithms() if backend.multi_algorithm_manager else []
+        if len(active_algorithms) <= 1:
             return None
 
         algorithm = backend.multi_algorithm_manager.get_algorithm(algorithm_name)
@@ -198,10 +199,11 @@ class WaterfallJumpHandler:
 
     def _calculate_time_single_algorithm(self, record_idx, replay_idx, is_error_table, backend):
         """单算法模式下的时间计算"""
-        if not backend.analyzer or not backend.analyzer.note_matcher:
+        analyzer = backend._get_current_analyzer()
+        if not analyzer or not analyzer.note_matcher:
             return None
 
-        matched_pairs = backend.analyzer.matched_pairs
+        matched_pairs = analyzer.matched_pairs
         logger.info(f"🔍 单算法模式: 找到 {len(matched_pairs)} 个匹配对")
 
         # 首先尝试从 matched_pairs 获取时间
@@ -210,13 +212,13 @@ class WaterfallJumpHandler:
         if center_time_ms is None and is_error_table:
             # 备用方案：从 initial_valid_data 获取时间信息
             center_time_ms = self._calculate_from_initial_data_single(
-                backend.analyzer, record_idx, replay_idx
+                analyzer, record_idx, replay_idx
             )
 
         if center_time_ms is None:
             # 备用方案2：从 offset_data 获取时间信息
             center_time_ms = self._calculate_from_offset_data_single(
-                backend.analyzer, record_idx, replay_idx
+                analyzer, record_idx, replay_idx
             )
 
         return center_time_ms
@@ -284,7 +286,7 @@ class WaterfallJumpHandler:
     def _extract_time_from_note(self, note):
         """从音符对象中提取时间信息"""
         if hasattr(note, 'after_touch') and not note.after_touch.empty:
-            return (note.after_touch.index[0] + note.offset) / 10.0
+            return note.key_on_ms
         elif hasattr(note, 'hammers') and not note.hammers.empty:
             return (note.hammers.index[0] + note.offset) / 10.0
         elif hasattr(note, 'offset'):
@@ -373,7 +375,8 @@ class WaterfallJumpHandler:
                 # 丢锤：record类型，不需要添加0.2偏移
                 logger.info(f"🔍 丢锤：不添加0.2偏移，marker_y={marker_y}")
 
-        if algorithm_name and backend.multi_algorithm_mode and backend.multi_algorithm_manager:
+        active_algorithms = backend.multi_algorithm_manager.get_active_algorithms() if backend.multi_algorithm_manager else []
+        if algorithm_name and len(active_algorithms) > 1:
             # 多算法模式：需要找到该算法对应的y偏移
             marker_y = self._apply_algorithm_y_offset(marker_y, algorithm_name, backend)
         else:

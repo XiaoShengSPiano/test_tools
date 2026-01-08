@@ -257,7 +257,8 @@ class DelayValueClickHandler:
         """查找其他算法中匹配的音符"""
         other_algorithm_notes = []  # [(algorithm_name, play_note), ...]
 
-        if backend.multi_algorithm_mode and backend.multi_algorithm_manager:
+        active_algorithms = backend.multi_algorithm_manager.get_active_algorithms() if backend.multi_algorithm_manager else []
+        if len(active_algorithms) > 1:
             active_algorithms = backend.multi_algorithm_manager.get_active_algorithms()
             for alg in active_algorithms:
                 if alg.metadata.algorithm_name == algorithm_name:
@@ -281,7 +282,8 @@ class DelayValueClickHandler:
         mean_delays = {}
 
         # 在多算法模式下从算法对象的统计数据中获取
-        if backend.multi_algorithm_mode and backend.multi_algorithm_manager:
+        active_algorithms = backend.multi_algorithm_manager.get_active_algorithms() if backend.multi_algorithm_manager else []
+        if len(active_algorithms) > 1:
             active_algorithms = backend.multi_algorithm_manager.get_active_algorithms()
             target_algorithm = None
             for alg in active_algorithms:
@@ -300,8 +302,9 @@ class DelayValueClickHandler:
                 mean_delays[algorithm_name] = 0.0
         else:
             # 单算法模式直接从backend获取
-            if backend.analyzer:
-                mean_error_0_1ms = backend.analyzer.get_mean_error()
+            analyzer = backend._get_current_analyzer()
+            if analyzer:
+                mean_error_0_1ms = analyzer.get_mean_error()
                 mean_delays[algorithm_name] = mean_error_0_1ms / 10.0
                 logger.info(f"[OK] 从单算法分析器获取平均延时: {mean_delays[algorithm_name]:.2f}ms")
             else:
@@ -314,10 +317,7 @@ class DelayValueClickHandler:
                                   other_algorithm_notes, mean_delays, record_index, replay_index) -> Dict[str, Any]:
         """生成对比曲线图并准备返回数据"""
         try:
-            logger.info(f"[DEBUG] 调用 spmid.plot_note_comparison_plotly")
-            logger.info(f"[DEBUG] 参数: record_note={type(record_note)}, replay_note={type(replay_note)}")
-            logger.info(f"[DEBUG] 参数: algorithm_name={algorithm_name}, other_notes_count={len(other_algorithm_notes)}")
-            logger.info(f"[DEBUG] 参数: mean_delays={mean_delays} (使用已计算的平均延时进行时间轴调整)")
+            
 
             # 生成对比曲线（包含其他算法的播放曲线和平均延时偏移）
             import spmid

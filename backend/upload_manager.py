@@ -19,7 +19,7 @@ class UploadManager:
         统一的文件上传处理入口
 
         Args:
-            contents: 上传文件的内容（base64编码）
+            contents: 上传文件的内容（二进制数据）
             filename: 上传文件的文件名
 
         Returns:
@@ -51,15 +51,6 @@ class UploadManager:
         self.backend._last_history_time = None
         self.backend._data_source = None
 
-        # 清除一致性验证状态，确保每次上传都会重新验证
-        self.backend._last_analysis_hash = None
-        self.backend._last_overview_metrics = None
-
-        # 如果有多算法管理器，也清除其一致性状态
-        if hasattr(self.backend, 'multi_algorithm_manager') and self.backend.multi_algorithm_manager:
-            for algorithm in self.backend.multi_algorithm_manager.algorithms.values():
-                algorithm._last_algorithm_hash = None
-                algorithm._last_overview_metrics = None
 
     def _validate_upload_input(self, contents: Optional[str], filename: Optional[str]) -> Tuple[bool, Optional[Dict[str, Any]], Optional[str]]:
         """验证上传输入"""

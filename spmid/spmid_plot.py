@@ -460,8 +460,11 @@ def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None, oth
                 x_after_touch_adjusted = (play_note.after_touch.index + play_note.offset) / 10.0 - mean_delay_ms
                 x_after_touch_actual = (play_note.after_touch.index + play_note.offset) / 10.0  # 实际播放时间（偏移前）
                 y_after_touch = play_note.after_touch.values  # 触后压力值
-                # 构建包含算法名称的图注名称
-                alg_prefix = f"{algorithm_name} - " if algorithm_name else ""
+                # 构建包含算法名称的图注名称（单算法模式不显示算法名称）
+                if algorithm_name and other_algorithm_notes:  # 只有在多算法模式下才显示算法名称
+                    alg_prefix = f"{algorithm_name} - "
+                else:
+                    alg_prefix = ""
                 play_name_adjusted = f'{alg_prefix}回放触后(调整后)'  # 调整后的曲线名称
                 play_name_original = f'{alg_prefix}回放触后(原始)'  # 原始曲线名称
                 # 当前算法的触后和锤子为一组
@@ -506,7 +509,7 @@ def plot_note_comparison_plotly(record_note, play_note, algorithm_name=None, oth
                 # 计算绝对时间：相对时间 + offset，转换为 ms（锤子不进行时间偏移）
                 x_hammers = (play_note.hammers.index + play_note.offset) / 10.0  # 锤子使用原始时间，不偏移
                 y_hammers = play_note.hammers.values  # 锤子速度值
-                play_name_hammer = f'{alg_prefix}回放锤子'  # 包含算法名称的锤子名称
+                play_name_hammer = f'{alg_prefix}回放锤子'  # 包含算法名称的锤子名称（单算法模式不显示算法名称）
                 # 当前算法的触后和锤子为一组
                 alg_group = f'algorithm_{algorithm_name}' if algorithm_name else 'algorithm_default'
 

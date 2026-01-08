@@ -61,7 +61,8 @@ def register_session_callbacks(app, session_manager: SessionManager, history_man
 
         try:
             # 获取实际的时间范围
-            time_range = backend.get_time_range()
+            filter_info = backend.get_filter_info()
+            time_range = filter_info['time_range']
             time_min, time_max = time_range
 
             # 确保时间范围是有效的

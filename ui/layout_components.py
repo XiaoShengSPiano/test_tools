@@ -26,8 +26,8 @@ GRADE_CONFIGS = [
     ('correct', '优秀 (≤20ms)', 'success'),
     ('minor', '良好 (20-30ms)', 'warning'),
     ('moderate', '一般 (30-50ms)', 'info'),
-    ('large', '较差 (50-1000ms)', 'danger'),
-    ('severe', '严重 (>1000ms)', 'dark')
+    ('large', '较差 (50-100ms)', 'danger'),
+    ('severe', '严重 (100-200ms)', 'dark')
     # 注意：不再显示失败匹配，因为匹配质量评级只统计成功匹配
 ]
 
@@ -751,7 +751,14 @@ def create_main_layout():
                             })
                         ], style={'position': 'relative', 'borderBottom': '1px solid #dee2e6'}),
                         html.Div([
-                            html.Div(id='key-curves-comparison-container', children=[])
+                            dcc.Tabs(id="key-curves-comparison-tabs", value="curves-tab", children=[
+                                dcc.Tab(label="📈 曲线对比", value="curves-tab", children=[
+                                    html.Div(id='key-curves-comparison-container', children=[])
+                                ]),
+                                dcc.Tab(label="🔍 相似度分析", value="similarity-tab", children=[
+                                    create_similarity_analysis_ui()
+                                ])
+                            ])
                         ], id='key-curves-modal-content', className="modal-body", style={
                             'padding': '10px 20px 20px 20px',  # 减少顶部padding：从20px改为10px
                             'maxHeight': '90vh',
@@ -1396,7 +1403,7 @@ def _create_single_algorithm_error_tables(algorithm, algorithm_name):
         return drop_hammers_table, multi_hammers_table
         
     except Exception as e:
-        logger.error(f"❌ 创建算法 {algorithm_name} 错误表格失败: {e}")
+        logger.error(f"创建算法 {algorithm_name} 错误表格失败: {e}")
         logger.error(traceback.format_exc())
         return None, None
 
@@ -1461,13 +1468,13 @@ def create_report_layout(backend):
     all_rows = []
 
     # 检查是否有数据可以显示（单算法或多算法）
-    has_data = bool(active_algorithms) or (hasattr(backend, 'analyzer') and backend.analyzer)
+    has_data = bool(active_algorithms) or (backend._get_current_analyzer() is not None)
 
     # 获取数据源信息（在所有模式下都需要）
     source_info = backend.get_data_source_info() if hasattr(backend, 'get_data_source_info') else {}
 
     # 处理单算法模式
-    if not active_algorithms and hasattr(backend, 'analyzer') and backend.analyzer:
+    if not active_algorithms and backend._get_current_analyzer() is not None:
         # 单算法模式：显示评级统计
         graded_rows = []  # 初始化变量
         if backend and hasattr(backend, 'get_graded_error_stats'):
@@ -1544,9 +1551,10 @@ def create_report_layout(backend):
             )
 
         # 添加其他单算法内容（数据概览、延时误差统计、错误表格等）
-        if hasattr(backend, 'analyzer') and backend.analyzer:
-            overview_row = _create_single_algorithm_overview_row(backend.analyzer, data_source, backend)
-            error_stats_row = _create_single_algorithm_error_stats_row(backend.analyzer, data_source)
+        analyzer = backend._get_current_analyzer()
+        if analyzer:
+            overview_row = _create_single_algorithm_overview_row(analyzer, data_source, backend)
+            error_stats_row = _create_single_algorithm_error_stats_row(analyzer, data_source)
 
             if overview_row:
                 layout_rows.append(overview_row)
@@ -1555,22 +1563,12 @@ def create_report_layout(backend):
 
         # 返回单算法模式的完整布局
         return html.Div([
-            dcc.Download(id='download-pdf'),
             dbc.Container([
                 dbc.Row([
                     dbc.Col([
                         html.H2(f"分析报告 - {data_source}", className="text-center mb-3",
                                style={'color': '#2E86AB', 'fontWeight': 'bold', 'textShadow': '1px 1px 2px rgba(0,0,0,0.1)'}),
-                    ], width=8),
-                    dbc.Col([
-                        html.Div([
-                            dbc.Button([
-                                html.I(className="fas fa-file-pdf", style={'marginRight': '8px'}),
-                                "导出PDF报告"
-                            ], id='btn-export-pdf', color='danger', size='sm', className='mb-2'),
-                            html.Div(id='pdf-status')
-                        ], className="text-end")
-                    ], width=4)
+                    ], width=12)
                 ], className="mb-4"),
 
                 # 单算法内容
@@ -1606,7 +1604,7 @@ def create_report_layout(backend):
                 ]),
 
                 # 错误表格（单算法模式）
-                _create_single_algorithm_error_tables(backend.analyzer, data_source) if hasattr(backend, 'analyzer') and backend.analyzer else html.Div(),
+                _create_single_algorithm_error_tables(analyzer, data_source) if analyzer else html.Div(),
 
             ], fluid=True),
         ], style={'padding': '20px'})
@@ -1784,9 +1782,10 @@ def create_report_layout(backend):
                     logger.warning(f"创建算法 {algorithm.metadata.algorithm_name} 的评级统计卡片失败: {e}")
     else:
         # 单算法模式：汇总显示评级统计
-        if backend and backend.analyzer and backend.analyzer.note_matcher:
+        analyzer = backend._get_current_analyzer() if backend else None
+        if analyzer and analyzer.note_matcher:
             try:
-                graded_stats = backend.analyzer.note_matcher.get_graded_error_stats()
+                graded_stats = analyzer.note_matcher.get_graded_error_stats()
                 if graded_stats and 'error' not in graded_stats:
                     # 构建评级统计内容
                     graded_rows = []
@@ -1813,8 +1812,8 @@ def create_report_layout(backend):
                             ('correct', '优秀 (≤20ms)', 'success'),
                             ('minor', '良好 (20-30ms)', 'warning'),
                             ('moderate', '一般 (30-50ms)', 'info'),
-                            ('large', '较差 (50-1000ms)', 'danger'),
-                            ('severe', '严重 (>1000ms)', 'dark')
+                            ('large', '较差 (50-100ms)', 'danger'),
+                            ('severe', '严重 (100-200ms)', 'dark')
                             # 注意：不再显示失败匹配，只统计成功匹配的质量分布
                         ]
 
@@ -1866,25 +1865,19 @@ def create_report_layout(backend):
 
     # 数据源信息已在前面获取
     data_source = source_info.get('filename') or "多算法对比"
-    
-    
+
+    # 添加持续时间差异表格区域
+    duration_diff_table_row = _create_duration_diff_table_row(backend, active_algorithms)
+    if duration_diff_table_row:
+        all_rows.append(duration_diff_table_row)
+
     return html.Div([
-        dcc.Download(id='download-pdf'),
         dbc.Container([
             dbc.Row([
                 dbc.Col([
                     html.H2(f"分析报告 - {data_source}", className="text-center mb-3",
                            style={'color': '#2E86AB', 'fontWeight': 'bold', 'textShadow': '1px 1px 2px rgba(0,0,0,0.1)'}),
-                ], width=8),
-                dbc.Col([
-                    html.Div([
-                        dbc.Button([
-                            html.I(className="fas fa-file-pdf", style={'marginRight': '8px'}),
-                            "导出PDF报告"
-                        ], id='btn-export-pdf', color='danger', size='sm', className='mb-2'),
-                        html.Div(id='pdf-status')
-                    ], className="text-end")
-                ], width=4)
+                ], width=12)
             ], className="mb-4"),
 
                 # 多算法数据概览和延时误差统计指标（每个算法一行）
@@ -1967,7 +1960,7 @@ def create_report_layout(backend):
     ], width=12)
         ]),
 
-        # 按键与延时Z-Score标准化散点图区域
+        # 按键与延时Z-Score标准化散点图区域（算法数量<2时隐藏）
         dbc.Row([
             dbc.Col([
                 html.Div([
@@ -1984,9 +1977,10 @@ def create_report_layout(backend):
                     ),
                 ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
                     ], width=12)
-                ]),
+                ], style={'display': 'none'} if not (hasattr(backend, 'get_active_algorithms') and
+                       len(backend.get_active_algorithms()) >= 2) else {}),
 
-                # 锤速与延时Z-Score标准化散点图区域
+                # 锤速与延时Z-Score标准化散点图区域（算法数量<2时隐藏）
                 dbc.Row([
                     dbc.Col([
                         html.Div([
@@ -2003,7 +1997,8 @@ def create_report_layout(backend):
                             ),
                         ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
             ], width=12)
-        ]),
+        ], style={'display': 'none'} if not (hasattr(backend, 'get_active_algorithms') and
+                       len(backend.get_active_algorithms()) >= 2) else {}),
 
         # 锤速对比图区域
         dbc.Row([
@@ -2147,22 +2142,6 @@ def create_report_layout(backend):
                                 html.Div(id='delay-histogram-selection-info',
                                         style={'marginBottom': '10px', 'fontSize': '14px', 'fontWeight': 'bold', 'color': '#2c3e50'}),
                             ], width=8),
-                            dbc.Col([
-                                dbc.Button([
-                                    html.I(className="fas fa-download", style={'marginRight': '8px'}),
-                                    "导出CSV"
-                                ], id='export-delay-histogram-csv', color='success', size='sm',
-                                   style={'marginTop': '10px'}),
-                                html.Div(id='export-delay-histogram-status',
-                                        style={'marginTop': '5px', 'fontSize': '12px'}),
-                                dbc.Button([
-                                    html.I(className="fas fa-flask", style={'marginRight': '8px'}),
-                                    "导出匹配前数据(测试)"
-                                ], id='export-pre-match-csv', color='warning', size='sm',
-                                   style={'marginTop': '5px'}),
-                                html.Div(id='export-pre-match-status',
-                                        style={'marginTop': '2px', 'fontSize': '12px'})
-                            ], width=4, style={'textAlign': 'right'})
                         ]),
                         dash_table.DataTable(
                             id='delay-histogram-detail-table',
@@ -2246,8 +2225,9 @@ def create_report_layout(backend):
                                 style_cell_conditional=(
                                     # 多算法模式：添加算法名称列的宽度
                                     [{'if': {'column_id': 'algorithm_name'}, 'width': '12%'}] if (
-                                        hasattr(backend, 'is_multi_algorithm_mode') and 
-                                        backend.is_multi_algorithm_mode()
+                                        hasattr(backend, 'multi_algorithm_manager') and
+                                        backend.multi_algorithm_manager and
+                                        len(backend.multi_algorithm_manager.get_active_algorithms()) > 1
                                     ) else []
                                 ) + [
                                     {'if': {'column_id': 'data_type'}, 'width': '14%'},
@@ -2345,8 +2325,9 @@ def create_report_layout(backend):
                                 style_cell_conditional=(
                                     # 多算法模式：添加算法名称列的宽度
                                     [{'if': {'column_id': 'algorithm_name'}, 'width': '12%'}] if (
-                                        hasattr(backend, 'is_multi_algorithm_mode') and 
-                                        backend.is_multi_algorithm_mode()
+                                        hasattr(backend, 'multi_algorithm_manager') and
+                                        backend.multi_algorithm_manager and
+                                        len(backend.multi_algorithm_manager.get_active_algorithms()) > 1
                                     ) else []
                                 ) + [
                                     {'if': {'column_id': 'data_type'}, 'width': '14%'},
@@ -2543,7 +2524,7 @@ def create_report_layout(backend):
                                     {"name": "极差(ms)", "id": "range"},
                                 {"name": "状态", "id": "status"}
                             ],
-                            data=backend.get_offset_alignment_data(),
+                            data=active_algorithms[0].get_offset_alignment_data() if active_algorithms else [],
                                 page_action='none',
                             style_cell={
                                 'textAlign': 'center',
@@ -2859,3 +2840,234 @@ def create_curve_alignment_test_area():
             ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
         ], width=12)
     ])
+
+    # 相似度详情模态框
+    html.Div([
+        html.Div([
+            html.Div([
+                html.Div([
+                    html.H4("相似度详情", style={'margin': '0', 'padding': '10px 20px', 'borderBottom': '1px solid #dee2e6'}),
+                    html.Button("×", id="close-similarity-detail-modal", className="close", style={
+                        'position': 'absolute',
+                        'right': '15px',
+                        'top': '15px',
+                        'fontSize': '28px',
+                        'fontWeight': 'bold',
+                        'background': 'none',
+                        'border': 'none',
+                        'cursor': 'pointer',
+                        'color': '#aaa'
+                    })
+                ], style={'position': 'relative', 'borderBottom': '1px solid #dee2e6'}),
+                html.Div([
+                    html.Div(id='similarity-detail-content', children=[])
+                ], id='similarity-detail-modal-body', className="modal-body", style={
+                    'padding': '20px',
+                    'maxHeight': '70vh',
+                    'overflowY': 'auto'
+                }),
+                html.Div([
+                    html.Button(
+                        "关闭",
+                        id="close-similarity-detail-modal-btn",
+                        className="btn btn-primary",
+                        style={
+                            'backgroundColor': '#007bff',
+                            'borderColor': '#007bff',
+                            'padding': '8px 20px',
+                            'borderRadius': '5px',
+                            'border': 'none',
+                            'color': 'white',
+                            'cursor': 'pointer'
+                        }
+                    )
+                ], className="modal-footer", style={
+                    'borderTop': '1px solid #dee2e6',
+                    'padding': '15px 20px',
+                    'textAlign': 'right'
+                })
+            ], className="modal-content", style={
+                'backgroundColor': 'white',
+                'margin': '5% auto',
+                'padding': '0',
+                'border': 'none',
+                'width': '80%',
+                'maxWidth': '1000px',
+                'borderRadius': '10px',
+                'boxShadow': '0 4px 20px rgba(0,0,0,0.3)',
+                'maxHeight': '90vh'
+            })
+        ], id="similarity-detail-modal", className="modal", style={
+            'display': 'none',
+            'position': 'fixed',
+            'zIndex': '10000',
+            'left': '0',
+            'top': '0',
+            'width': '100%',
+            'height': '100%',
+            'backgroundColor': 'rgba(0,0,0,0.7)',
+            'backdropFilter': 'blur(5px)'
+        })
+    ]),
+
+
+def _create_duration_diff_table_row(backend, active_algorithms):
+    """创建持续时间差异表格行"""
+    try:
+        # 获取持续时间差异数据
+        duration_diff_data = _get_duration_diff_data(backend, active_algorithms)
+        if not duration_diff_data:
+            return None
+
+        return dbc.Row([
+            dbc.Col([
+                dbc.Card([
+                    dbc.CardHeader([
+                        html.H4([
+                            html.I(className="fas fa-scissors", style={'marginRight': '10px', 'color': '#17a2b8'}),
+                            "拆分的按键数据"
+                        ], className="mb-0")
+                    ]),
+                    dbc.CardBody([
+                        html.P(f"找到 {len(duration_diff_data)} 个需要拆分的按键数据",
+                               className="text-muted mb-3"),
+                        dash_table.DataTable(
+                            id='duration-diff-table',
+                            columns=[
+                                {"name": "序号", "id": "index", "type": "numeric"},
+                                {"name": "按键ID", "id": "key_id", "type": "text"},
+                                {"name": "录制索引", "id": "record_idx", "type": "numeric"},
+                                {"name": "播放索引", "id": "replay_idx", "type": "numeric"},
+                                {"name": "录制持续时间(ms)", "id": "record_duration", "type": "numeric", "format": {"specifier": ".1f"}},
+                                {"name": "播放持续时间(ms)", "id": "replay_duration", "type": "numeric", "format": {"specifier": ".1f"}},
+                                {"name": "持续时间比值", "id": "duration_ratio", "type": "numeric", "format": {"specifier": ".2f"}},
+                                {"name": "录制keyon(ms)", "id": "record_keyon", "type": "numeric", "format": {"specifier": ".1f"}},
+                                {"name": "录制keyoff(ms)", "id": "record_keyoff", "type": "numeric", "format": {"specifier": ".1f"}},
+                                {"name": "播放keyon(ms)", "id": "replay_keyon", "type": "numeric", "format": {"specifier": ".1f"}},
+                                {"name": "播放keyoff(ms)", "id": "replay_keyoff", "type": "numeric", "format": {"specifier": ".1f"}}
+                            ],
+                            data=duration_diff_data,
+                            page_size=15,
+                            style_table={
+                                "overflowX": "auto",
+                                "maxHeight": "500px"
+                            },
+                            style_cell={
+                                "textAlign": "center",
+                                "padding": "8px",
+                                "minWidth": "80px",
+                                "maxWidth": "150px",
+                                "fontSize": "14px",
+                                "fontFamily": "Arial, sans-serif"
+                            },
+                            style_header={
+                                "backgroundColor": "#f8f9fa",
+                                "fontWeight": "bold",
+                                "borderBottom": "2px solid #dee2e6"
+                            },
+                            style_data_conditional=[
+                                {
+                                    'if': {'state': 'active'},
+                                    'backgroundColor': 'rgba(0, 116, 217, 0.1)',
+                                    'border': '1px solid rgb(0, 116, 217)'
+                                },
+                                {
+                                    'if': {'state': 'selected'},
+                                    'backgroundColor': 'rgba(0, 116, 217, 0.2)',
+                                    'border': '1px solid rgb(0, 116, 217)'
+                                }
+                            ],
+                            style_data={
+                                'cursor': 'pointer'
+                            },
+                            sort_action="native",
+                            sort_by=[{"column_id": "record_keyon", "direction": "asc"}],
+                            filter_action="none",
+                            row_selectable=False,
+                            cell_selectable=True,
+                            tooltip_header={
+                                "index": "匹配对序号",
+                                "key_id": "钢琴按键ID",
+                                "record_idx": "录制数据中的索引",
+                                "replay_idx": "播放数据中的索引",
+                                "record_duration": "录制时的按键持续时间",
+                                "replay_duration": "播放时的按键持续时间",
+                                "duration_ratio": "播放持续时间/录制持续时间"
+                            }
+                        )
+                    ])
+                ], className="shadow-sm mb-4")
+            ], width=12)
+        ])
+
+    except Exception as e:
+        logger.error(f"创建持续时间差异表格失败: {e}")
+        return None
+
+
+def _get_duration_diff_data(backend, active_algorithms):
+    """获取持续时间差异数据"""
+    try:
+        duration_diff_pairs = []
+
+        # 从算法中获取持续时间差异数据
+        if active_algorithms:
+            # 多算法模式
+            for algorithm in active_algorithms:
+                if hasattr(algorithm.analyzer, "note_matcher") and hasattr(algorithm.analyzer.note_matcher, "duration_diff_pairs"):
+                    diff_pairs = algorithm.analyzer.note_matcher.duration_diff_pairs
+                    if diff_pairs:
+                        duration_diff_pairs.extend(diff_pairs)
+        elif backend and hasattr(backend, "_get_current_analyzer"):
+            # 单算法模式
+            analyzer = backend._get_current_analyzer()
+            if analyzer and hasattr(analyzer, "note_matcher") and hasattr(analyzer.note_matcher, "duration_diff_pairs"):
+                diff_pairs = analyzer.note_matcher.duration_diff_pairs
+                if diff_pairs:
+                    duration_diff_pairs.extend(diff_pairs)
+
+        if not duration_diff_pairs:
+            return []
+
+        # 转换为表格数据格式
+        table_data = []
+        for i, pair in enumerate(duration_diff_pairs):
+            if len(pair) >= 11:
+                record_idx, replay_idx, record_note, replay_note, record_duration, replay_duration, duration_ratio, record_keyon, record_keyoff, replay_keyon, replay_keyoff = pair
+
+                table_data.append({
+                    "index": i + 1,
+                    "key_id": record_note.id if record_note else "N/A",
+                    "record_idx": record_idx,
+                    "replay_idx": replay_idx,
+                    "record_duration": float(record_duration),
+                    "replay_duration": float(replay_duration),
+                    "duration_ratio": float(duration_ratio),
+                    "record_keyon": float(record_keyon) if record_keyon is not None else None,
+                    "record_keyoff": float(record_keyoff) if record_keyoff is not None else None,
+                    "replay_keyon": float(replay_keyon) if replay_keyon is not None else None,
+                    "replay_keyoff": float(replay_keyoff) if replay_keyoff is not None else None
+                })
+
+        # 默认按 record_keyon 升序排序（在表格组件中设置）
+
+        return table_data
+
+    except Exception as e:
+        logger.error(f"获取持续时间差异数据失败: {e}")
+        return []
+
+
+def create_similarity_analysis_ui():
+    """创建相似度分析UI组件"""
+    return html.Div([
+        # 加载提示
+        html.Div([
+            html.Div([
+                html.I(className="fas fa-spinner fa-spin me-2"),
+                "正在分析相似度..."
+            ], className="text-muted text-center", style={'padding': '40px'})
+        ], id="similarity-loading-indicator", style={'display': 'none'}),
+        # 分析结果容器
+        html.Div(id="similarity-analysis-results", children=[])
+    ], className="mb-4")

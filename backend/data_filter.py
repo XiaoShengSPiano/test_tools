@@ -51,7 +51,7 @@ class DataFilter:
         self.available_keys.update(self._collect_keys_from_notes(self.valid_record_data))
         self.available_keys.update(self._collect_keys_from_notes(self.valid_replay_data))
 
-        logger.info(f"✅ 可用按键更新完成: {len(self.available_keys)}个按键")
+        logger.info(f"可用按键更新完成: {len(self.available_keys)}个按键")
     
     def get_available_keys(self) -> List[int]:
         """
@@ -71,10 +71,10 @@ class DataFilter:
         """
         if key_ids is None:
             self.key_filter.clear()
-            logger.info("✅ 按键过滤已清除")
+            logger.info("按键过滤已清除")
         else:
             self.key_filter = set(key_ids)
-            logger.info(f"✅ 按键过滤已设置: {len(self.key_filter)}个按键")
+            logger.info(f"按键过滤已设置: {len(self.key_filter)}个按键")
     
     def get_key_filter_status(self) -> Dict[str, Any]:
         """

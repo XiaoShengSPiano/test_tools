@@ -60,45 +60,70 @@ class SPMIDAnalyzer:
     def analyze(self, record_data: List[Note], replay_data: List[Note]) -> Tuple[List[ErrorNote], List[ErrorNote], List[ErrorNote], List[Note], List[Note], dict, List[Tuple[int, int, Note, Note]]]:
         """
         执行完整的SPMID数据分析
-        
+
         分析流程：
         1. 初始化各个分析组件
         2. 过滤有效音符数据
-        3. 计算全局时间偏移量（DTW）
-        4. 执行按键匹配
-        5. 分析异常（多锤、丢锤、不发声）
+        3. 执行按键匹配
+        4. 分析异常（多锤、丢锤、不发声）
+        5. 提取正常匹配的音符对
         6. 生成统计报告
-        
+
         Args:
             record_data: 录制数据
             replay_data: 播放数据
-        
+
         Returns:
             tuple: (multi_hammers, drop_hammers, silent_hammers, matched_record_data, matched_replay_data, invalid_notes_table_data, matched_pairs)
         """
-        logger.info("🎯 开始SPMID数据分析")
-        
+        import time
+        total_start_time = time.time()
+        logger.info("开始SPMID数据分析")
+
         # 步骤1：初始化各个分析组件
         self._initialize_components()
-        
+        # TODO
         # 步骤2：过滤有效音符数据
+        import time
+        filter_start_time = time.time()
+        logger.info(f"开始数据过滤: 录制数据{len(record_data)}个音符, 播放数据{len(replay_data)}个音符")
+
         self.valid_record_data, self.valid_replay_data, invalid_counts = self.data_filter.filter_valid_notes_data(record_data, replay_data)
+
+        filter_end_time = time.time()
+        filter_duration = filter_end_time - filter_start_time
+        logger.info(f"数据过滤完成: 耗时{filter_duration:.3f}秒, 录制有效{len(self.valid_record_data)}个, 播放有效{len(self.valid_replay_data)}个")
         
-        # 保存第一次过滤后的数据用于准确率计算
+        # 保存第一次过滤后的数据快照，用于准确率计算和UI显示异常音符详情
         self.initial_valid_record_data = self.valid_record_data.copy()
         self.initial_valid_replay_data = self.valid_replay_data.copy()
         
         # 步骤3：执行按键匹配
+        import time
+        matching_start_time = time.time()
+        logger.info(f"开始按键匹配: 录制数据{len(self.valid_record_data)}个音符, 播放数据{len(self.valid_replay_data)}个音符")
+
         self.matched_pairs = self.note_matcher.find_all_matched_pairs(self.valid_record_data, self.valid_replay_data)
+
+        matching_end_time = time.time()
+        matching_duration = matching_end_time - matching_start_time
+        logger.info(f"按键匹配完成: 耗时{matching_duration:.3f}秒, 匹配对{len(self.matched_pairs)}个")
         
         # 保存匹配统计信息
         self.match_statistics = self.note_matcher.match_statistics
         
         # 步骤4：分析异常（传递note_matcher以便识别超过阈值的匹配对）
+        error_analysis_start_time = time.time()
+        logger.info(f"开始异常检测: 匹配对{len(self.matched_pairs)}个")
+
         self.drop_hammers, self.multi_hammers = self.error_detector.analyze_hammer_issues(
             self.valid_record_data, self.valid_replay_data, self.matched_pairs,
             note_matcher=self.note_matcher
         )
+
+        error_analysis_end_time = time.time()
+        error_analysis_duration = error_analysis_end_time - error_analysis_start_time
+        logger.info(f"异常检测完成: 耗时{error_analysis_duration:.3f}秒, 丢锤{len(self.drop_hammers)}个, 多锤{len(self.multi_hammers)}个")
         
         # 步骤6：提取正常匹配的音符对
         matched_record_data, matched_replay_data = self.note_matcher.extract_normal_matched_pairs(
@@ -120,8 +145,12 @@ class SPMIDAnalyzer:
         
         # 步骤10：生成分析统计
         self._generate_analysis_stats()
-        
-        logger.info("✅ SPMID数据分析完成")
+
+        # 计算总耗时并输出性能统计
+        total_end_time = time.time()
+        total_duration = total_end_time - total_start_time
+        logger.info(f"🎉 SPMID数据分析完成: 总耗时{total_duration:.3f}秒")
+        logger.info(f"📊 性能统计: 过滤{filter_duration:.3f}s | 匹配{matching_duration:.3f}s | 异常检测{error_analysis_duration:.3f}s")
         
         return (self.multi_hammers, self.drop_hammers, self.silent_hammers, 
                 self.valid_record_data, self.valid_replay_data, 
@@ -134,12 +163,10 @@ class SPMIDAnalyzer:
         
         # 初始化各个组件
         self.data_filter = DataFilter(threshold_checker)
-        # self.time_aligner = TimeAligner()  # 已删除时序对齐功能
         self.note_matcher = NoteMatcher()
         self.error_detector = ErrorDetector()
-        self.dtw_aligner = DTWAligner()  # DTW时间对齐器
         
-        logger.info("✅ 所有分析组件初始化完成")
+        logger.info("所有分析组件初始化完成")
     
     def _initialize_threshold_checker(self) -> MotorThresholdChecker:
         """初始化电机阈值检查器"""
@@ -302,54 +329,6 @@ class SPMIDAnalyzer:
             return self.note_matcher.get_precision_offset_alignment_data()
         return []
     
-    def perform_dtw_alignment(self, window_size: Optional[int] = None) -> Dict[str, Any]:
-        """
-        基于已匹配的按键对执行DTW时间对齐
-        
-        Args:
-            window_size: DTW窗口大小，None表示无限制。用于限制对齐范围，避免过度扭曲
-        
-        Returns:
-            Dict[str, Any]: DTW对齐结果，包含：
-                - alignment_path: DTW对齐路径
-                - record_times: 录制时间序列（ms单位）
-                - replay_times: 播放时间序列（ms单位）
-                - dtw_distance: DTW距离
-                - fixed_delay: 固定延迟估计（ms）
-                - time_warping: 时间扭曲系数
-                等其他字段
-        """
-        if not self.dtw_aligner:
-            logger.warning("⚠️ DTW对齐器未初始化")
-            return {}
-        
-        if not self.note_matcher:
-            logger.warning("⚠️ 按键匹配器未初始化，无法执行DTW对齐")
-            return {}
-        
-        # 获取偏移对齐数据
-        offset_data = self.get_offset_alignment_data()
-        if not offset_data:
-            logger.warning("⚠️ 没有偏移对齐数据，无法执行DTW对齐")
-            return {}
-        
-        # 如果指定了窗口大小，更新对齐器配置
-        if window_size is not None:
-            self.dtw_aligner.window_size = window_size
-        
-        # 执行DTW对齐
-        return self.dtw_aligner.align(offset_data)
-    
-    def get_dtw_alignment_result(self) -> Optional[Dict[str, Any]]:
-        """
-        获取DTW对齐结果（如果已执行）
-        
-        Returns:
-            Optional[Dict[str, Any]]: DTW对齐结果，如果未执行则返回None
-        """
-        if self.dtw_aligner:
-            return self.dtw_aligner.get_alignment_result()
-        return None
     
     def get_invalid_notes_offset_analysis(self) -> List[Dict[str, Any]]:
         """

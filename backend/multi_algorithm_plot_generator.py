@@ -13,6 +13,7 @@ import plotly.graph_objects as go
 import numpy as np
 from backend.multi_algorithm_manager import AlgorithmDataset
 from utils.logger import Logger
+from utils.colors import ALGORITHM_COLOR_PALETTE
 
 logger = Logger.get_logger()
 
@@ -36,19 +37,10 @@ class MultiAlgorithmPlotGenerator:
         """
         self.data_filter = data_filter
         
-        # 定义标准颜色列表，用于区分不同算法
-        self.COLORS = [
-            '#1f77b4',  # 蓝色
-            '#ff7f0e',  # 橙色
-            '#2ca02c',  # 绿色
-            '#d62728',  # 红色
-            '#9467bd',  # 紫色
-            '#8c564b',  # 棕色
-            '#e377c2',  # 粉色
-            '#7f7f7f'   # 灰色
-        ]
+        # 使用全局颜色方案
+        self.COLORS = ALGORITHM_COLOR_PALETTE
         
-        logger.info("✅ MultiAlgorithmPlotGenerator初始化完成")
+        logger.info("MultiAlgorithmPlotGenerator初始化完成")
     
     def generate_unified_waterfall_plot(
         self,
@@ -76,12 +68,12 @@ class MultiAlgorithmPlotGenerator:
             go.Figure: Plotly图表对象
         """
         if not analyzers:
-            logger.warning("⚠️ 没有分析器，无法生成瀑布图")
+            logger.warning("没有分析器，无法生成瀑布图")
             return self._create_empty_plot("没有分析器")
 
         try:
             mode_str = "多算法" if is_multi_algorithm else "单算法"
-            logger.info(f"📊 开始生成瀑布图，模式: {mode_str}，共 {len(analyzers)} 个分析器")
+            logger.info(f"开始生成瀑布图，模式: {mode_str}，共 {len(analyzers)} 个分析器")
 
             # 为多算法分配y_offset范围（确保明确区分）
             if is_multi_algorithm:
@@ -103,9 +95,9 @@ class MultiAlgorithmPlotGenerator:
                     # 单算法模式
                     avg_delay_0_1ms = backend.get_global_average_delay()
                     avg_delay_ms = avg_delay_0_1ms / 10.0
-                logger.info(f"📊 使用平均延时: {avg_delay_ms:.2f}ms")
+                logger.info(f"使用平均延时: {avg_delay_ms:.2f}ms")
             except Exception as e:
-                logger.warning(f"⚠️ 获取平均延时失败: {e}，使用默认值0.0ms")
+                logger.warning(f"获取平均延时失败: {e}，使用默认值0.0ms")
             
             # 收集所有数据点用于全局归一化
             all_values = []
@@ -114,10 +106,10 @@ class MultiAlgorithmPlotGenerator:
             # 处理每个分析器
             for alg_idx, (analyzer, algorithm_name) in enumerate(zip(analyzers, algorithm_names)):
                 if not analyzer:
-                    logger.warning(f"⚠️ 分析器 '{algorithm_name}' 为空，跳过")
+                    logger.warning(f"分析器 '{algorithm_name}' 为空，跳过")
                     continue
                 
-                logger.info(f"📊 处理分析器 '{algorithm_name}': 生成包含所有数据的瀑布图")
+                logger.info(f"处理分析器 '{algorithm_name}': 生成包含所有数据的瀑布图")
 
                 # 计算当前算法的y_offset
                 current_y_offset = alg_idx * algorithm_y_range if is_multi_algorithm else 0
@@ -142,7 +134,7 @@ class MultiAlgorithmPlotGenerator:
                 })
             
             if not all_bars_by_algorithm:
-                logger.warning("⚠️ 没有有效的数据点，无法生成瀑布图")
+                logger.warning("没有有效的数据点，无法生成瀑布图")
                 return self._create_empty_plot("没有有效的数据点")
             
             # 全局归一化力度值（用于颜色映射）
@@ -170,7 +162,7 @@ class MultiAlgorithmPlotGenerator:
                 bars = alg_data['bars']
                 algorithm_name = alg_data['algorithm_name']
                 
-                logger.info(f"📊 算法 '{algorithm_name}': 准备绘制 {len(bars)} 个bars")
+                logger.info(f"算法 '{algorithm_name}': 准备绘制 {len(bars)} 个bars")
                 
                 for bar in bars:
                     total_bars += 1
@@ -219,30 +211,14 @@ class MultiAlgorithmPlotGenerator:
             # 配置图表布局
             self._configure_unified_waterfall_layout(fig, all_bars_by_algorithm, is_multi_algorithm)
 
-            logger.info(f"✅ 瀑布图生成成功: 总计 {total_bars} 个bars (匹配对: {matched_bars}, 丢锤: {drop_hammer_bars}, 多锤: {multi_hammer_bars})")
+            logger.info(f"瀑布图生成成功: 总计 {total_bars} 个bars (匹配对: {matched_bars}, 丢锤: {drop_hammer_bars}, 多锤: {multi_hammer_bars})")
             return fig
 
         except Exception as e:
-            logger.error(f"❌ 生成瀑布图失败: {e}")
+            logger.error(f"生成瀑布图失败: {e}")
             logger.error(traceback.format_exc())
             return self._create_empty_plot(f"生成瀑布图失败: {str(e)}")
-        """
-        生成多算法瀑布图（按照原来的实现方式，叠加显示，不同算法有明确的范围区分）
-        
-        为每个算法分配不同的y_offset范围，确保即使颜色一样也能明确区分。
-        使用原来的颜色映射方式（基于力度值的colormap）。
-        
-        Args:
-            algorithms: 激活的算法数据集列表
-            time_filter: 时间过滤器实例（可选）
-            
-        Returns:
-            go.Figure: Plotly图表对象
-        """
-        if not algorithms:
-            logger.debug("ℹ️ 没有激活的算法，跳过多算法瀑布图生成")
-            return self._create_empty_plot("没有激活的算法")
-        
+
     def _collect_algorithm_comprehensive_data(self, analyzer, y_offset: float, algorithm_name: str, alg_idx: int, avg_delay_ms: float = 0.0) -> List[Dict]:
         """
         收集单个算法的完整瀑布图数据：匹配对 + 丢锤 + 多锤
@@ -261,25 +237,25 @@ class MultiAlgorithmPlotGenerator:
         """
         algorithm_bars = []
 
-        logger.info(f"📊 开始收集算法 '{algorithm_name}' 的瀑布图数据")
+        logger.info(f"开始收集算法 '{algorithm_name}' 的瀑布图数据")
 
         # 1. 收集匹配对数据（成功和失败的匹配）
         matched_bars = self._collect_matched_pair_data(analyzer, y_offset, algorithm_name, avg_delay_ms)
         algorithm_bars.extend(matched_bars)
-        logger.info(f"📊 匹配对数据: {len(matched_bars)} 个bars")
+        logger.info(f"匹配对数据: {len(matched_bars)} 个bars")
 
         # 2. 收集丢锤数据
         drop_hammer_bars = self._collect_drop_hammer_data(analyzer, y_offset, algorithm_name)
         algorithm_bars.extend(drop_hammer_bars)
-        logger.info(f"📊 丢锤数据: {len(drop_hammer_bars)} 个bars")
+        logger.info(f"丢锤数据: {len(drop_hammer_bars)} 个bars")
 
         # 3. 收集多锤数据
         multi_hammer_bars = self._collect_multi_hammer_data(analyzer, y_offset, algorithm_name)
         algorithm_bars.extend(multi_hammer_bars)
-        logger.info(f"📊 多锤数据: {len(multi_hammer_bars)} 个bars")
+        logger.info(f"多锤数据: {len(multi_hammer_bars)} 个bars")
 
         total_bars = len(algorithm_bars)
-        logger.info(f"✅ 算法 '{algorithm_name}' 数据收集完成: 总计 {total_bars} 个瀑布图条形")
+        logger.info(f"算法 '{algorithm_name}' 数据收集完成: 总计 {total_bars} 个瀑布图条形")
 
         return algorithm_bars
 
@@ -371,7 +347,7 @@ class MultiAlgorithmPlotGenerator:
             logger.info("没有丢锤数据")
             return bars
 
-        logger.info(f"🪓 开始收集丢锤数据: {len(drop_hammers)} 个")
+        logger.info(f"开始收集丢锤数据: {len(drop_hammers)} 个")
 
         for idx, error_note in enumerate(drop_hammers):
             try:
@@ -406,13 +382,13 @@ class MultiAlgorithmPlotGenerator:
 
                     logger.info(f"丢锤 #{idx} 处理完成")
                 else:
-                    logger.warning(f"⚠️ 丢锤 #{idx} 缺少after_touch数据，跳过")
+                    logger.warning(f"丢锤 #{idx} 缺少after_touch数据，跳过")
 
             except Exception as e:
-                logger.error(f"❌ 处理丢锤 #{idx} 失败: {e}")
+                logger.error(f"处理丢锤 #{idx} 失败: {e}")
                 continue
 
-        logger.info(f"✅ 丢锤数据收集完成: {len(bars)} 个bars")
+        logger.info(f"丢锤数据收集完成: {len(bars)} 个bars")
         return bars
 
     def _collect_multi_hammer_data(self, analyzer, y_offset: float, algorithm_name: str) -> List[Dict]:
@@ -432,7 +408,7 @@ class MultiAlgorithmPlotGenerator:
         initial_valid_replay_data = getattr(analyzer, 'initial_valid_replay_data', [])
 
         if not multi_hammers:
-            logger.info("ℹ️ 没有多锤数据")
+            logger.info("没有多锤数据")
             return bars
 
         logger.info(f"🔨 开始收集多锤数据: {len(multi_hammers)} 个")
@@ -468,15 +444,15 @@ class MultiAlgorithmPlotGenerator:
                                      f'按键释放: {bar["t_off"]/10:.2f}ms<br>' + \
                                      f'错误类型: 多锤 (录制数据缺失)<br>'
 
-                    logger.info(f"✅ 多锤 #{idx} 处理完成")
+                    logger.info(f"多锤 #{idx} 处理完成")
                 else:
-                    logger.warning(f"⚠️ 多锤 #{idx} 缺少after_touch数据，跳过")
+                    logger.warning(f"多锤 #{idx} 缺少after_touch数据，跳过")
 
             except Exception as e:
-                logger.error(f"❌ 处理多锤 #{idx} 失败: {e}")
+                logger.error(f"处理多锤 #{idx} 失败: {e}")
                 continue
 
-        logger.info(f"✅ 多锤数据收集完成: {len(bars)} 个bars")
+        logger.info(f"多锤数据收集完成: {len(bars)} 个bars")
         return bars
 
     def _calculate_match_grading(self, result, record_note, replay_note, avg_delay_ms: float):
@@ -530,7 +506,7 @@ class MultiAlgorithmPlotGenerator:
         if index is None or index < 0:
             return False
         if index >= data_length:
-            logger.warning(f"🚫 索引超出范围: {index} >= {data_length}")
+            logger.warning(f"索引超出范围: {index} >= {data_length}")
             return False
         return True
 
@@ -570,11 +546,11 @@ class MultiAlgorithmPlotGenerator:
                     break
 
             if replay_info:
-                logger.info(f"🔗 合并键位 {record_key_id}: 录制和播放数据配对成功")
+                logger.info(f"合并键位 {record_key_id}: 录制和播放数据配对成功")
 
                 # 获取record的原始文本
                 original_text = record_bar.get('text', '')
-                logger.info(f"📝 原始record文本长度: {len(original_text)}")
+                logger.info(f"原始record文本长度: {len(original_text)}")
 
                 # 提取replay相关的完整信息
                 replay_velocity = replay_info.get('raw_velocity', 'N/A')
@@ -605,7 +581,7 @@ class MultiAlgorithmPlotGenerator:
                 merged_text = original_text + replay_section
 
                 record_bar['text'] = merged_text
-                logger.debug(f"🎯 合并完成 - 最终文本长度: {len(merged_text)}, 包含播放数据: {'播放数据:' in merged_text}")
+                logger.debug(f"合并完成 - 最终文本长度: {len(merged_text)}, 包含播放数据: {'播放数据:' in merged_text}")
 
                 # 为replay bar创建独立的悬停信息
                 replay_text = '<b>播放数据:</b><br>' + \
@@ -622,7 +598,7 @@ class MultiAlgorithmPlotGenerator:
                              f'按键释放: {replay_key_release:.2f}ms<br>'
                 replay_info['text'] = replay_text
             else:
-                logger.warning(f"⚠️ 键位 {record_key_id}: 未找到对应的播放数据，无法合并hover信息")
+                logger.warning(f"键位 {record_key_id}: 未找到对应的播放数据，无法合并hover信息")
                 # 为没有匹配播放数据的record bar添加提示
                 original_text = record_bar.get('text', '')
                 no_replay_section = '<br><b>播放数据:</b><br>未找到匹配的播放数据<br>'
@@ -858,17 +834,8 @@ class MultiAlgorithmPlotGenerator:
             
             logger.info(f"📊 开始生成多算法偏移对齐分析图，共 {len(ready_algorithms)} 个算法")
             
-            # 为每个算法分配颜色（使用不同的颜色方案）
-            colors = [
-                '#1f77b4',  # 蓝色
-                '#ff7f0e',  # 橙色
-                '#2ca02c',  # 绿色
-                '#d62728',  # 红色
-                '#9467bd',  # 紫色
-                '#8c564b',  # 棕色
-                '#e377c2',  # 粉色
-                '#7f7f7f'   # 灰色
-            ]
+            # 为每个算法分配颜色（使用全局颜色方案）
+            colors = ALGORITHM_COLOR_PALETTE
             
             # 收集所有算法的数据
             all_algorithms_data = []
@@ -887,7 +854,6 @@ class MultiAlgorithmPlotGenerator:
                     
                     # 按按键ID分组并计算统计信息
                     from collections import defaultdict
-                    import numpy as np
                     
                     # 计算该算法的平均延时（用于计算相对延时）
                     me_0_1ms = algorithm.analyzer.get_mean_error() if hasattr(algorithm.analyzer, 'get_mean_error') else 0.0
@@ -1400,17 +1366,8 @@ class MultiAlgorithmPlotGenerator:
             
             logger.info(f"📊 开始生成多算法延时分布直方图，共 {len(ready_algorithms)} 个算法")
             
-            # 为每个算法分配颜色（使用不同的颜色方案）
-            colors = [
-                '#1f77b4',  # 蓝色
-                '#ff7f0e',  # 橙色
-                '#2ca02c',  # 绿色
-                '#d62728',  # 红色
-                '#9467bd',  # 紫色
-                '#8c564b',  # 棕色
-                '#e377c2',  # 粉色
-                '#7f7f7f'   # 灰色
-            ]
+            # 为每个算法分配颜色（使用全局颜色方案）
+            colors = ALGORITHM_COLOR_PALETTE
             
             
             
@@ -1575,29 +1532,29 @@ class MultiAlgorithmPlotGenerator:
             go.Figure: Plotly图表对象
         """
         if not algorithms:
-            logger.debug("ℹ️ 没有激活的算法，跳过多算法按键与延时散点图生成")
+            logger.debug("没有激活的算法，跳过多算法按键与延时散点图生成")
             return self._create_empty_plot("没有激活的算法")
         
         try:
             # 首先根据 selected_algorithm_names 筛选算法（如果指定了的话）
             if selected_algorithm_names:
                 filtered_algorithms = [alg for alg in algorithms if alg.metadata.algorithm_name in selected_algorithm_names]
-                logger.info(f"🎯 根据用户选择筛选算法: {selected_algorithm_names} -> 找到 {len(filtered_algorithms)} 个匹配算法")
+                logger.info(f"根据用户选择筛选算法: {selected_algorithm_names} -> 找到 {len(filtered_algorithms)} 个匹配算法")
             else:
                 filtered_algorithms = algorithms
-                logger.info("🎯 未指定算法筛选，使用所有传入算法")
+                logger.info("未指定算法筛选，使用所有传入算法")
 
             # 过滤出激活且就绪的算法（确保只显示用户选择的算法）
             # 记录传入的算法状态，用于调试
             for alg in filtered_algorithms:
-                logger.debug(f"🔍 算法 '{alg.metadata.algorithm_name}': is_active={alg.is_active}, is_ready={alg.is_ready()}")
+                logger.debug(f"算法 '{alg.metadata.algorithm_name}': is_active={alg.is_active}, is_ready={alg.is_ready()}")
 
             ready_algorithms = [alg for alg in filtered_algorithms if alg.is_active and alg.is_ready()]
             if not ready_algorithms:
-                logger.warning("⚠️ 没有激活且就绪的算法，无法生成多算法按键与延时散点图")
+                logger.warning("没有激活且就绪的算法，无法生成多算法按键与延时散点图")
                 return self._create_empty_plot("没有激活的算法")
             
-            logger.info(f"📊 开始生成多算法按键与延时散点图，共 {len(ready_algorithms)} 个激活算法: {[alg.metadata.algorithm_name for alg in ready_algorithms]}")
+            logger.info(f"开始生成多算法按键与延时散点图，共 {len(ready_algorithms)} 个激活算法: {[alg.metadata.algorithm_name for alg in ready_algorithms]}")
             
             # 如果需要只显示公共按键，先计算交集
             common_keys = None
@@ -1612,25 +1569,14 @@ class MultiAlgorithmPlotGenerator:
                 
                 if key_sets:
                     common_keys = set.intersection(*key_sets)
-                    logger.info(f"🔒 只显示公共按键: 共 {len(common_keys)} 个")
+                    logger.info(f"只显示公共按键: 共 {len(common_keys)} 个")
                 else:
                     common_keys = set()
-                    logger.warning("⚠️ 没有找到任何公共按键")
+                    logger.warning("没有找到任何公共按键")
             
-            # 为每个算法分配颜色
-            colors = [
-                '#1f77b4',  # 蓝色
-                '#ff7f0e',  # 橙色
-                '#2ca02c',  # 绿色
-                '#d62728',  # 红色
-                '#9467bd',  # 紫色
-                '#8c564b',  # 棕色
-                '#e377c2',  # 粉色
-                '#7f7f7f'   # 灰色
-            ]
+            # 为每个算法分配颜色（使用全局颜色方案）
+            colors = ALGORITHM_COLOR_PALETTE
             
-            
-            import numpy as np
             fig = go.Figure()
             
             # 收集所有激活算法的数据和统计信息
@@ -1706,8 +1652,7 @@ class MultiAlgorithmPlotGenerator:
                             key_ids.append(key_id_int)
                             delays_ms.append(delay_ms)
                             # 添加customdata：包含record_index、replay_index、算法名称，用于点击时查找匹配对
-                            # 使用 display_name（用户输入的算法名称）而不是 algorithm_name（内部唯一标识）
-                            customdata_list.append([record_index, replay_index, key_id_int, delay_ms, display_name, record_hammer_time_ms, replay_hammer_time_ms])
+                            customdata_list.append([record_index, replay_index, key_id_int, delay_ms, filename, record_hammer_time_ms, replay_hammer_time_ms])
                         except (ValueError, TypeError):
                             continue
                     
@@ -1941,25 +1886,15 @@ class MultiAlgorithmPlotGenerator:
             # 过滤出激活且就绪的算法
             ready_algorithms = [alg for alg in algorithms if alg.is_active and alg.is_ready()]
             if not ready_algorithms:
-                logger.warning("⚠️ 没有激活且就绪的算法，无法生成Z-Score标准化散点图")
+                logger.warning("没有激活且就绪的算法，无法生成Z-Score标准化散点图")
                 return self._create_empty_plot("没有激活的算法")
             
-            logger.info(f"📊 开始生成多算法Z-Score标准化散点图，共 {len(ready_algorithms)} 个激活算法")
+            logger.info(f"开始生成多算法Z-Score标准化散点图，共 {len(ready_algorithms)} 个激活算法")
             
-            # 为每个算法分配颜色
-            colors = [
-                '#1f77b4',  # 蓝色
-                '#ff7f0e',  # 橙色
-                '#2ca02c',  # 绿色
-                '#d62728',  # 红色
-                '#9467bd',  # 紫色
-                '#8c564b',  # 棕色
-                '#e377c2',  # 粉色
-                '#7f7f7f'   # 灰色
-            ]
+            # 为每个算法分配颜色（使用全局颜色方案）
+            colors = ALGORITHM_COLOR_PALETTE
             
-            
-            import numpy as np
+    
             fig = go.Figure()
 
             # 用于收集所有算法的x轴范围
@@ -2036,7 +1971,7 @@ class MultiAlgorithmPlotGenerator:
                                 replay_index,
                                 key_id_int,
                                 delay_ms,  # 绝对延时
-                                display_name,  # 使用 display_name（用户输入的算法名称）而不是 algorithm_name（内部唯一标识）
+                                filename,  # 使用文件名作为图注显示
                                 record_hammer_time_ms,
                                 replay_hammer_time_ms
                             ])
@@ -2280,8 +2215,7 @@ class MultiAlgorithmPlotGenerator:
                         replay_index = item.get('replay_index')
                         # 自定义数据格式: [record_index, replay_index, delay_ms, algorithm_name]
                         # 这对于交互可能有用，但在此处主要用于hover
-                        # 使用 display_name（用户输入的算法名称）而不是 algorithm_name（内部唯一标识）
-                        customdata_list.append([record_index, replay_index, delay_ms, display_name])
+                        customdata_list.append([record_index, replay_index, delay_ms, algorithm.metadata.filename])
                 
                 if not key_delays:
                     continue
@@ -2361,32 +2295,20 @@ class MultiAlgorithmPlotGenerator:
             go.Figure: Plotly图表对象
         """
         if not algorithms:
-            logger.debug("ℹ️ 没有激活的算法，跳过多算法锤速与相对延时散点图生成")
+            logger.debug("没有激活的算法，跳过多算法锤速与相对延时散点图生成")
             return self._create_empty_plot("没有激活的算法")
 
         try:
             # 过滤出激活且就绪的算法
             ready_algorithms = [alg for alg in algorithms if alg.is_active and alg.is_ready()]
             if not ready_algorithms:
-                logger.warning("⚠️ 没有激活且就绪的算法，无法生成锤速与相对延时散点图")
+                logger.warning("没有激活且就绪的算法，无法生成锤速与相对延时散点图")
                 return self._create_empty_plot("没有激活的算法")
 
-            logger.info(f"📊 开始生成多算法锤速与相对延时散点图，共 {len(ready_algorithms)} 个激活算法")
+            logger.info(f"开始生成多算法锤速与相对延时散点图，共 {len(ready_algorithms)} 个激活算法")
 
-            # 为每个算法分配颜色
-            colors = [
-                '#1f77b4',  # 蓝色
-                '#ff7f0e',  # 橙色
-                '#2ca02c',  # 绿色
-                '#d62728',  # 红色
-                '#9467bd',  # 紫色
-                '#8c564b',  # 棕色
-                '#e377c2',  # 粉色
-                '#7f7f7f'   # 灰色
-            ]
-
-
-            import numpy as np
+            # 为每个算法分配颜色（使用全局颜色方案）
+            colors = ALGORITHM_COLOR_PALETTE
             
             fig = go.Figure()
 
@@ -2399,14 +2321,14 @@ class MultiAlgorithmPlotGenerator:
                 descriptive_name = f"{display_name} ({filename})"
 
                 if not algorithm.analyzer or not algorithm.analyzer.note_matcher:
-                    logger.warning(f"⚠️ 算法 '{descriptive_name}' 没有分析器或匹配器，跳过")
+                    logger.warning(f"算法 '{descriptive_name}' 没有分析器或匹配器，跳过")
                     continue
 
                 try:
                     matched_pairs = algorithm.analyzer.get_matched_pairs()
 
                     if not matched_pairs:
-                        logger.warning(f"⚠️ 算法 '{descriptive_name}' 没有匹配数据，跳过")
+                        logger.warning(f"算法 '{descriptive_name}' 没有匹配数据，跳过")
                         continue
 
                     offset_data = algorithm.analyzer.get_precision_offset_alignment_data()
@@ -2455,7 +2377,7 @@ class MultiAlgorithmPlotGenerator:
                         scatter_customdata.append([record_idx, replay_idx, display_name, key_id])
 
                     if not hammer_velocities:
-                        logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有有效的散点图数据，跳过")
+                        logger.warning(f"算法 '{algorithm_name}' 没有有效的散点图数据，跳过")
                         continue
 
                     # 获取该算法的总体均值和标准差，用于计算相对延时和阈值
@@ -2579,7 +2501,7 @@ class MultiAlgorithmPlotGenerator:
 
 
                 except Exception as e:
-                    logger.warning(f"⚠️ 获取算法 '{descriptive_name}' 的锤速与相对延时数据失败: {e}")
+                    logger.warning(f"获取算法 '{descriptive_name}' 的锤速与相对延时数据失败: {e}")
                     continue
 
             # 设置布局
@@ -2616,11 +2538,11 @@ class MultiAlgorithmPlotGenerator:
                 margin=dict(t=90, b=60, l=60, r=60)
             )
 
-            logger.info(f"✅ 多算法锤速与相对延时散点图生成成功，共 {len(ready_algorithms)} 个算法")
+            logger.info(f"多算法锤速与相对延时散点图生成成功，共 {len(ready_algorithms)} 个算法")
             return fig
 
         except Exception as e:
-            logger.error(f"❌ 生成多算法锤速与相对延时散点图失败: {e}")
+            logger.error(f"生成多算法锤速与相对延时散点图失败: {e}")
 
             logger.error(traceback.format_exc())
             return self._create_empty_plot(f"生成锤速与相对延时散点图失败: {str(e)}")
@@ -2639,7 +2561,7 @@ class MultiAlgorithmPlotGenerator:
             go.Figure: Plotly图表对象
         """
         if not algorithms:
-            logger.debug("ℹ️ 没有激活的算法，跳过多算法锤速与延时散点图生成")
+            logger.debug("没有激活的算法，跳过多算法锤速与延时散点图生成")
             return self._create_empty_plot("没有激活的算法")
         
         try:
@@ -2651,17 +2573,8 @@ class MultiAlgorithmPlotGenerator:
             
             logger.info(f"📊 开始生成多算法锤速与延时散点图，共 {len(ready_algorithms)} 个算法")
             
-            # 为每个算法分配颜色
-            colors = [
-                '#1f77b4',  # 蓝色
-                '#ff7f0e',  # 橙色
-                '#2ca02c',  # 绿色
-                '#d62728',  # 红色
-                '#9467bd',  # 紫色
-                '#8c564b',  # 棕色
-                '#e377c2',  # 粉色
-                '#7f7f7f'   # 灰色
-            ]
+            # 为每个算法分配颜色（使用全局颜色方案）
+            colors = ALGORITHM_COLOR_PALETTE
             
             
             fig = go.Figure()
@@ -2729,16 +2642,13 @@ class MultiAlgorithmPlotGenerator:
                         hammer_velocities.append(hammer_velocity)
                         delays_ms.append(delay_ms)
                         # 存储record_idx、replay_idx、algorithm_name和key_id，用于点击事件识别和显示
-                        # 使用 display_name（用户输入的算法名称）而不是 algorithm_name（内部唯一标识）
-                        scatter_customdata.append([record_idx, replay_idx, display_name, key_id])
+                        scatter_customdata.append([record_idx, replay_idx, filename, key_id])
                     
                     if not hammer_velocities:
                         logger.warning(f"⚠️ 算法 '{algorithm_name}' 没有有效的散点图数据，跳过")
                         continue
                     
                     # 计算Z-Score（与按键与延时Z-Score散点图相同的计算方式）
-                    import numpy as np
-                    
                     me_0_1ms = algorithm.analyzer.get_mean_error() if hasattr(algorithm.analyzer, 'get_mean_error') else 0.0
                     std_0_1ms = algorithm.analyzer.get_standard_deviation() if hasattr(algorithm.analyzer, 'get_standard_deviation') else 0.0
                     
@@ -3162,16 +3072,7 @@ class MultiAlgorithmPlotGenerator:
         Returns:
             List[str]: 颜色列表
         """
-        return [
-            '#1f77b4',  # 蓝色
-            '#ff7f0e',  # 橙色
-            '#2ca02c',  # 绿色
-            '#d62728',  # 红色
-            '#9467bd',  # 紫色
-            '#8c564b',  # 棕色
-            '#e377c2',  # 粉色
-            '#7f7f7f'   # 灰色
-        ]
+        return ALGORITHM_COLOR_PALETTE
 
     def _process_single_algorithm_data(self, algorithm: AlgorithmDataset) -> Optional[Dict[str, Any]]:
         """
@@ -3240,7 +3141,7 @@ class MultiAlgorithmPlotGenerator:
                 })
 
             if not data_points:
-                logger.warning(f"⚠️ 算法 '{display_name}' 没有有效时间序列数据，跳过")
+                logger.warning(f"算法 '{display_name}' 没有有效时间序列数据，跳过")
                 return None
 
             # 按时间排序，确保按时间顺序显示
@@ -3282,7 +3183,7 @@ class MultiAlgorithmPlotGenerator:
             }
 
         except Exception as e:
-            logger.warning(f"⚠️ 获取算法 '{display_name}' 的时间序列数据失败: {e}")
+            logger.warning(f"获取算法 '{display_name}' 的时间序列数据失败: {e}")
             return None
 
     def _create_relative_delay_traces(self, fig, algorithm_data: Dict[str, Any], color: str) -> None:
@@ -3404,7 +3305,6 @@ class MultiAlgorithmPlotGenerator:
             y_max = max(all_relative_delays)
 
             # 计算整体标准差
-            import numpy as np
             delays_array = np.array(all_relative_delays)
             overall_std_dev = np.std(delays_array)
 

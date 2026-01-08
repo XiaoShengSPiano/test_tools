@@ -95,10 +95,12 @@ class ScatterPlotHandler:
             return None
 
         # Z-Score散点图的customdata格式: [record_index, replay_index, key_id_int, delay_ms, algorithm_name]
+        # 单算法模式: [record_index, replay_index, key_id_int, delay_ms] (4个元素)
+        # 多算法模式: [record_index, replay_index, key_id_int, delay_ms, algorithm_name] (5个元素)
         record_index = customdata[0]
         replay_index = customdata[1]
         key_id = customdata[2] if len(customdata) > 2 else None
-        algorithm_name = customdata[4]
+        algorithm_name = customdata[4] if len(customdata) > 4 else None
 
         # logger.info(f"🖱️ Z-Score标准化散点图点击: 算法={algorithm_name}, record_index={record_index}, replay_index={replay_index}, key_id={key_id}")
 
@@ -166,7 +168,7 @@ class ScatterPlotHandler:
         # 获取分析器
         analyzer = self._get_analyzer_for_algorithm(backend, algorithm_name)
         if not analyzer:
-            logger.warning(f"⚠️ 无法获取分析器")
+            logger.warning(f"无法获取分析器")
             return None
 
         # 获取precision_matched_pairs - 处理单算法和多算法模式的差异
@@ -177,11 +179,11 @@ class ScatterPlotHandler:
             # 单算法模式：analyzer是SPMIDAnalyzer对象
             precision_matched_pairs = analyzer.note_matcher.precision_matched_pairs
         else:
-            logger.warning(f"⚠️ 无法获取precision_matched_pairs")
+            logger.warning(f"无法获取precision_matched_pairs")
             return None
 
         if not precision_matched_pairs:
-            logger.warning(f"⚠️ precision_matched_pairs为空")
+            logger.warning(f" precision_matched_pairs为空")
             return None
 
         # 从precision_matched_pairs中查找对应的Note对象
@@ -408,13 +410,17 @@ class ScatterPlotHandler:
             mean_error_0_1ms = algorithm.analyzer.get_mean_error()
             delay_value = mean_error_0_1ms / 10.0
             delay_key = algorithm_name
-        elif backend.analyzer:
-            # 单算法模式
-            mean_error_0_1ms = backend.analyzer.get_mean_error()
-            delay_value = mean_error_0_1ms / 10.0
-            delay_key = 'default'
         else:
-            error_msg = "后端没有分析器"
+            # 单算法模式
+            analyzer = backend._get_current_analyzer()
+            if analyzer:
+                mean_error_0_1ms = analyzer.get_mean_error()
+                delay_value = mean_error_0_1ms / 10.0
+                delay_key = 'default'
+            else:
+                error_msg = "后端没有分析器"
+                logger.error(f"[ERROR] {error_msg}")
+                raise RuntimeError(error_msg)
             logger.error(f"[ERROR] {error_msg}")
             raise RuntimeError(error_msg)
 
@@ -522,11 +528,16 @@ class ScatterPlotHandler:
                     if alg.metadata.display_name == algorithm_name:
                         return alg.analyzer
 
-                logger.warning(f"⚠️ 算法 '{algorithm_name}' 不存在（尝试了algorithm_name和display_name）")
+                # 如果还没找到，尝试作为filename查找
+                for alg in backend.multi_algorithm_manager.get_all_algorithms():
+                    if alg.metadata.filename == algorithm_name:
+                        return alg.analyzer
+
+                logger.warning(f"⚠️ 算法 '{algorithm_name}' 不存在（尝试了algorithm_name、display_name和filename）")
                 return None
             else:
                 # 单算法模式
-                return backend.analyzer
+                return backend._get_current_analyzer()
 
         except Exception as e:
             logger.error(f"[ERROR] 获取分析器失败: {e}")
@@ -660,14 +671,16 @@ class ScatterPlotHandler:
         ctx = callback_context
         if not ctx.triggered:
             logger.debug("[WARNING] Z-Score散点图点击回调：没有触发源")
-            return current_style, [], no_update, no_update
+            return no_update, no_update, no_update, no_update
 
         trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
 
-        # 如果点击了关闭按钮，隐藏模态框
+        # 如果点击了关闭按钮，只有当模态框是由本回调打开时才处理
         if trigger_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
-            result = self._handle_zscore_modal_close()
-            return result[0], result[1], result[2], result[3]
+            if current_style and current_style.get('display') == 'block' and zscore_scatter_clickData is not None:
+                result = self._handle_zscore_modal_close()
+                return result[0], result[1], result[2], result[3]
+            return no_update, no_update, no_update, no_update
 
         # 如果是Z-Score散点图点击
         if trigger_id == 'key-delay-zscore-scatter-plot' and zscore_scatter_clickData:
@@ -675,7 +688,7 @@ class ScatterPlotHandler:
             return result[0], result[1], result[2], no_update
 
         # 其他情况，返回默认值
-        return current_style, [], no_update, no_update
+        return no_update, no_update, no_update, no_update
 
     def handle_key_delay_scatter_click(self, scatter_clickData, close_modal_clicks, close_btn_clicks, session_id, current_style):
         """处理按键与相对延时散点图点击，显示曲线对比（悬浮窗）并支持跳转到瀑布图"""
@@ -683,14 +696,16 @@ class ScatterPlotHandler:
         ctx = callback_context
         if not ctx.triggered:
             logger.debug("[WARNING] 按键与相对延时散点图点击回调：没有触发源")
-            return current_style, [], no_update, no_update
+            return no_update, no_update, no_update, no_update
 
         trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
 
-        # 如果点击了关闭按钮，隐藏模态框
+        # 如果点击了关闭按钮，只有当模态框是由本回调打开时才处理
         if trigger_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
-            result = self._handle_zscore_modal_close()
-            return result[0], result[1], result[2], result[3]
+            if current_style and current_style.get('display') == 'block' and scatter_clickData is not None:
+                result = self._handle_zscore_modal_close()
+                return result[0], result[1], result[2], result[3]
+            return no_update, no_update, no_update, no_update
 
         # 如果是按键与相对延时散点图点击
         if trigger_id == 'key-delay-scatter-plot' and scatter_clickData:
@@ -699,7 +714,7 @@ class ScatterPlotHandler:
             return result[0], result[1], result[2], no_update
 
         # 其他情况，返回默认值
-        return current_style, [], no_update, no_update
+        return no_update, no_update, no_update, no_update
 
     def handle_hammer_velocity_scatter_click(self, scatter_clickData, close_modal_clicks, close_btn_clicks, session_id, current_style):
         """处理锤速与延时Z-Score标准化散点图点击，显示曲线对比（悬浮窗）"""
@@ -707,14 +722,21 @@ class ScatterPlotHandler:
         ctx = callback_context
         if not ctx.triggered:
             logger.debug("[WARNING] 锤速与延时Z-Score标准化散点图点击回调：没有触发源")
-            return current_style, [], no_update
+            return no_update, no_update, no_update
 
         trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
 
-        # 如果点击了关闭按钮，隐藏模态框
+        # 如果点击了关闭按钮，只有当模态框是显示状态时才处理
+        # 避免与其他回调冲突（如 duration-diff-table 的回调）
         if trigger_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
-            result = self._handle_zscore_modal_close()
-            return result[0], result[1], result[2]
+            # 检查模态框是否真的打开了（由本回调打开的）
+            if current_style and current_style.get('display') == 'block':
+                # 进一步检查：只有当有点击数据存在时才关闭（说明是从本回调打开的）
+                if scatter_clickData is not None:
+                    result = self._handle_zscore_modal_close()
+                    return result[0], result[1], result[2]
+            # 不是本回调打开的，不处理，让其他回调处理
+            return no_update, no_update, no_update
 
         # 如果是锤速与延时Z-Score标准化散点图点击
         if trigger_id == 'hammer-velocity-delay-scatter-plot' and scatter_clickData:
@@ -722,7 +744,7 @@ class ScatterPlotHandler:
             return result[0], result[1], result[2]
 
         # 其他情况，返回默认值
-        return current_style, [], no_update
+        return no_update, no_update, no_update
 
     def handle_hammer_velocity_relative_delay_plot_click(self, scatter_clickData, close_modal_clicks, close_btn_clicks, session_id, current_style):
         """处理锤速与延时Z-Score标准化散点图点击，显示曲线对比（悬浮窗）"""
@@ -730,14 +752,16 @@ class ScatterPlotHandler:
         ctx = callback_context
         if not ctx.triggered:
             logger.debug("[WARNING] 锤速与延时Z-Score标准化散点图点击回调：没有触发源")
-            return current_style, [], no_update, no_update
+            return no_update, no_update, no_update, no_update
 
         trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
 
-        # 如果点击了关闭按钮，隐藏模态框
+        # 如果点击了关闭按钮，只有当模态框是由本回调打开时才处理
         if trigger_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
-            result = self._handle_zscore_modal_close()
-            return result[0], result[1], result[2], result[3]
+            if current_style and current_style.get('display') == 'block' and scatter_clickData is not None:
+                result = self._handle_zscore_modal_close()
+                return result[0], result[1], result[2], result[3]
+            return no_update, no_update, no_update, no_update
 
         # 如果是锤速与延时Z-Score标准化散点图点击
         if trigger_id == 'hammer-velocity-relative-delay-scatter-plot' and scatter_clickData:
@@ -745,7 +769,7 @@ class ScatterPlotHandler:
             return result[0], result[1], result[2], no_update
 
         # 其他情况，返回默认值
-        return current_style, [], no_update, no_update
+        return no_update, no_update, no_update, no_update
 
     def _handle_hammer_velocity_relative_delay_plot_click(self, scatter_clickData, session_id, current_style, source_plot_id='hammer-velocity-relative-delay-scatter-plot'):
         """处理锤速与延时Z-Score标准化散点图点击的主要逻辑"""
@@ -962,84 +986,109 @@ class ScatterPlotHandler:
 
         return record_index, replay_index, key_id, algorithm_name
 
+    def _generate_scatter_plot_with_validation(self, session_id: str, backend_method, plot_name: str,
+                                             prerequisite_check=None, validation_func=None) -> Union[Any, NoUpdate]:
+        """
+        通用的散点图生成方法，包含会话管理、前提条件检查、错误处理
+
+        Args:
+            session_id: 会话ID
+            backend_method: 后端生成图表的方法
+            plot_name: 图表名称（用于日志）
+            prerequisite_check: 前提条件检查函数，返回(True, None)或(False, error_message)
+            validation_func: 图表验证函数，用于验证生成结果的正确性
+
+        Returns:
+            图表对象或NoUpdate
+        """
+        backend = self.session_manager.get_backend(session_id)
+        if not backend:
+            return no_update
+
+        try:
+            # 执行前提条件检查
+            if prerequisite_check:
+                check_passed, error_msg = prerequisite_check(backend)
+                if not check_passed:
+                    logger.warning(f"[WARNING] {error_msg}")
+                    return backend.plot_generator._create_empty_plot(error_msg)
+
+            # 生成图表
+            fig = backend_method()
+
+            # 执行验证（如果提供）
+            if validation_func and fig:
+                validation_func(fig)
+
+            logger.info(f"[OK] {plot_name}生成成功")
+            return fig
+
+        except Exception as e:
+            logger.error(f"[ERROR] 生成{plot_name}失败: {e}")
+            logger.error(traceback.format_exc())
+            return backend.plot_generator._create_empty_plot(f"生成{plot_name}失败: {str(e)}")
+
+    def _check_analyzer_or_multi_mode(self, backend):
+        """检查是否有至少2个活跃算法（Z-Score图表需要至少2个算法进行对比）"""
+        try:
+            active_algorithms = backend.get_active_algorithms()
+            has_at_least_two_algorithms = bool(active_algorithms) and len(active_algorithms) >= 2
+            return has_at_least_two_algorithms, "Z-Score标准化散点图需要至少2个算法进行对比"
+        except Exception:
+            return False, "获取激活算法失败"
+
+    def _check_active_algorithms(self, backend):
+        """检查是否有激活的算法"""
+        try:
+            active_algorithms = backend.get_active_algorithms()
+            return bool(active_algorithms), "没有激活的算法，跳过散点图生成"
+        except Exception:
+            return False, "获取激活算法失败"
+
+    def _check_at_least_two_algorithms(self, backend, error_message: str = "需要至少2个算法进行对比"):
+        """检查是否有至少2个激活的算法"""
+        try:
+            active_algorithms = backend.get_active_algorithms()
+            has_at_least_two = bool(active_algorithms) and len(active_algorithms) >= 2
+            return has_at_least_two, error_message
+        except Exception:
+            return False, "获取激活算法失败"
+
+    def _validate_zscore_plot(self, fig):
+        """验证Z-Score图表是否正确生成"""
+        if hasattr(fig, 'data') and len(fig.data) > 0:
+            first_trace = fig.data[0]
+            if hasattr(first_trace, 'y') and len(first_trace.y) > 0:
+                first_y = first_trace.y[0] if hasattr(first_trace.y, '__getitem__') else first_trace.y
+                logger.info(f"🔍 Z-Score图表验证: 第一个数据点的y值={first_y} (应该是Z-Score值，通常在-3到3之间)")
+
     def generate_zscore_scatter_plot(self, session_id: str) -> Union[Any, NoUpdate]:
         """生成按键与延时Z-Score标准化散点图"""
-        backend = self.session_manager.get_backend(session_id)
-        if not backend:
-            return no_update
-
-        try:
-            # 检查是否有分析数据
-            if not backend.analyzer and not (hasattr(backend, 'multi_algorithm_mode') and backend.multi_algorithm_mode):
-                logger.warning("[WARNING] 没有分析器，无法生成Z-Score标准化散点图")
-                return backend.plot_generator._create_empty_plot("没有分析器")
-
-            # 生成Z-Score标准化散点图
-            zscore_fig = backend.generate_key_delay_zscore_scatter_plot()
-
-            # 验证Z-Score图表是否正确生成
-            if zscore_fig and hasattr(zscore_fig, 'data') and len(zscore_fig.data) > 0:
-                # 检查第一个数据点的y值是否是Z-Score（应该在-3到3之间，而不是原始的延时值）
-                first_trace = zscore_fig.data[0]
-                if hasattr(first_trace, 'y') and len(first_trace.y) > 0:
-                    first_y = first_trace.y[0] if hasattr(first_trace.y, '__getitem__') else first_trace.y
-                    logger.info(f"🔍 Z-Score图表验证: 第一个数据点的y值={first_y} (应该是Z-Score值，通常在-3到3之间)")
-
-            logger.info("[OK] 按键与延时Z-Score标准化散点图生成成功")
-            return zscore_fig
-
-        except Exception as e:
-            logger.error(f"[ERROR] 生成Z-Score标准化散点图失败: {e}")
-            logger.error(traceback.format_exc())
-            return backend.plot_generator._create_empty_plot(f"生成Z-Score标准化散点图失败: {str(e)}")
+        return self._generate_scatter_plot_with_validation(
+            session_id,
+            lambda: self.session_manager.get_backend(session_id).generate_key_delay_zscore_scatter_plot(),
+            "按键与延时Z-Score标准化散点图",
+            prerequisite_check=self._check_analyzer_or_multi_mode,
+            validation_func=self._validate_zscore_plot
+        )
 
     def generate_hammer_velocity_scatter_plot(self, session_id: str) -> Union[Any, NoUpdate]:
-        """生成锤速与延时Z-Score标准化散点图"""
-        backend = self.session_manager.get_backend(session_id)
-        if not backend:
-            return no_update
-
-        try:
-            # 检查是否有激活的算法
-            active_algorithms = backend.get_active_algorithms()
-            if not active_algorithms:
-                logger.debug("[DEBUG] 没有激活的算法，跳过散点图生成")
-                return backend.plot_generator._create_empty_plot("没有激活的算法")
-
-            # 生成锤速与延时散点图
-            fig = backend.generate_hammer_velocity_delay_scatter_plot()
-
-            logger.info("[OK] 锤速与延时Z-Score标准化散点图生成成功")
-            return fig
-
-        except Exception as e:
-            logger.error(f"[ERROR] 生成锤速与延时Z-Score标准化散点图失败: {e}")
-            logger.error(traceback.format_exc())
-            return backend.plot_generator._create_empty_plot(f"生成锤速与延时Z-Score标准化散点图失败: {str(e)}")
+        """生成锤速与延时Z-Score标准化散点图（需要至少2个算法）"""
+        return self._generate_scatter_plot_with_validation(
+            session_id,
+            lambda: self.session_manager.get_backend(session_id).generate_hammer_velocity_delay_scatter_plot(),
+            "锤速与延时Z-Score标准化散点图",
+            prerequisite_check=lambda backend: self._check_at_least_two_algorithms(backend, "锤速与延时Z-Score标准化散点图需要至少2个算法进行对比")
+        )
 
     def generate_hammer_velocity_relative_delay_scatter_plot(self, session_id: str) -> Union[Any, NoUpdate]:
-        """生成锤速与延时Z-Score标准化散点图"""
-        backend = self.session_manager.get_backend(session_id)
-        if not backend:
-            return no_update
-
-        try:
-            # 检查是否有激活的算法
-            active_algorithms = backend.get_active_algorithms()
-            if not active_algorithms:
-                logger.debug("[DEBUG] 没有激活的算法，跳过散点图生成")
-                return backend.plot_generator._create_empty_plot("没有激活的算法")
-
-            # 生成锤速与延时Z-Score标准化散点图
-            fig = backend.generate_hammer_velocity_relative_delay_scatter_plot()
-
-            logger.info("[OK] 锤速与延时Z-Score标准化散点图生成成功")
-            return fig
-
-        except Exception as e:
-            logger.error(f"[ERROR] 生成锤速与延时Z-Score标准化散点图失败: {e}")
-            logger.error(traceback.format_exc())
-            return backend.plot_generator._create_empty_plot(f"生成锤速与延时Z-Score标准化散点图失败: {str(e)}")
+        """生成锤速与相对延时散点图"""
+        return self._generate_scatter_plot_with_validation(
+            session_id,
+            lambda: self.session_manager.get_backend(session_id).generate_hammer_velocity_relative_delay_scatter_plot(),
+            "锤速与相对延时散点图",
+            prerequisite_check=self._check_active_algorithms
+        )
 
     def handle_generate_hammer_velocity_comparison_plot(self, report_content: html.Div, session_id: str) -> Figure:
         """
@@ -1108,9 +1157,12 @@ class ScatterPlotHandler:
         trigger_id = trigger_prop.split('.')[0]
         logger.info(f"[INFO] 按键-力度交互效应图点击回调触发：prop_id={trigger_prop}, trigger_id={trigger_id}, click_data={click_data is not None}, close_modal_clicks={close_modal_clicks}, close_btn_clicks={close_btn_clicks}")
 
-        # 如果点击了关闭按钮，隐藏模态框
+        # 如果点击了关闭按钮，只有当模态框是由本回调打开时才处理
         if trigger_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
-            return self._handle_modal_close_trigger()
+            if current_style and current_style.get('display') == 'block' and click_data is not None:
+                result = self._handle_modal_close_trigger()
+                return result[0], result[1], result[2], result[3]
+            return no_update, no_update, no_update, no_update, no_update
 
         # 如果是按键-力度交互效应图点击
         if trigger_id == 'key-force-interaction-plot':
@@ -1163,7 +1215,7 @@ class ScatterPlotHandler:
 
         # 安全地提取customdata
         raw_customdata = point['customdata']
-        logger.info(f"🔍 {plot_name}点击 - raw_customdata类型: {type(raw_customdata)}, 值: {raw_customdata}")
+        logger.info(f"{plot_name}点击 - raw_customdata类型: {type(raw_customdata)}, 值: {raw_customdata}")
 
         if isinstance(raw_customdata, list) and len(raw_customdata) > 0:
             customdata = raw_customdata[0] if isinstance(raw_customdata[0], list) else raw_customdata
@@ -1442,7 +1494,7 @@ class ScatterPlotHandler:
                         # 为单算法模式添加获取精确数据的便捷方法
                         self.get_precision_offset_alignment_data = lambda: analyzer.note_matcher.get_precision_offset_alignment_data() if analyzer and analyzer.note_matcher else []
 
-                temp_algorithm = TempAlgorithmDataset(backend.analyzer, "单算法")
+                temp_algorithm = TempAlgorithmDataset(backend._get_current_analyzer(), "单算法")
                 algorithm_velocity_data = self._extract_velocity_data_from_precision_matches(temp_algorithm)
                 velocity_data.extend(algorithm_velocity_data)
             else:
@@ -1932,8 +1984,9 @@ def register_scatter_callbacks(app, session_mgr: SessionManager):
         is_filter_trigger = 'key-delay-scatter-' in trigger_id
 
         # 提前判断分析模式
-        is_multi_mode = hasattr(backend, 'multi_algorithm_mode') and backend.multi_algorithm_mode
-        has_analyzer = bool(backend.analyzer)
+        active_algorithms = backend.multi_algorithm_manager.get_active_algorithms() if backend.multi_algorithm_manager else []
+        is_multi_mode = len(active_algorithms) > 1
+        has_analyzer = backend._get_current_analyzer() is not None
 
         try:
             # 单算法模式：只响应报告内容更新

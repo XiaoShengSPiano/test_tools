@@ -1,18 +1,16 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 """
 延时关系分析模块
 负责分析延时与按键、延时与锤速之间的关系
 """
 
 import math
+import traceback
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Tuple, Any, Optional
 from collections import defaultdict
 from scipy import stats
-from scipy.stats import f_oneway, kruskal
+from scipy.stats import f_oneway
 from statsmodels.stats.multicomp import pairwise_tukeyhsd
 from utils.logger import Logger
 
@@ -204,7 +202,6 @@ class DelayAnalysis:
             
         except Exception as e:
             logger.error(f"事后检验失败: {e}")
-            import traceback
             logger.error(traceback.format_exc())
             return {
                 'significant_pairs': [],
@@ -534,31 +531,24 @@ class DelayAnalysis:
             }
             
         except Exception as e:
-            logger.error(f"❌ 按键力度-延时分析失败: {e}")
-            import traceback
+            logger.error(f"按键力度-延时分析失败: {e}")
             logger.error(traceback.format_exc())
             return self._create_empty_force_delay_result(f"分析失败: {str(e)}")
     
     def analyze_key_force_interaction(self) -> Dict[str, Any]:
         """
-        分析按键与力度的联合统计关系（多因素分析）
-        
-        使用多因素ANOVA和交互效应分析，评估：
-        1. 按键对延时的主效应
-        2. 力度对延时的主效应
-        3. 按键×力度的交互效应
-        
+        生成按键与力度的交互效应图数据
+
+        生成按键-力度交互效应图所需的数据，用于可视化分析按键和力度对延时的联合影响。
+
         Returns:
             Dict[str, Any]: 分析结果，包含：
-                - two_way_anova: 双因素ANOVA结果
-                - interaction_effect: 交互效应分析结果
-                - stratified_regression: 分层回归分析结果
                 - interaction_plot_data: 交互效应图数据
                 - status: 状态标识
         """
         try:
             if not self.analyzer or not self.analyzer.note_matcher:
-                logger.warning("⚠️ 分析器或匹配器不存在，无法进行按键-力度交互分析")
+                logger.warning("分析器或匹配器不存在，无法进行按键-力度交互分析")
                 return self._create_empty_interaction_result("分析器不存在")
 
             matched_pairs = self.analyzer.note_matcher.get_matched_pairs()
@@ -583,34 +573,21 @@ class DelayAnalysis:
             record_indices_list = [item[3] for item in key_force_delay_data]
             replay_indices_list = [item[4] for item in key_force_delay_data]
             
-            # 1. 双因素ANOVA（按键 × 播放锤速）- 分析延时
-            two_way_anova = self._perform_two_way_anova(key_ids_list, replay_velocities_list, delays_list)
-            
-            # 2. 交互效应分析
-            interaction_effect = self._analyze_interaction_effect(key_ids_list, replay_velocities_list, delays_list)
-            
-            # 3. 分层回归分析
-            stratified_regression = self._perform_stratified_regression(key_ids_list, replay_velocities_list, delays_list)
-            
-            # 4. 生成交互效应图数据（包含索引信息）
+            # 生成交互效应图数据（包含索引信息）
             interaction_plot_data = self._generate_interaction_plot_data(
-                key_ids_list, replay_velocities_list, delays_list, 
+                key_ids_list, replay_velocities_list, delays_list,
                 record_indices_list, replay_indices_list
             )
             
-            logger.info("✅ 按键-力度交互分析完成")
+            logger.info("按键-力度交互分析完成")
             
             return {
-                'two_way_anova': two_way_anova,
-                'interaction_effect': interaction_effect,
-                'stratified_regression': stratified_regression,
                 'interaction_plot_data': interaction_plot_data,
                 'status': 'success'
             }
             
         except Exception as e:
-            logger.error(f"❌ 按键-力度交互分析失败: {e}")
-            import traceback
+            logger.error(f"按键-力度交互分析失败: {e}")
             logger.error(traceback.format_exc())
             return self._create_empty_interaction_result(f"分析失败: {str(e)}")
     
@@ -800,288 +777,8 @@ class DelayAnalysis:
             'correlation_rate': significant_correlation_count / len(key_analysis) if key_analysis else 0.0
         }
     
-    def _perform_two_way_anova(self, key_ids: List[int], forces: List[float], 
-                               delays: List[float]) -> Dict[str, Any]:
-        """
-        执行双因素ANOVA（按键 × 力度）
-        
-        使用线性模型评估：
-        1. 按键对延时的主效应
-        2. 力度对延时的主效应
-        3. 按键×力度的交互效应
-        
-        Args:
-            key_ids: 按键ID列表
-            forces: 力度值列表
-            delays: 延时值列表
-            
-        Returns:
-            Dict[str, Any]: 双因素ANOVA结果
-        """
-        try:
-            from statsmodels.formula.api import ols
-            from statsmodels.stats.anova import anova_lm
-            import pandas as pd
-            
-            # 准备DataFrame
-            df = pd.DataFrame({
-                'key_id': key_ids,
-                'force': forces,
-                'delay': delays
-            })
-            
-            # 将按键ID转换为分类变量（字符串类型，便于模型识别）
-            df['key_id'] = df['key_id'].astype(str)
-            
-            # 构建线性模型：delay ~ key_id + force + key_id:force
-            # key_id:force 表示交互项
-            model = ols('delay ~ C(key_id) + force + C(key_id):force', data=df).fit()
-            
-            # 执行ANOVA
-            anova_table = anova_lm(model, typ=2)
-            
-            # 提取结果
-            key_effect = anova_table.loc['C(key_id)', :] if 'C(key_id)' in anova_table.index else None
-            force_effect = anova_table.loc['force', :] if 'force' in anova_table.index else None
-            interaction_effect = anova_table.loc['C(key_id):force', :] if 'C(key_id):force' in anova_table.index else None
-            
-            result = {
-                'key_main_effect': {
-                    'f_statistic': float(key_effect['F']) if key_effect is not None else None,
-                    'p_value': float(key_effect['PR(>F)']) if key_effect is not None else None,
-                    'significant': float(key_effect['PR(>F)']) < 0.05 if key_effect is not None else False
-                } if key_effect is not None else None,
-                'force_main_effect': {
-                    'f_statistic': float(force_effect['F']) if force_effect is not None else None,
-                    'p_value': float(force_effect['PR(>F)']) if force_effect is not None else None,
-                    'significant': float(force_effect['PR(>F)']) < 0.05 if force_effect is not None else False
-                } if force_effect is not None else None,
-                'interaction_effect': {
-                    'f_statistic': float(interaction_effect['F']) if interaction_effect is not None else None,
-                    'p_value': float(interaction_effect['PR(>F)']) if interaction_effect is not None else None,
-                    'significant': float(interaction_effect['PR(>F)']) < 0.05 if interaction_effect is not None else False
-                } if interaction_effect is not None else None,
-                'model_r_squared': float(model.rsquared),
-                'model_adj_r_squared': float(model.rsquared_adj)
-            }
-            
-            # 生成解释性消息
-            messages = []
-            if result['key_main_effect']:
-                key_sig = result['key_main_effect']['significant']
-                messages.append(f"按键主效应: {'显著' if key_sig else '不显著'} (p={result['key_main_effect']['p_value']:.4f})")
-            
-            if result['force_main_effect']:
-                force_sig = result['force_main_effect']['significant']
-                messages.append(f"力度主效应: {'显著' if force_sig else '不显著'} (p={result['force_main_effect']['p_value']:.4f})")
-            
-            if result['interaction_effect']:
-                inter_sig = result['interaction_effect']['significant']
-                messages.append(f"交互效应: {'显著' if inter_sig else '不显著'} (p={result['interaction_effect']['p_value']:.4f})")
-            
-            result['message'] = '; '.join(messages)
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"双因素ANOVA失败: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return {
-                'key_main_effect': None,
-                'force_main_effect': None,
-                'interaction_effect': None,
-                'message': f'双因素ANOVA失败: {str(e)}'
-            }
     
-    def _analyze_interaction_effect(self, key_ids: List[int], forces: List[float], 
-                                   delays: List[float]) -> Dict[str, Any]:
-        """
-        分析交互效应的详细模式
-        
-        评估不同按键下，力度对延时的影响是否不同
-        
-        Args:
-            key_ids: 按键ID列表
-            forces: 力度值列表
-            delays: 延时值列表
-            
-        Returns:
-            Dict[str, Any]: 交互效应分析结果
-        """
-        try:
-            from collections import defaultdict
-            
-            # 按按键分组
-            key_groups = defaultdict(lambda: {'forces': [], 'delays': []})
-            for key_id, force, delay in zip(key_ids, forces, delays):
-                key_groups[key_id]['forces'].append(force)
-                key_groups[key_id]['delays'].append(delay)
-            
-            # 对每个按键计算力度-延时的斜率（回归系数）
-            key_slopes = {}
-            key_intercepts = {}
-            key_r_squared = {}
-            
-            for key_id in sorted(key_groups.keys()):
-                forces_key = key_groups[key_id]['forces']
-                delays_key = key_groups[key_id]['delays']
-                
-                if len(forces_key) < 2:
-                    continue
-                
-                # 线性回归
-                slope, intercept, r_value, p_value, std_err = stats.linregress(forces_key, delays_key)
-                key_slopes[key_id] = slope
-                key_intercepts[key_id] = intercept
-                key_r_squared[key_id] = r_value ** 2
-            
-            if not key_slopes:
-                return {
-                    'key_slopes': {},
-                    'slope_variance': None,
-                    'message': '数据不足，无法分析交互效应'
-                }
-            
-            # 计算斜率的方差（用于评估交互效应强度）
-            slopes_list = list(key_slopes.values())
-            slope_mean = np.mean(slopes_list)
-            slope_std = np.std(slopes_list)
-            slope_variance = np.var(slopes_list)
-            
-            # 判断交互效应强度
-            # 交互效应强度反映不同按键的斜率差异程度
-            # 如果斜率的标准差大，说明不同按键的力度-延时关系差异大，交互效应强
-            # 如果斜率的标准差小，说明不同按键的力度-延时关系相似，交互效应弱
-            
-            abs_slope_mean = abs(slope_mean)
-            
-            # 使用更严格的阈值，避免总是显示"强"
-            # 方法1: 如果均值接近0，使用绝对标准差判断
-            if abs_slope_mean < 1e-6:
-                # 使用更严格的绝对阈值：std > 0.002 为强，> 0.001 为中等，否则为弱
-                # 这些阈值基于实际数据的经验值，可能需要根据具体数据调整
-                if slope_std > 0.002:
-                    interaction_strength = '强'
-                elif slope_std > 0.001:
-                    interaction_strength = '中等'
-                else:
-                    interaction_strength = '弱'
-            else:
-                # 方法2: 使用变异系数（CV = std/mean）来判断
-                # CV反映相对变异性，更稳健
-                cv = slope_std / abs_slope_mean
-                
-                # 使用更严格的阈值，同时考虑绝对标准差
-                # 如果标准差本身很小（< 0.0005），即使CV大也认为是弱交互
-                if slope_std < 0.0005:
-                    interaction_strength = '弱'
-                elif cv > 1.0:  # CV > 1.0 为强（更严格）
-                    interaction_strength = '强'
-                elif cv > 0.5:  # CV > 0.5 为中等（更严格）
-                    interaction_strength = '中等'
-                else:
-                    interaction_strength = '弱'
-            
-            # 记录计算详情，便于调试
-            logger.info(f"📊 交互效应强度计算: slope_mean={slope_mean:.6f}, slope_std={slope_std:.6f}, "
-                       f"abs_mean={abs_slope_mean:.6f}, CV={slope_std/abs_slope_mean if abs_slope_mean > 1e-6 else 'N/A'}, "
-                       f"强度={interaction_strength}")
-            
-            return {
-                'key_slopes': {k: float(v) for k, v in key_slopes.items()},
-                'key_intercepts': {k: float(v) for k, v in key_intercepts.items()},
-                'key_r_squared': {k: float(v) for k, v in key_r_squared.items()},
-                'slope_mean': float(slope_mean),
-                'slope_std': float(slope_std),
-                'slope_variance': float(slope_variance),
-                'interaction_strength': interaction_strength,
-                'message': f'交互效应分析: 斜率均值={slope_mean:.6f}, 标准差={slope_std:.6f}, 强度={interaction_strength}'
-            }
-            
-        except Exception as e:
-            logger.error(f"交互效应分析失败: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return {
-                'key_slopes': {},
-                'message': f'交互效应分析失败: {str(e)}'
-            }
     
-    def _perform_stratified_regression(self, key_ids: List[int], forces: List[float], 
-                                      delays: List[float]) -> Dict[str, Any]:
-        """
-        执行分层回归分析
-        
-        1. 控制按键后，分析力度对延时的影响
-        2. 控制力度后，分析按键对延时的影响
-        
-        Args:
-            key_ids: 按键ID列表
-            forces: 力度值列表
-            delays: 延时值列表
-            
-        Returns:
-            Dict[str, Any]: 分层回归分析结果
-        """
-        try:
-            from statsmodels.formula.api import ols
-            import pandas as pd
-            
-            df = pd.DataFrame({
-                'key_id': key_ids,
-                'force': forces,
-                'delay': delays
-            })
-            df['key_id'] = df['key_id'].astype(str)
-            
-            # 模型1：只包含按键（基准模型）
-            model1 = ols('delay ~ C(key_id)', data=df).fit()
-            r_squared_key_only = model1.rsquared
-            
-            # 模型2：按键 + 力度（完整模型）
-            model2 = ols('delay ~ C(key_id) + force', data=df).fit()
-            r_squared_key_force = model2.rsquared
-            
-            # 模型3：只包含力度（基准模型）
-            model3 = ols('delay ~ force', data=df).fit()
-            r_squared_force_only = model3.rsquared
-            
-            # 模型4：力度 + 按键（完整模型）
-            model4 = ols('delay ~ force + C(key_id)', data=df).fit()
-            r_squared_force_key = model4.rsquared
-            
-            # 计算增量R²（控制一个变量后，另一个变量的贡献）
-            force_incremental_r2 = r_squared_key_force - r_squared_key_only
-            key_incremental_r2 = r_squared_force_key - r_squared_force_only
-            
-            return {
-                'force_effect_controlling_key': {
-                    'r_squared_incremental': float(force_incremental_r2),
-                    'r_squared_full': float(r_squared_key_force),
-                    'r_squared_base': float(r_squared_key_only),
-                    'force_coefficient': float(model2.params.get('force', 0)),
-                    'force_p_value': float(model2.pvalues.get('force', 1.0))
-                },
-                'key_effect_controlling_force': {
-                    'r_squared_incremental': float(key_incremental_r2),
-                    'r_squared_full': float(r_squared_force_key),
-                    'r_squared_base': float(r_squared_force_only),
-                    'key_f_statistic': float(model4.fvalue) if hasattr(model4, 'fvalue') else None,
-                    'key_p_value': float(model4.f_pvalue) if hasattr(model4, 'f_pvalue') else None
-                },
-                'message': f'分层回归: 控制按键后力度增量R²={force_incremental_r2:.4f}, 控制力度后按键增量R²={key_incremental_r2:.4f}'
-            }
-            
-        except Exception as e:
-            logger.error(f"分层回归分析失败: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return {
-                'force_effect_controlling_key': None,
-                'key_effect_controlling_force': None,
-                'message': f'分层回归分析失败: {str(e)}'
-            }
     
     def _generate_interaction_plot_data(self, key_ids: List[int], replay_velocities: List[float], 
                                        delays: List[float], record_indices: List[int] = None,
@@ -1203,9 +900,6 @@ class DelayAnalysis:
         return {
             'status': 'error',
             'message': message,
-            'two_way_anova': {},
-            'interaction_effect': {},
-            'stratified_regression': {},
             'interaction_plot_data': {}
         }
     

@@ -6,7 +6,6 @@
 负责数据加载、文件上传处理等核心功能
 """
 
-import base64
 from typing import Optional, Tuple, Dict, Any
 from utils.logger import Logger
 from backend.history_manager import HistoryManager
@@ -142,7 +141,7 @@ class DataManager:
         处理文件上传
         
         Args:
-            contents: 上传文件的内容（base64编码）
+            contents: 上传文件的内容（二进制数据）
             filename: 上传文件的文件名
             history_manager: 历史记录管理器
             
@@ -160,8 +159,8 @@ class DataManager:
             # 初始化上传状态（总是允许重新上传）
             self._initialize_upload_state(filename)
             
-            # 解码文件内容
-            decoded_bytes = self._decode_file_contents(contents)
+            # 直接使用文件内容（已经是解码后的二进制数据）
+            decoded_bytes = contents
             
             # 加载SPMID数据
             success, error_msg = self._load_spmid_data(decoded_bytes)
@@ -184,33 +183,6 @@ class DataManager:
         self.clear_data_state()
         self.set_upload_data_source(filename)
 
-    def _decode_file_contents(self, contents):
-        """解码文件内容"""
-        try:
-            # 验证contents格式
-            if not isinstance(contents, str):
-                raise ValueError("文件内容必须是字符串格式")
-            
-            if ',' not in contents:
-                raise ValueError("文件内容格式错误，缺少分隔符")
-            
-            content_type, content_string = contents.split(',', 1)
-            
-            if not content_string:
-                raise ValueError("文件内容为空")
-            
-            # 验证是否为base64格式
-            if not content_string.strip():
-                raise ValueError("文件内容为空")
-            
-            return base64.b64decode(content_string)
-            
-        except ValueError as e:
-            logger.error(f"❌ 文件内容格式错误: {e}")
-            raise
-        except Exception as e:
-            logger.error(f"❌ 文件解码失败: {e}")
-            raise ValueError(f"文件解码失败: {str(e)}")
 
     def _load_spmid_data(self, decoded_bytes):
         """加载SPMID数据"""

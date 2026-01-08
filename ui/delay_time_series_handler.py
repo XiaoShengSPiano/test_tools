@@ -172,7 +172,8 @@ class DelayTimeSeriesHandler:
         replay_note = None
         final_algorithm_name = None
 
-        if backend.multi_algorithm_mode and backend.multi_algorithm_manager:
+        active_algorithms = backend.multi_algorithm_manager.get_active_algorithms() if backend.multi_algorithm_manager else []
+        if len(active_algorithms) > 1:
             # 多算法模式
             algorithm = backend.multi_algorithm_manager.get_algorithm(algorithm_name)
             if algorithm and algorithm.analyzer and hasattr(algorithm.analyzer, 'matched_pairs'):
@@ -186,8 +187,9 @@ class DelayTimeSeriesHandler:
                         break
         else:
             # 单算法模式
-            if backend.analyzer and hasattr(backend.analyzer, 'matched_pairs'):
-                matched_pairs = backend.analyzer.matched_pairs
+            analyzer = backend._get_current_analyzer()
+            if analyzer and hasattr(analyzer, 'matched_pairs'):
+                matched_pairs = analyzer.matched_pairs
                 for r_idx, p_idx, r_note, p_note in matched_pairs:
                     if r_idx == record_index and p_idx == replay_index:
                         record_note = r_note
@@ -233,7 +235,8 @@ class DelayTimeSeriesHandler:
 
         # 备用方案：从 offset_data 获取
         if center_time_ms is None:
-            if backend.multi_algorithm_mode and backend.multi_algorithm_manager and algorithm_name:
+            active_algorithms = backend.multi_algorithm_manager.get_active_algorithms() if backend.multi_algorithm_manager else []
+            if len(active_algorithms) > 1 and algorithm_name:
                 algorithm = backend.multi_algorithm_manager.get_algorithm(algorithm_name)
                 if algorithm and algorithm.analyzer.note_matcher:
                     try:
@@ -254,15 +257,15 @@ class DelayTimeSeriesHandler:
     def _generate_chart(self, backend, match_result, point_data, time_result) -> Dict[str, Any]:
         """生成图表"""
         try:
-            detail_figure_combined = backend.generate_key_curves_comparison_plot_by_indices(
-                point_data['key_id'], point_data['record_index'], point_data['replay_index'], match_result['algorithm_name']
+            record_fig, replay_fig, comparison_fig = backend.generate_multi_algorithm_scatter_detail_plot_by_indices(
+                match_result['algorithm_name'], point_data['record_index'], point_data['replay_index']
             )
-            if not detail_figure_combined:
+            if not comparison_fig:
                 logger.warning("[WARNING] 多算法模式曲线生成失败")
                 return {'success': False}
 
             logger.info("[OK] 多算法模式曲线生成成功")
-            return {'success': True, 'figure': detail_figure_combined}
+            return {'success': True, 'figure': comparison_fig}
 
         except Exception as e:
             logger.error(f"[ERROR] 多算法模式生成曲线失败: {e}")
@@ -296,7 +299,7 @@ class DelayTimeSeriesHandler:
             'center_time_ms': time_result['center_time_ms']  # 预先计算的时间信息
         }
 
-        rendered_row = dcc.Graph(figure=chart_result['figure'], style={'height': '600px'})
+        rendered_row = dcc.Graph(figure=chart_result['figure'], style={'height': '800px'})
 
         return {
             'modal_style': self._create_modal_style(),

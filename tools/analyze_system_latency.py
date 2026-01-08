@@ -55,7 +55,7 @@ def get_note_time(note: Note) -> float:
     """获取音符的绝对开始时间 (ms)"""
     # spmid内部时间单位通常为0.1ms，这里转换为ms
     try:
-        return (note.after_touch.index[0] + note.offset) / 10.0
+        return note.key_on_ms
     except (IndexError, AttributeError) as e:
         raise ValueError(f"音符ID {note.id} 的after_touch数据无效: {e}") from e
 

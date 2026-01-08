@@ -7,6 +7,7 @@
 用于匹配算法和曲线对比分析
 """
 
+import plotly.graph_objects as go
 from typing import List, Tuple, Dict, Any, Optional, Union
 import numpy as np
 from utils.logger import Logger
@@ -710,6 +711,109 @@ class ForceCurveAnalyzer:
         except Exception as e:
             logger.error(f"❌ 提取完整曲线失败: {e}")
             return None
+
+    def generate_similarity_stages_figures(self, comparison_result: Dict[str, Any],
+                                         base_name: str, compare_name: str, similarity: float) -> List[Dict[str, Any]]:
+        """
+        生成相似度分析的处理阶段图表
+
+        Args:
+            comparison_result: 对比结果字典
+            base_name: 基准算法名称
+            compare_name: 对比算法名称
+            similarity: 相似度值
+
+        Returns:
+            处理阶段图表列表
+        """
+        figures = []
+
+        if 'processing_stages' not in comparison_result:
+            return figures
+
+        stages = comparison_result['processing_stages']
+
+        # 阶段1：原始曲线对比
+        if 'stage1_original' in stages:
+            stage = stages['stage1_original']
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=stage['record_times'], y=stage['record_values'],
+                mode='lines', name=f'基准录制 ({base_name})',
+                line=dict(color='#1f77b4', width=2)
+            ))
+            fig.add_trace(go.Scatter(
+                x=stage['replay_times'], y=stage['replay_values'],
+                mode='lines', name=f'播放曲线 ({compare_name})',
+                line=dict(color='#ff7f0e', width=2)
+            ))
+            fig.update_layout(
+                title=f'原始曲线对比 (相似度: {similarity:.3f})',
+                xaxis_title='时间 (ms)', yaxis_title='力度值', height=400
+            )
+            figures.append({'title': '阶段1：原始曲线对比', 'figure': fig})
+
+        # 阶段1.5：偏移修正后曲线
+        if 'stage_offset_corrected' in stages:
+            stage = stages['stage_offset_corrected']
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=stage['record_times'], y=stage['record_values'],
+                mode='lines', name=f'基准录制 ({base_name})',
+                line=dict(color='#1f77b4', width=2)
+            ))
+            fig.add_trace(go.Scatter(
+                x=stage['replay_times'], y=stage['replay_values'],
+                mode='lines', name=f'播放曲线 ({compare_name})',
+                line=dict(color='#ff7f0e', width=2)
+            ))
+            fig.update_layout(
+                title=f'偏移修正后曲线对比 (相似度: {similarity:.3f})',
+                xaxis_title='时间 (ms)', yaxis_title='力度值', height=400
+            )
+            figures.append({'title': '阶段1.5：偏移修正后曲线', 'figure': fig})
+
+        # 阶段2：平滑后曲线
+        if 'stage2_smoothed' in stages:
+            stage = stages['stage2_smoothed']
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=stage['record_times'], y=stage['record_values'],
+                mode='lines', name=f'基准录制平滑 ({base_name})',
+                line=dict(color='#1f77b4', width=2)
+            ))
+            fig.add_trace(go.Scatter(
+                x=stage['replay_times'], y=stage['replay_values'],
+                mode='lines', name=f'播放曲线平滑 ({compare_name})',
+                line=dict(color='#ff7f0e', width=2)
+            ))
+            fig.update_layout(
+                title=f'高斯平滑后曲线对比 (相似度: {similarity:.3f})',
+                xaxis_title='时间 (ms)', yaxis_title='力度值', height=400
+            )
+            figures.append({'title': '阶段2：高斯平滑后曲线', 'figure': fig})
+
+        # 阶段4：对齐后的导数
+        if 'stage4_aligned_derivative' in stages:
+            stage = stages['stage4_aligned_derivative']
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=stage['record_times'], y=stage['record_values'],
+                mode='lines', name=f'基准导数 ({base_name})',
+                line=dict(color='#1f77b4', width=2)
+            ))
+            fig.add_trace(go.Scatter(
+                x=stage['replay_times'], y=stage['replay_values'],
+                mode='lines', name=f'播放导数 ({compare_name})',
+                line=dict(color='#ff7f0e', width=2)
+            ))
+            fig.update_layout(
+                title=f'对齐后导数曲线对比 (相似度: {similarity:.3f})',
+                xaxis_title='时间 (ms)', yaxis_title='导数值', height=400
+            )
+            figures.append({'title': '阶段4：对齐后导数曲线', 'figure': fig})
+
+        return figures
     
     def _calculate_simple_similarity(self, values1: np.ndarray, values2: np.ndarray) -> float:
         """

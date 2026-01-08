@@ -162,7 +162,8 @@ class DelayHistogramTableClickHandler:
     def _find_matched_notes(self, backend, record_index, replay_index, key_id, algorithm_name) -> Dict[str, Any]:
         """查找匹配的音符数据"""
         # 检查是否在多算法模式且提供了算法名称
-        if backend.multi_algorithm_mode and backend.multi_algorithm_manager and algorithm_name and algorithm_name != 'N/A':
+        active_algorithms = backend.multi_algorithm_manager.get_active_algorithms() if backend.multi_algorithm_manager else []
+        if len(active_algorithms) > 1 and algorithm_name and algorithm_name != 'N/A':
             return self._find_notes_multi_algorithm(backend, record_index, replay_index, key_id, algorithm_name)
         else:
             return self._find_notes_single_algorithm(backend, record_index, replay_index, key_id, algorithm_name)
@@ -195,18 +196,19 @@ class DelayHistogramTableClickHandler:
 
     def _find_notes_single_algorithm(self, backend, record_index, replay_index, key_id, algorithm_name) -> Dict[str, Any]:
         """单算法模式下查找音符"""
-        if not backend.analyzer:
+        analyzer = backend._get_current_analyzer()
+        if not analyzer:
             logger.warning("[WARNING] 没有分析器")
             return {'valid': False}
 
         # 从matched_pairs中查找匹配对
-        matched_pairs = backend.analyzer.matched_pairs if hasattr(backend.analyzer, 'matched_pairs') else []
+        matched_pairs = analyzer.matched_pairs if hasattr(analyzer, 'matched_pairs') else []
         if not matched_pairs:
             logger.warning("[WARNING] 没有匹配对数据")
             return {'valid': False}
 
         # 查找匹配对
-        result = self._find_notes_from_matched_pairs(matched_pairs, record_index, replay_index, key_id, backend.analyzer)
+        result = self._find_notes_from_matched_pairs(matched_pairs, record_index, replay_index, key_id, analyzer)
         if result['valid']:
             result['final_algorithm_name'] = algorithm_name if algorithm_name and algorithm_name != 'N/A' else None
 
@@ -265,7 +267,8 @@ class DelayHistogramTableClickHandler:
         """查找其他算法的匹配音符"""
         other_algorithm_notes = []  # [(algorithm_name, play_note), ...]
 
-        if backend.multi_algorithm_mode and backend.multi_algorithm_manager:
+        active_algorithms = backend.multi_algorithm_manager.get_active_algorithms() if backend.multi_algorithm_manager else []
+        if len(active_algorithms) > 1:
             active_algorithms = backend.multi_algorithm_manager.get_active_algorithms()
             for alg in active_algorithms:
                 if alg.metadata.algorithm_name == final_algorithm_name:
@@ -288,7 +291,8 @@ class DelayHistogramTableClickHandler:
         """计算平均延时"""
         mean_delays = {}
 
-        if backend.multi_algorithm_mode and backend.multi_algorithm_manager and final_algorithm_name:
+        active_algorithms = backend.multi_algorithm_manager.get_active_algorithms() if backend.multi_algorithm_manager else []
+        if len(active_algorithms) > 1 and final_algorithm_name:
             # 多算法模式
             algorithm = backend.multi_algorithm_manager.get_algorithm(final_algorithm_name)
             if algorithm and algorithm.analyzer:
@@ -299,8 +303,9 @@ class DelayHistogramTableClickHandler:
                 return {'valid': False}
         else:
             # 单算法模式
-            if backend.analyzer:
-                mean_error_0_1ms = backend.analyzer.get_mean_error()
+            analyzer = backend._get_current_analyzer()
+            if analyzer:
+                mean_error_0_1ms = analyzer.get_mean_error()
                 mean_delays[final_algorithm_name or 'default'] = mean_error_0_1ms / 10.0  # 转换为毫秒
             else:
                 logger.error("[ERROR] 无法获取单算法模式的平均延时")

@@ -41,7 +41,7 @@ class SessionManager:
         self.lock = threading.Lock()  # 线程锁，确保线程安全
         # 只在主进程中记录初始化日志（避免Flask debug模式下的重复日志）
         if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
-            logger.info("✅ SessionManager初始化完成")
+            logger.info("SessionManager初始化完成")
     
     def get_or_create_backend(self, session_id: Optional[str] = None) -> Tuple[str, PianoAnalysisBackend]:
         """

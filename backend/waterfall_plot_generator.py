@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-瀑布图生成器模块 - 重构版本
+瀑布图生成器模块
 负责生成包含所有数据（配对按键、丢锤、多锤）的瀑布图
 严格遵循单一职责原则，将大函数拆分为多个小函数
 """
@@ -11,8 +11,19 @@ from typing import Any, Dict, List, Optional, Tuple
 from utils.logger import Logger
 import plotly.graph_objects as go
 import numpy as np
+from spmid.note_matcher import MatchType
 
 logger = Logger.get_logger()
+
+# MatchType到评级的映射
+MATCH_TYPE_TO_GRADE = {
+    MatchType.EXCELLENT: 'correct',   # 优秀 (≤20ms)
+    MatchType.GOOD: 'minor',          # 良好 (20-30ms)
+    MatchType.FAIR: 'moderate',       # 一般 (30-50ms)
+    MatchType.POOR: 'large',          # 较差 (50-100ms)
+    MatchType.SEVERE: 'severe',       # 严重 (100-200ms)
+    MatchType.FAILED: 'major'         # 失败 (>200ms)
+}
 
 
 class WaterfallPlotGenerator:
@@ -64,119 +75,6 @@ class WaterfallPlotGenerator:
             logger.error(f"生成包含所有数据的瀑布图失败: {e}")
             return self._create_error_figure(f"生成瀑布图失败: {str(e)}")
 
-    def _collect_all_waterfall_data(self,
-                                   initial_valid_record_data: List,
-                                   initial_valid_replay_data: List,
-                                   matched_pairs: List,
-                                   drop_hammers: List,
-                                   multi_hammers: List,
-                                   time_filter=None,
-                                   key_filter=None) -> Dict[str, List]:
-        """
-        收集所有类型的瀑布图数据
-
-        策略：直接使用matched_pairs中的note对象，以及drop_hammers/multi_hammers中的ErrorNote
-        这是最简单和最直接的方法，与评价等级处理逻辑一致
-
-        Args:
-            initial_valid_record_data: 原始录制数据（用于获取丢锤多锤的完整note对象）
-            initial_valid_replay_data: 原始播放数据（用于获取丢锤多锤的完整note对象）
-            matched_pairs: 配对的按键数据
-            drop_hammers: 丢锤按键数据
-            multi_hammers: 多锤按键数据
-            time_filter: 时间过滤器
-            key_filter: 按键过滤器
-
-        Returns:
-            Dict[str, List]: 分类的数据字典
-        """
-        # 直接分类收集数据
-        classified_data = {
-            'matched': [],
-            'drop_hammers': [],
-            'multi_hammers': []
-        }
-
-        # 1. 处理配对数据 - 直接使用matched_pairs中的note对象
-        if matched_pairs:
-            for record_idx, replay_idx, record_note, replay_note in matched_pairs:
-                # 检查是否符合过滤条件
-                if self._should_include_note(record_note, time_filter, key_filter):
-                    bars = self._extract_note_bars(record_note, 'record')
-                    for bar in bars:
-                        bar['data_type'] = 'matched'
-                        bar['source_index'] = record_idx
-                        classified_data['matched'].append(bar)
-
-                if self._should_include_note(replay_note, time_filter, key_filter):
-                    bars = self._extract_note_bars(replay_note, 'replay')
-                    for bar in bars:
-                        bar['data_type'] = 'matched'
-                        bar['source_index'] = replay_idx
-                        classified_data['matched'].append(bar)
-
-        # 2. 处理丢锤数据 - 从原始录制数据中获取note对象
-        if drop_hammers:
-            for error_note in drop_hammers:
-                if hasattr(error_note, 'global_index') and error_note.global_index >= 0:
-                    try:
-                        note = initial_valid_record_data[error_note.global_index]
-                        if self._should_include_note(note, time_filter, key_filter):
-                            bars = self._extract_note_bars(note, 'record')
-                            for bar in bars:
-                                bar['data_type'] = 'drop_hammer'
-                                bar['source_index'] = error_note.global_index
-                                bar['error_reason'] = getattr(error_note, 'reason', '')
-                                classified_data['drop_hammers'].append(bar)
-                    except (IndexError, AttributeError):
-                        logger.warning(f"处理丢锤数据失败 (索引{error_note.global_index}): 使用ErrorNote信息")
-                        # 如果无法从原始数据获取，使用ErrorNote的基本信息
-                        if hasattr(error_note, 'infos') and error_note.infos:
-                            note_info = error_note.infos[0]
-                            bar = {
-                                't_on': note_info.keyOn,
-                                't_off': note_info.keyOff,
-                                'key_id': note_info.keyId,
-                                'value': 0.5,
-                                'label': 'record',
-                                'data_type': 'drop_hammer',
-                                'source_index': error_note.global_index,
-                                'error_reason': getattr(error_note, 'reason', '')
-                            }
-                            classified_data['drop_hammers'].append(bar)
-
-        # 3. 处理多锤数据 - 从原始播放数据中获取note对象
-        if multi_hammers:
-            for error_note in multi_hammers:
-                if hasattr(error_note, 'global_index') and error_note.global_index >= 0:
-                    try:
-                        note = initial_valid_replay_data[error_note.global_index]
-                        if self._should_include_note(note, time_filter, key_filter):
-                            bars = self._extract_note_bars(note, 'replay')
-                            for bar in bars:
-                                bar['data_type'] = 'multi_hammer'
-                                bar['source_index'] = error_note.global_index
-                                bar['error_reason'] = getattr(error_note, 'reason', '')
-                                classified_data['multi_hammers'].append(bar)
-                    except (IndexError, AttributeError):
-                        logger.warning(f"处理多锤数据失败 (索引{error_note.global_index}): 使用ErrorNote信息")
-                        # 如果无法从原始数据获取，使用ErrorNote的基本信息
-                        if hasattr(error_note, 'infos') and error_note.infos:
-                            note_info = error_note.infos[0]
-                            bar = {
-                                't_on': note_info.keyOn,
-                                't_off': note_info.keyOff,
-                                'key_id': note_info.keyId,
-                                'value': 0.5,
-                                'label': 'replay',
-                                'data_type': 'multi_hammer',
-                                'source_index': error_note.global_index,
-                                'error_reason': getattr(error_note, 'reason', '')
-                            }
-                            classified_data['multi_hammers'].append(bar)
-
-        return classified_data
-
     def _collect_all_comprehensive_data(self, analyzer, time_filter=None, key_filter=None) -> Dict[str, List]:
         """
         收集所有瀑布图数据：配对数据 + 丢锤 + 多锤
@@ -194,9 +92,9 @@ class WaterfallPlotGenerator:
             'correct': [],    # 优秀: 误差 ≤ 20ms
             'minor': [],      # 良好: 20ms < 误差 ≤ 30ms
             'moderate': [],   # 一般: 30ms < 误差 ≤ 50ms
-            'large': [],      # 较差: 50ms < 误差 ≤ 1000ms
-            'severe': [],     # 严重: 误差 > 1000ms
-            'major': []       # 失败: 无匹配（丢锤/多锤）
+            'large': [],      # 较差: 50ms < 误差 ≤ 100ms
+            'severe': [],     # 严重: 100ms < 误差 ≤ 200ms
+            'major': []       # 失败: 误差 > 200ms（丢锤/多锤）
         }
 
         # 获取原始数据用于提取丢锤和多锤的音符对象
@@ -209,11 +107,18 @@ class WaterfallPlotGenerator:
             if hasattr(note_matcher, 'match_results'):
                 for result in note_matcher.match_results:
                     # 获取对应的音符对象
+                    # 优先使用result.pair（包含拆分后的实际note对象）
+                    # 如果pair不存在（失败匹配），则从原始数据获取
                     try:
-                        record_note = note_matcher._record_data[result.record_index]
-                        replay_note = note_matcher._replay_data[result.replay_index]
-                    except (IndexError, AttributeError):
-                        logger.warning(f"⚠️ 无法获取音符对象: record_index={result.record_index}, replay_index={result.replay_index}")
+                        if result.pair is not None:
+                            # 成功匹配：使用pair中的实际note对象（支持拆分数据）
+                            record_note, replay_note = result.pair
+                        else:
+                            # 失败匹配：从原始数据获取
+                            record_note = note_matcher._record_data[result.record_index]
+                            replay_note = None if result.replay_index is None else note_matcher._replay_data[result.replay_index]
+                    except (IndexError, AttributeError, TypeError) as e:
+                        logger.warning(f"⚠️ 无法获取音符对象: record_index={result.record_index}, replay_index={result.replay_index}, error={e}")
                         continue
 
                     # 检查是否符合过滤条件
@@ -221,57 +126,30 @@ class WaterfallPlotGenerator:
                             self._should_include_note(replay_note, time_filter, key_filter)):
                         continue
 
-                    # 根据匹配结果进行评级分类
-                    if result.is_success:
-                        # 成功匹配：根据误差范围评级
-                        if hasattr(result, 'offset_data') and result.offset_data:
-                            error_abs = abs(result.offset_data.get('corrected_offset', 0))
-                            error_ms = error_abs / 10.0  # 转换为ms
+                    # 直接使用匹配阶段的评级结果（避免重复评级）
+                    grade_key = MATCH_TYPE_TO_GRADE.get(result.match_type, 'moderate')
+                    
+                    # 获取误差信息（用于显示，不用于评级）
+                    error_ms = result.error_ms if result.error_ms is not None else 0
+                    
+                    # 添加录制音符的条形
+                    record_bars = self._extract_note_bars(record_note, 'record')
+                    for bar in record_bars:
+                        bar['grade'] = grade_key
+                        bar['error_ms'] = error_ms
+                        if not result.is_success:
+                            bar['match_status'] = 'failed'
+                        graded_data[grade_key].append(bar)
 
-                            if error_ms <= 20:
-                                grade_key = 'correct'
-                            elif error_ms <= 30:
-                                grade_key = 'minor'
-                            elif error_ms <= 50:
-                                grade_key = 'moderate'
-                            elif error_ms <= 1000:
-                                grade_key = 'large'
-                            else:
-                                grade_key = 'severe'
-                        else:
-                            grade_key = 'moderate'  # 默认一般评级
-
-                        # 添加录制音符的条形
-                        record_bars = self._extract_note_bars(record_note, 'record')
-                        for bar in record_bars:
-                            bar['grade'] = grade_key
-                            bar['error_ms'] = error_ms if 'error_ms' in locals() else 0
-                            graded_data[grade_key].append(bar)
-
-                        # 添加播放音符的条形
+                    # 添加播放音符的条形
+                    if replay_note is not None:
                         replay_bars = self._extract_note_bars(replay_note, 'replay')
                         for bar in replay_bars:
                             bar['grade'] = grade_key
-                            bar['error_ms'] = error_ms if 'error_ms' in locals() else 0
+                            bar['error_ms'] = error_ms
+                            if not result.is_success:
+                                bar['match_status'] = 'failed'
                             graded_data[grade_key].append(bar)
-
-                    else:
-                        # 匹配失败：归为major评级
-                        # 添加录制音符的条形（丢锤情况）
-                        record_bars = self._extract_note_bars(record_note, 'record')
-                        for bar in record_bars:
-                            bar['grade'] = 'major'
-                            bar['error_ms'] = float('inf')
-                            bar['match_status'] = 'failed'
-                            graded_data['major'].append(bar)
-
-                        # 添加播放音符的条形（多锤情况）
-                        replay_bars = self._extract_note_bars(replay_note, 'replay')
-                        for bar in replay_bars:
-                            bar['grade'] = 'major'
-                            bar['error_ms'] = float('inf')
-                            bar['match_status'] = 'failed'
-                            graded_data['major'].append(bar)
 
         # 2. 处理丢锤数据
         drop_hammers = getattr(analyzer, 'drop_hammers', [])
@@ -342,112 +220,6 @@ class WaterfallPlotGenerator:
                                 'error_reason': getattr(error_note, 'reason', '')
                             }
                             graded_data['major'].append(bar)
-
-        return graded_data
-
-    def _collect_from_match_results(self, note_matcher, time_filter=None, key_filter=None) -> Dict[str, List]:
-        """
-        直接从note_matcher.match_results中收集数据，并按评级分类
-
-        Args:
-            note_matcher: 音符匹配器实例
-            time_filter: 时间过滤器
-            key_filter: 按键过滤器
-
-        Returns:
-            Dict[str, List]: 按评级分类的数据字典
-        """
-        # 初始化评级分类数据结构
-        graded_data = {
-            'correct': [],    # 优秀: 误差 ≤ 20ms
-            'minor': [],      # 良好: 20ms < 误差 ≤ 30ms
-            'moderate': [],   # 一般: 30ms < 误差 ≤ 50ms
-            'large': [],      # 较差: 50ms < 误差 ≤ 1000ms
-            'severe': [],     # 严重: 误差 > 1000ms
-            'major': []       # 失败: 无匹配
-        }
-
-        if not note_matcher or not hasattr(note_matcher, 'match_results'):
-            logger.warning("⚠️ note_matcher或match_results不存在")
-            return graded_data
-
-        # 遍历所有匹配结果
-        for result in note_matcher.match_results:
-            # 获取对应的音符对象
-            try:
-                record_note = note_matcher._record_data[result.record_index]
-                replay_note = note_matcher._replay_data[result.replay_index]
-            except (IndexError, AttributeError):
-                logger.warning(f"⚠️ 无法获取音符对象: record_index={result.record_index}, replay_index={result.replay_index}")
-                continue
-
-            # 检查是否符合过滤条件
-            if not (self._should_include_note(record_note, time_filter, key_filter) and
-                    self._should_include_note(replay_note, time_filter, key_filter)):
-                continue
-
-            # 根据匹配结果进行评级分类
-            if result.is_success:
-                # 成功匹配：根据误差范围评级
-                if hasattr(result, 'offset_data') and result.offset_data:
-                    error_abs = abs(result.offset_data.get('corrected_offset', 0))
-                    error_ms = error_abs / 10.0  # 转换为ms
-
-                    if error_ms <= 20:
-                        grade_key = 'correct'
-                    elif error_ms <= 30:
-                        grade_key = 'minor'
-                    elif error_ms <= 50:
-                        grade_key = 'moderate'
-                    elif error_ms <= 1000:
-                        grade_key = 'large'
-                    else:
-                        grade_key = 'severe'
-                else:
-                    grade_key = 'moderate'  # 默认一般评级
-
-                # 添加录制音符的条形
-                record_bars = self._extract_note_bars(record_note, 'record')
-                for bar in record_bars:
-                    bar['grade'] = grade_key
-                    bar['error_ms'] = error_ms if 'error_ms' in locals() else 0
-                    graded_data[grade_key].append(bar)
-
-                # 添加播放音符的条形
-                replay_bars = self._extract_note_bars(replay_note, 'replay')
-                for bar in replay_bars:
-                    bar['grade'] = grade_key
-                    bar['error_ms'] = error_ms if 'error_ms' in locals() else 0
-                    graded_data[grade_key].append(bar)
-
-            else:
-                # 匹配失败：归为major评级
-                # 添加录制音符的条形（丢锤情况）
-                record_bars = self._extract_note_bars(record_note, 'record')
-                for bar in record_bars:
-                    bar['grade'] = 'major'
-                    bar['error_ms'] = float('inf')
-                    bar['match_status'] = 'failed'
-                    graded_data['major'].append(bar)
-
-                # 添加播放音符的条形（多锤情况）
-                replay_bars = self._extract_note_bars(replay_note, 'replay')
-                for bar in replay_bars:
-                    bar['grade'] = 'major'
-                    bar['error_ms'] = float('inf')
-                    bar['match_status'] = 'failed'
-                    graded_data['major'].append(bar)
-
-        # 记录统计信息
-        total_events = sum(len(data) for data in graded_data.values())
-        logger.info(f"📊 基于匹配等级的瀑布图数据收集完成:")
-        logger.info(f"   优秀(correct): {len(graded_data['correct'])}个事件")
-        logger.info(f"   良好(minor): {len(graded_data['minor'])}个事件")
-        logger.info(f"   一般(moderate): {len(graded_data['moderate'])}个事件")
-        logger.info(f"   较差(large): {len(graded_data['large'])}个事件")
-        logger.info(f"   严重(severe): {len(graded_data['severe'])}个事件")
-        logger.info(f"   失败(major): {len(graded_data['major'])}个事件")
-        logger.info(f"   总计: {total_events}个事件")
 
         return graded_data
 

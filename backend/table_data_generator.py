@@ -101,8 +101,8 @@ class TableDataGenerator:
                     record_note = initial_valid_record_data[rec.index]
                     if hasattr(record_note, 'after_touch') and record_note.after_touch is not None and len(record_note.after_touch.index) > 0:
                         # 使用after_touch的开始和结束时间
-                        key_on_ms = (record_note.after_touch.index[0] + record_note.offset) / 10.0
-                        key_off_ms = (record_note.after_touch.index[-1] + record_note.offset) / 10.0
+                        key_on_ms = record_note.key_on_ms
+                        key_off_ms = record_note.key_off_ms
                 
                 table_data.append({
                     'global_index': error_note.global_index,
@@ -162,8 +162,8 @@ class TableDataGenerator:
                     replay_note = initial_valid_replay_data[play.index]
                     if hasattr(replay_note, 'after_touch') and replay_note.after_touch is not None and len(replay_note.after_touch.index) > 0:
                         # 使用after_touch的开始和结束时间
-                        key_on_ms = (replay_note.after_touch.index[0] + replay_note.offset) / 10.0
-                        key_off_ms = (replay_note.after_touch.index[-1] + replay_note.offset) / 10.0
+                        key_on_ms = replay_note.key_on_ms
+                        key_off_ms = replay_note.key_off_ms
 
                 # 播放行显示实际数据
                 table_data.append({

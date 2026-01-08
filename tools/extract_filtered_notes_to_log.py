@@ -16,14 +16,10 @@ python tools/extract_filtered_notes_to_log.py --file your_file.spmid --output fi
 
 import argparse
 import sys
+import traceback
 import os
-from datetime import datetime
 from typing import List, Dict, Any
 
-# 确保可从任意工作目录运行：将项目根目录加入 sys.path
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
 
 from spmid.spmid_reader import SPMidReader, Note
 from spmid.data_filter import DataFilter
@@ -119,10 +115,12 @@ def log_note_detailed_info(logger, note: Note, track_name: str, note_idx: int, i
     # 时间信息
     if note.after_touch is not None and len(note.after_touch) > 0:
         try:
-            keyon_time = (note.after_touch.index[0] + note.offset) / 10.0
-            keyoff_time = (note.after_touch.index[-1] + note.offset) / 10.0
-        except (IndexError, AttributeError) as e:
-            raise ValueError(f"音符ID {note.id} 的after_touch数据无效: {e}") from e
+            keyon_time = note.key_on_ms
+            keyoff_time = note.key_off_ms
+            if keyon_time is None or keyoff_time is None:
+                raise ValueError(f"音符ID {note.id} 的时间信息不可用")
+        except (AttributeError) as e:
+            raise ValueError(f"音符ID {note.id} 的时间信息无效: {e}") from e
         duration = keyoff_time - keyon_time
         logger.info(f"         Time: KeyOn={keyon_time:8.2f}ms, KeyOff={keyoff_time:8.2f}ms, "
                    f"Duration={duration:6.2f}ms")
@@ -253,21 +251,13 @@ def extract_filtered_notes_to_log(file_path: str, output_file: str):
     """提取过滤后的有效音符数据到日志文件"""
     logger = setup_logger(output_file)
     
-    # 记录开始信息
-    logger.info("="*80)
-    logger.info(f"SPMID Filtered Notes Data Extraction Log")
-    logger.info(f"File: {file_path}")
-    logger.info(f"Extraction Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    logger.info("="*80)
-    logger.info("")
-    
     try:
         # 读取SPMID文件
         reader = SPMidReader.from_file(file_path, verbose=False)
         track_count = reader.get_track_count
         
         if track_count < 2:
-            logger.error(f"❌ Insufficient tracks: {track_count} (need at least 2)")
+            logger.error(f"Insufficient tracks: {track_count} (need at least 2)")
             return
         
         # 获取原始数据
@@ -284,13 +274,11 @@ def extract_filtered_notes_to_log(file_path: str, output_file: str):
         threshold_checker = MotorThresholdChecker()
         data_filter = DataFilter(threshold_checker)
         
-        # 执行数据过滤
-        logger.info("Executing data filtering...")
+
         valid_record_data, valid_replay_data, invalid_counts = data_filter.filter_valid_notes_data(
             record_data, replay_data
         )
-        logger.info("Data filtering completed.")
-        logger.info("")
+
         
         # 记录过滤统计
         log_filtering_summary(logger, record_data, replay_data, 
@@ -303,17 +291,10 @@ def extract_filtered_notes_to_log(file_path: str, output_file: str):
         # 记录有效音符汇总
         log_valid_notes_summary(logger, valid_record_data, valid_replay_data)
         
-        logger.info("="*80)
-        logger.info("Filtered notes data extraction completed successfully!")
-        logger.info("="*80)
-        
-        print(f"✅ Filtered notes data extraction completed. Log saved to: {output_file}")
-        
     except Exception as e:
-        logger.error(f"❌ Error during data extraction: {e}")
-        import traceback
+        logger.error(f"Error during data extraction: {e}")
         logger.error(traceback.format_exc())
-        print(f"❌ Error: {e}")
+        print(f"Error: {e}")
         sys.exit(1)
 
 

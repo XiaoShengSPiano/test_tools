@@ -54,7 +54,7 @@ class DataFilter:
                     - invalid_notes: 无效音符数
                     - invalid_reasons: 无效原因统计
         """
-        logger.info("🔍 开始过滤有效音符数据")
+        logger.info("开始过滤有效音符数据")
         
         # 过滤录制数据
         valid_record_data, record_invalid_counts = self._filter_valid_notes_with_details(record_data, "录制")
@@ -68,7 +68,7 @@ class DataFilter:
             'replay_data': replay_invalid_counts
         }
         
-        logger.info(f"✅ 数据过滤完成: 录制 {len(valid_record_data)}/{len(record_data)}, 播放 {len(valid_replay_data)}/{len(replay_data)}")
+        logger.info(f"数据过滤完成: 录制 {len(valid_record_data)}/{len(record_data)}, 播放 {len(valid_replay_data)}/{len(replay_data)}")
         
         return valid_record_data, valid_replay_data, invalid_counts
     
@@ -126,7 +126,6 @@ class DataFilter:
                                     first_hammer_vel = first_hammer_vel.iloc[0]
                             except:
                                 first_hammer_vel = 'N/A'
-                        # logger.info(f"🔇 发现不发声音符: 音符ID={note.id}, 锤速={first_hammer_vel}")
                         silent_notes_details.append({
                             'index': i,
                             'note': note,
@@ -179,7 +178,6 @@ class DataFilter:
         try:
             # 基本条件检查
             if len(note.after_touch) == 0 or len(note.hammers) == 0:
-                # self._log_invalid_note_details(note, "数据为空", "after_touch或hammers为空")
                 return False, 'empty_data'
             
             # 获取时间上最早的锤速值（第一个锤速）
@@ -192,15 +190,16 @@ class DataFilter:
             # 检查锤速是否为0
             if first_hammer_velocity == 0:
                 self._log_invalid_note_details(note, "锤速为0", f"锤速={first_hammer_velocity}")
-                # logger.info(f"🔇 音符ID={note.id} 被识别为不发声音符: 锤速为0")
                 return False, 'silent_notes'  # 锤速为0视为不发声音符
             
-            # 检查音符的基本条件
+            # 检查音符的基本条件 - 使用Note类预计算的持续时间
             try:
-                difference_value = note.after_touch.index[-1] - note.after_touch.index[0]
-            except (IndexError, AttributeError) as e:
-                raise ValueError(f"音符ID {note.id} 的after_touch数据无效: {e}") from e
-            
+                # 使用Note类的时间属性，避免重复计算
+                duration_ms = note.key_off_ms - note.key_on_ms
+                difference_value = duration_ms * 10  # 转换为0.1ms单位
+            except (AttributeError, TypeError) as e:
+                    raise ValueError(f"音符ID {note.id} 的时间数据无效: {e}") from e
+
             # 最短持续时间阈值：降低到10ms（内部单位0.1ms），避免过滤掉有效数据
             if difference_value < 100:
                 self._log_invalid_note_details(note, "持续时间过短", f"持续时间={difference_value/10:.2f}ms (<10ms)")

@@ -1,5 +1,4 @@
 import sqlite3
-import base64
 from datetime import datetime
 import threading
 import os
@@ -144,11 +143,8 @@ class HistoryManager:
                 # 验证文件内容
                 if file_content:
                     if isinstance(file_content, str):
-                        # 如果是字符串，尝试解码为bytes
-                        try:
-                            file_content = base64.b64decode(file_content)
-                        except:
-                            file_content = file_content.encode('utf-8')
+                        # 如果是字符串，转换为bytes
+                        file_content = file_content.encode('utf-8')
 
                     file_hash = hashlib.md5(file_content).hexdigest()
                     file_size = len(file_content)
@@ -481,8 +477,11 @@ class HistoryManager:
         """加载历史记录文件内容"""
         logger.info("🔄 从数据库重新分析历史文件...")
         
-        # 解码并加载文件内容 - 直接使用SPMIDLoader
-        decoded_bytes = base64.b64decode(file_content)
+        # 直接加载文件内容 - 已解码
+        if isinstance(file_content, str):
+            decoded_bytes = file_content.encode('utf-8')
+        else:
+            decoded_bytes = file_content
         success = backend.data_manager.spmid_loader.load_spmid_data(decoded_bytes)
         
         if success:

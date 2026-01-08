@@ -135,7 +135,8 @@ class DelayHistogramClickHandler:
         """获取所有延时数据"""
         delays_ms = []
 
-        if backend.multi_algorithm_mode and backend.multi_algorithm_manager:
+        active_algorithms = backend.multi_algorithm_manager.get_active_algorithms() if backend.multi_algorithm_manager else []
+        if len(active_algorithms) > 1:
             # 多算法模式：从所有激活算法收集数据
             active_algorithms = backend.multi_algorithm_manager.get_active_algorithms()
             for algorithm in active_algorithms:
@@ -145,7 +146,8 @@ class DelayHistogramClickHandler:
                         delays_ms.extend([item.get('keyon_offset', 0.0) / 10.0 for item in offset_data])
         else:
             # 单算法模式
-            offset_data = backend.analyzer.get_offset_alignment_data() if backend.analyzer else []
+            analyzer = backend._get_current_analyzer()
+            offset_data = analyzer.note_matcher.get_offset_alignment_data() if analyzer and analyzer.note_matcher else []
             if offset_data:
                 delays_ms = [item.get('keyon_offset', 0.0) / 10.0 for item in offset_data]
 

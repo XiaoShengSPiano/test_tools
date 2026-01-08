@@ -18,12 +18,34 @@ class Note:
     velocity: int
     after_touch: pd.Series
 
-    @property
-    def length(self) -> int:
-        """获取音符总长度（来自after_touch最后一个时间点）"""
-        if not self.after_touch.empty:
-            return self.after_touch.index[-1]
-        return 0
+    # 时间属性 - 在初始化后计算
+    key_on_ms: Optional[float] = None     # 按键开始时间（毫秒）
+    key_off_ms: Optional[float] = None    # 按键结束时间（毫秒）
+    duration_ms: Optional[float] = None   # 持续时间（毫秒）
+
+    # 拆分元数据 - 用于标识拆分后的音符
+    split_parent_idx: Optional[int] = None   # 父索引（原始数据的索引）
+    split_seq: Optional[int] = None          # 拆分序号（0, 1, 2...）
+    is_split: bool = False                   # 是否是拆分数据
+
+    def __post_init__(self):
+        """数据类初始化后计算预处理属性"""
+        self._compute_time_properties()
+
+    def _compute_time_properties(self):
+        """预计算时间属性并保存为成员变量"""
+        if self.after_touch is not None and not self.after_touch.empty:
+            # 按键开始时间（第一个触后数据点）
+            self.key_on_ms = (self.after_touch.index[0] + self.offset) / 10.0
+            # 按键结束时间（最后一个触后数据点）
+            self.key_off_ms = (self.after_touch.index[-1] + self.offset) / 10.0
+            # 持续时间（key_off - key_on）
+            self.duration_ms = self.key_off_ms - self.key_on_ms
+        else:
+            # 如果没有after_touch数据，设为None
+            self.key_on_ms = None
+            self.key_off_ms = None
+            self.duration_ms = None
 
 class SPMidReader:
     # 定义文件结构和块类型的常量
@@ -258,7 +280,7 @@ class SPMidReader:
             
             if self.verbose:
                 logger.info(f"Note: offset={offset}, id={note_id}, finger={finger}, "
-                           f"hammers={len(hammers_series)}, uuid={uuid}, length={note.length}")
+                           f"hammers={len(hammers_series)}, uuid={uuid}, duration={note.duration_ms:.1f}ms")
         
         self.tracks.append(notes)
     

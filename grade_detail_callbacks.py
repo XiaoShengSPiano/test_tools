@@ -1192,7 +1192,7 @@ def register_grade_detail_jump_callbacks(app, session_manager: SessionManager):
                             logger.info(f"🔍 错误表格单算法: hammer_time={hammer_time}, center_time_ms={center_time_ms}")
                 else:
                     # 多算法模式
-                    if backend.multi_algorithm_mode and backend.multi_algorithm_manager:
+                    if len(backend.multi_algorithm_manager.get_active_algorithms()) > 1 if backend.multi_algorithm_manager else False:
                         algorithm = backend.multi_algorithm_manager.get_algorithm(algorithm_name)
                         if algorithm and algorithm.analyzer:
                             if available_data == 'record':
@@ -1211,7 +1211,7 @@ def register_grade_detail_jump_callbacks(app, session_manager: SessionManager):
                 # 来自评级统计表格（匹配对）
                 if algorithm_name:
                     # 多算法模式
-                    if backend.multi_algorithm_mode and backend.multi_algorithm_manager:
+                    if len(backend.multi_algorithm_manager.get_active_algorithms()) > 1 if backend.multi_algorithm_manager else False:
                         algorithm = backend.multi_algorithm_manager.get_algorithm(algorithm_name)
                         if algorithm and algorithm.analyzer and algorithm.analyzer.note_matcher:
                             matched_pairs = algorithm.analyzer.matched_pairs
@@ -1256,7 +1256,7 @@ def register_grade_detail_jump_callbacks(app, session_manager: SessionManager):
             if center_time_ms is not None and target_y_position is not None:
                 # 计算标记的y位置（使用预先计算的target_y_position，如果是多算法模式需要考虑偏移）
                 marker_y = target_y_position
-                if algorithm_name and backend.multi_algorithm_mode and backend.multi_algorithm_manager:
+                if algorithm_name and backend.is_multi_algorithm_mode() and backend.multi_algorithm_manager:
                     # 多算法模式：需要找到该算法对应的y偏移
                     active_algorithms = backend.multi_algorithm_manager.get_active_algorithms()
                     algorithm_y_range = 100  # 与瀑布图生成器保持一致

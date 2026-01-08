@@ -6,13 +6,16 @@
 import asyncio
 import time
 import traceback
+import warnings
+
+# Suppress dash_table deprecation warning
+warnings.filterwarnings('ignore', message='.*dash_table package is deprecated.*', category=UserWarning)
 
 from typing import Optional, Tuple, List, Any, Union, Dict
 
 import dash
-import dash_table
 import dash_bootstrap_components as dbc
-from dash import html, dcc, no_update
+from dash import html, dcc, no_update, dash_table
 from dash import Input, Output, State
 from dash._callback_context import callback_context
 
@@ -176,7 +179,8 @@ def _check_existing_data(backend) -> Tuple[bool, Optional[str]]:
         Tuple[bool, Optional[str]]: (是否有数据, 文件名)
     """
     try:
-        if backend.analyzer and backend.analyzer.note_matcher and hasattr(backend.analyzer, 'matched_pairs') and len(backend.analyzer.matched_pairs) > 0:
+        analyzer = backend._get_current_analyzer()
+        if analyzer and analyzer.note_matcher and hasattr(analyzer, 'matched_pairs') and len(analyzer.matched_pairs) > 0:
             data_source_info = backend.get_data_source_info()
             existing_filename = data_source_info.get('filename', '未知文件')
             logger.info(f"[OK] 检测到现有分析数据: {existing_filename}")
@@ -634,11 +638,20 @@ def register_algorithm_callbacks(app, session_manager: SessionManager):
             content, filename = file_data
             algorithm_name = algorithm_name.strip()
 
+            # 解码base64文件内容
+            import base64
+            if ',' in content:
+                # 处理 "data:mime;base64,data" 格式
+                decoded_bytes = base64.b64decode(content.split(',')[1])
+            else:
+                # 处理纯base64字符串
+                decoded_bytes = base64.b64decode(content)
+
             # 异步添加算法
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             success, error_msg = loop.run_until_complete(
-                backend.add_algorithm(algorithm_name, filename, content)
+                backend.add_algorithm(algorithm_name, filename, decoded_bytes)
             )
             loop.close()
 
