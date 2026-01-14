@@ -15,6 +15,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
+import time
 from utils.logger import Logger
 from utils.colors import ALGORITHM_COLOR_PALETTE
 from spmid.spmid_analyzer import SPMIDAnalyzer
@@ -80,36 +81,50 @@ class AlgorithmDataset:
         
         logger.info(f"✅ AlgorithmDataset初始化: {algorithm_name} (文件: {filename})")
     
-    def load_data(self, record_data: List[Note], replay_data: List[Note]) -> bool:
+    def load_data(self, record_data: List[Note], replay_data: List[Note], filter_collector=None) -> bool:
         """
         加载并分析数据
         
         Args:
             record_data: 录制数据
             replay_data: 播放数据
+            filter_collector: 可选的过滤信息收集器（包含加载阶段的过滤信息）
             
         Returns:
             bool: 是否成功
         """
         try:
+            perf_load_start = time.time()
             self.metadata.status = AlgorithmStatus.LOADING
+            logger.info(f"                📊 [Dataset] 开始加载数据...")
 
-            # 保存原始数据
+            # ============ 保存原始数据 ============
+            perf_save_start = time.time()
             self.record_data = record_data
             self.replay_data = replay_data
+            perf_save_end = time.time()
+            logger.info(f"                ⏱️  [性能] Dataset-保存数据: {(perf_save_end - perf_save_start)*1000:.2f}ms")
 
-            # 创建分析器并执行分析
+            # ============ 创建分析器并执行分析 ============
+            perf_analyze_start = time.time()
+            logger.info(f"                🔬 开始执行SPMIDAnalyzer分析...")
             self.analyzer = SPMIDAnalyzer()
-            self.analyzer.analyze(record_data, replay_data)
+            self.analyzer.analyze(record_data, replay_data, filter_collector)
+            perf_analyze_end = time.time()
+            analyze_time_ms = (perf_analyze_end - perf_analyze_start) * 1000
+            logger.info(f"                ⏱️  [性能] Dataset-SPMIDAnalyzer分析: {analyze_time_ms:.2f}ms")
 
             self.metadata.status = AlgorithmStatus.READY
-            logger.info(f"算法 {self.metadata.algorithm_name} 数据加载完成")
+            
+            perf_load_end = time.time()
+            total_time_ms = (perf_load_end - perf_load_start) * 1000
+            logger.info(f"                🏁 [Dataset] 数据加载完成，总耗时: {total_time_ms:.2f}ms")
             return True
             
         except Exception as e:
             self.metadata.status = AlgorithmStatus.ERROR
             self.metadata.error_message = str(e)
-            logger.error(f"算法 {self.metadata.algorithm_name} 数据加载失败: {e}")
+            logger.error(f"                ❌ 算法 {self.metadata.algorithm_name} 数据加载失败: {e}")
             return False
     
     def get_statistics(self) -> Dict[str, Any]:
@@ -143,6 +158,26 @@ class AlgorithmDataset:
             return []
         
         return self.analyzer.note_matcher.get_offset_alignment_data()
+    
+    def get_key_statistics_table_data(self) -> List[Dict[str, Union[int, float, str]]]:
+        """
+        获取按键统计表格数据
+        
+        Returns:
+            List[Dict[str, Any]]: 按键统计数据列表，每行包含一个按键的统计信息
+        """
+        if not self.analyzer or not self.analyzer.note_matcher:
+            return []
+        
+        # 获取基础统计数据
+        data = self.analyzer.note_matcher.get_key_statistics_for_bar_chart()
+        
+        # 为每行添加算法名称（格式：算法名_文件名）
+        algorithm_display = f"{self.metadata.display_name}_{self.metadata.filename}"
+        for row in data:
+            row['algorithm_name'] = algorithm_display
+        
+        return data
     
     def is_ready(self) -> bool:
         """检查算法是否已就绪"""
@@ -227,7 +262,8 @@ class MultiAlgorithmManager:
         return unique_name
     
     async def add_algorithm_async(self, algorithm_name: str, filename: str,
-                                  record_data: List[Note], replay_data: List[Note]) -> Tuple[bool, str]:
+                                  record_data: List[Note], replay_data: List[Note],
+                                  filter_collector=None) -> Tuple[bool, str]:
         """
         异步添加算法（支持并发处理）
         
@@ -239,14 +275,23 @@ class MultiAlgorithmManager:
             filename: 文件名
             record_data: 录制数据
             replay_data: 播放数据
+            filter_collector: 可选的过滤信息收集器（包含加载阶段的过滤信息）
             
         Returns:
-            Tuple[bool, str]: (是否成功, 错误信息)
+            Tuple[bool, str]: (是否成功, 唯一算法名或错误信息)
+                - 成功时返回: (True, unique_algorithm_name)
+                - 失败时返回: (False, error_message)
         """
-        # 生成唯一的算法名称（算法名_文件名（无扩展名））
-        unique_algorithm_name = self._generate_unique_algorithm_name(algorithm_name, filename)
+        perf_manager_start = time.time()
+        logger.info(f"            🔧 [Manager] 开始添加算法...")
         
-        # 验证唯一算法名称
+        # ============ 生成唯一算法名 ============
+        perf_name_start = time.time()
+        unique_algorithm_name = self._generate_unique_algorithm_name(algorithm_name, filename)
+        perf_name_end = time.time()
+        logger.info(f"            ⏱️  [性能] Manager-生成唯一名: {(perf_name_end - perf_name_start)*1000:.2f}ms")
+        
+        # ============ 验证算法名 ============
         is_valid, error_msg = self.validate_algorithm_name(unique_algorithm_name)
         if not is_valid:
             return False, error_msg
@@ -256,26 +301,41 @@ class MultiAlgorithmManager:
             limit_text = str(self.max_algorithms) if self.max_algorithms is not None else "无限制"
             return False, f"已达到最大算法数量限制 ({limit_text})"
         
-        # 创建算法数据集（使用唯一名称作为内部标识，原始名称作为显示名称）
+        # ============ 创建算法数据集 ============
+        perf_create_start = time.time()
         color_index = len(self.algorithms)
         algorithm = AlgorithmDataset(unique_algorithm_name, algorithm_name, filename, color_index)
+        perf_create_end = time.time()
+        logger.info(f"            ⏱️  [性能] Manager-创建数据集: {(perf_create_end - perf_create_start)*1000:.2f}ms")
         
-        # 在线程池中执行数据加载（CPU密集型任务，使用线程池更高效）
+        # ============ 执行数据分析（线程池） ============
+        perf_analysis_start = time.time()
+        logger.info(f"            🔄 执行数据分析（线程池）...")
+        
         loop = asyncio.get_event_loop()
         success = await loop.run_in_executor(
             self.executor,
             algorithm.load_data,
             record_data,
-            replay_data
+            replay_data,
+            filter_collector
         )
+        
+        perf_analysis_end = time.time()
+        analysis_time_ms = (perf_analysis_end - perf_analysis_start) * 1000
+        logger.info(f"            ⏱️  [性能] Manager-数据分析: {analysis_time_ms:.2f}ms")
         
         if success:
             self.algorithms[unique_algorithm_name] = algorithm
-            logger.info(f"算法 '{algorithm_name}' (文件: {filename}) 添加成功，内部标识: '{unique_algorithm_name}'")
-            return True, ""
+            
+            perf_manager_end = time.time()
+            total_time_ms = (perf_manager_end - perf_manager_start) * 1000
+            logger.info(f"            🏁 [Manager] 算法添加完成，总耗时: {total_time_ms:.2f}ms")
+            logger.info(f"            ✅ 算法 '{algorithm_name}' (文件: {filename}) 添加成功，唯一标识: {unique_algorithm_name}")
+            return True, unique_algorithm_name  # 返回唯一标识符
         else:
             error_msg = algorithm.metadata.error_message or "未知错误"
-            logger.error(f"算法 '{algorithm_name}' (文件: {filename}) 添加失败: {error_msg}")
+            logger.error(f"            ❌ 算法 '{algorithm_name}' (文件: {filename}) 添加失败: {error_msg}")
             return False, error_msg
     
     def remove_algorithm(self, algorithm_name: str) -> bool:

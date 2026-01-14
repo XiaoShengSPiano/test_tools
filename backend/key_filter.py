@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 
 """
-数据过滤模块
-负责按键过滤、时间过滤等数据筛选功能
+按键过滤模块
+负责按键过滤功能，控制UI显示哪些按键
 """
 
 from typing import List, Dict, Any, Optional, Tuple
@@ -12,11 +12,11 @@ from utils.logger import Logger
 logger = Logger.get_logger()
 
 
-class DataFilter:
-    """数据过滤器 - 负责按键过滤功能"""
+class KeyFilter:
+    """按键过滤器 - 负责按键过滤功能，控制UI显示"""
     
     def __init__(self):
-        """初始化数据过滤器"""
+        """初始化按键过滤器"""
         self.valid_record_data = None
         self.valid_replay_data = None
         

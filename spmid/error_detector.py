@@ -32,7 +32,6 @@ class ErrorDetector:
         self.global_time_offset = 0.0  # 固定为0，不再使用全局偏移
         self.multi_hammers: List[ErrorNote] = []
         self.drop_hammers: List[ErrorNote] = []
-        self.silent_hammers: List[ErrorNote] = []
     
     def analyze_hammer_issues(self, record_data: List[Note], replay_data: List[Note],
                             matched_pairs: List[Tuple[int, int, Note, Note]],
@@ -56,10 +55,6 @@ class ErrorDetector:
         # 简化的逻辑：直接基于匹配结果分析未匹配的音符
         self._analyze_unmatched_notes_for_hammer_issues(record_data, replay_data, matched_pairs, note_matcher)
 
-        # 打印错误统计信息
-        print(f"[错误统计] 丢锤数: {len(self.drop_hammers)} 个")
-        print(f"[错误统计] 多锤数: {len(self.multi_hammers)} 个")
-        print(f"[错误统计] 总错误数: {len(self.drop_hammers) + len(self.multi_hammers)} 个")
 
         return self.drop_hammers, self.multi_hammers
 
@@ -169,28 +164,23 @@ class ErrorDetector:
         """
         创建错误音符对象并添加统计信息
         
+        重构后直接使用 Note 对象，保留完整数据，便于后续绘制曲线。
+        
         Args:
-            note: 音符对象
-            note_info: 音符信息字典
+            note: 音符对象（完整的 Note，包含 hammers, after_touch 等数据）
+            note_info: 音符信息字典（现在主要用于索引）
             error_type: 错误类型
             reason: 失败原因（可选）
             
         Returns:
             ErrorNote: 错误音符对象
         """
-        from .types import NoteInfo
-        
         # 如果没有提供原因，保持为空字符串
         if reason is None:
             reason = ""
         
         return ErrorNote(
-            infos=[NoteInfo(
-                index=note_info['index'],
-                keyId=note_info['key_id'],
-                keyOn=note_info['keyon'],
-                keyOff=note_info['keyoff']
-            )],
+            notes=[note],  # 直接使用完整的 Note 对象
             diffs=[],
             error_type=error_type,
             global_index=note_info['index'],
@@ -215,12 +205,4 @@ class ErrorDetector:
         """
         return self.multi_hammers.copy()
     
-    def get_silent_hammers(self) -> List[ErrorNote]:
-        """
-        获取不发声锤子列表
-        
-        Returns:
-            List[ErrorNote]: 不发声锤子列表
-        """
-        return self.silent_hammers.copy()
     

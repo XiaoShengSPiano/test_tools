@@ -444,97 +444,6 @@ class DelayAnalysis:
                 'message': f'分组分析失败: {str(e)}'
             }
     
-    def analyze_force_delay_by_key(self) -> Dict[str, Any]:
-        """
-        分析每个按键的力度与延时关系
-        
-        按按键ID分组，对每个按键分析其内部的力度（锤速）与延时的统计关系。
-        包括：相关性分析、回归分析、描述性统计等。
-        
-        Returns:
-            Dict[str, Any]: 分析结果，包含：
-                - key_analysis: 每个按键的分析结果列表
-                - overall_summary: 整体摘要统计
-                - scatter_data: 散点图数据（按按键分组）
-                - status: 状态标识
-        """
-        try:
-            if not self.analyzer or not self.analyzer.note_matcher:
-                logger.warning("⚠️ 分析器或匹配器不存在，无法进行按键力度-延时分析")
-                return self._create_empty_force_delay_result("分析器不存在")
-            
-            matched_pairs = self.analyzer.note_matcher.get_matched_pairs()
-            offset_data = self.analyzer.note_matcher.get_offset_alignment_data()
-            
-            if not matched_pairs or not offset_data:
-                logger.warning("⚠️ 没有匹配数据，无法进行分析")
-                return self._create_empty_force_delay_result("没有匹配数据")
-            
-            # 提取数据：按键ID、锤速、延时
-            key_force_delay_data = self._extract_key_force_delay_data(matched_pairs, offset_data)
-            
-            if not key_force_delay_data:
-                logger.warning("⚠️ 没有有效的按键-力度-延时数据")
-                return self._create_empty_force_delay_result("没有有效数据")
-            
-            # 计算所有数据的平均延时（用于计算相对延时）
-            all_delays = [delay for _, _, delay in key_force_delay_data]
-            mean_delay = np.mean(all_delays) if all_delays else 0
-            
-            # 按按键ID分组，同时存储原始延时和相对延时
-            key_groups = defaultdict(lambda: {'forces': [], 'absolute_delays': [], 'relative_delays': []})
-            for key_id, force, delay in key_force_delay_data:
-                key_groups[key_id]['forces'].append(force)
-                key_groups[key_id]['absolute_delays'].append(delay)  # 原始延时
-                key_groups[key_id]['relative_delays'].append(delay - mean_delay)  # 相对延时
-            
-            # 对每个按键进行分析
-            key_analysis = []
-            scatter_data = {}
-            
-            for key_id in sorted(key_groups.keys()):
-                forces = key_groups[key_id]['forces']
-                absolute_delays = key_groups[key_id]['absolute_delays']
-                relative_delays = key_groups[key_id]['relative_delays']
-                
-                if len(forces) < 2:  # 至少需要2个样本才能进行相关性分析
-                    continue
-                
-                # 对单个按键进行力度-延时分析（使用相对延时）
-                single_key_result = self._analyze_single_key_force_delay(
-                    key_id, forces, relative_delays
-                )
-                key_analysis.append(single_key_result)
-                
-                # 保存散点图数据（包含原始延时和相对延时）
-                scatter_data[key_id] = {
-                    'forces': forces,
-                    'delays': relative_delays,  # 用于显示的延时（相对延时）
-                    'absolute_delays': absolute_delays,  # 原始延时（用于悬停显示）
-                    'mean_delay': mean_delay  # 平均延时（用于说明）
-                }
-            
-            if not key_analysis:
-                logger.warning("⚠️ 没有足够的按键数据进行分析（每个按键至少需要2个样本）")
-                return self._create_empty_force_delay_result("数据不足")
-            
-            # 计算整体摘要统计
-            overall_summary = self._calculate_force_delay_overall_summary(key_analysis)
-            
-            logger.info(f"✅ 按键力度-延时分析完成，共分析 {len(key_analysis)} 个按键")
-            
-            return {
-                'key_analysis': key_analysis,
-                'overall_summary': overall_summary,
-                'scatter_data': scatter_data,
-                'status': 'success'
-            }
-            
-        except Exception as e:
-            logger.error(f"按键力度-延时分析失败: {e}")
-            logger.error(traceback.format_exc())
-            return self._create_empty_force_delay_result(f"分析失败: {str(e)}")
-    
     def analyze_key_force_interaction(self) -> Dict[str, Any]:
         """
         生成按键与力度的交互效应图数据
@@ -678,107 +587,7 @@ class DelayAnalysis:
                 return first_velocity_raw
                 
         except Exception as e:
-            logger.debug(f"提取锤速失败: {e}")
             return None
-    
-    def _analyze_single_key_force_delay(self, key_id: int, forces: List[float], 
-                                       delays: List[float]) -> Dict[str, Any]:
-        """
-        分析单个按键的力度与延时关系
-        
-        Args:
-            key_id: 按键ID
-            forces: 力度值列表
-            delays: 延时值列表（ms，带符号）
-            
-        Returns:
-            Dict[str, Any]: 单个按键的分析结果，包含：
-                - key_id: 按键ID
-                - correlation: 相关性分析结果
-                - regression: 回归分析结果
-                - descriptive_stats: 描述性统计
-                - sample_count: 样本数量
-        """
-        # 1. 相关性分析
-        correlation = self._calculate_correlation(forces, delays)
-        
-        # 2. 回归分析
-        regression = self._perform_regression_analysis(forces, delays)
-        
-        # 3. 描述性统计
-        descriptive_stats = {
-            'force': {
-                'mean': float(np.mean(forces)),
-                'std': float(np.std(forces)),
-                'min': float(np.min(forces)),
-                'max': float(np.max(forces)),
-                'median': float(np.median(forces))
-            },
-            'delay': {
-                'mean': float(np.mean(delays)),
-                'std': float(np.std(delays)),
-                'min': float(np.min(delays)),
-                'max': float(np.max(delays)),
-                'median': float(np.median(delays))
-            }
-        }
-        
-        return {
-            'key_id': key_id,
-            'correlation': correlation,
-            'regression': regression,
-            'descriptive_stats': descriptive_stats,
-            'sample_count': len(forces)
-        }
-    
-    def _calculate_force_delay_overall_summary(self, key_analysis: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        计算按键力度-延时分析的整体摘要统计
-        
-        Args:
-            key_analysis: 每个按键的分析结果列表
-            
-        Returns:
-            Dict[str, Any]: 整体摘要统计
-        """
-        if not key_analysis:
-            return {}
-        
-        # 统计显著相关的按键数量
-        significant_correlation_count = 0
-        positive_correlation_count = 0
-        negative_correlation_count = 0
-        
-        # 统计平均相关系数
-        pearson_rs = []
-        spearman_rs = []
-        
-        for analysis in key_analysis:
-            corr = analysis.get('correlation', {})
-            if corr.get('pearson_significant', False):
-                significant_correlation_count += 1
-                pearson_r = corr.get('pearson_r', 0)
-                if pearson_r > 0:
-                    positive_correlation_count += 1
-                elif pearson_r < 0:
-                    negative_correlation_count += 1
-                pearson_rs.append(pearson_r)
-            
-            if corr.get('spearman_r') is not None:
-                spearman_rs.append(corr.get('spearman_r', 0))
-        
-        return {
-            'total_keys_analyzed': len(key_analysis),
-            'significant_correlation_count': significant_correlation_count,
-            'positive_correlation_count': positive_correlation_count,
-            'negative_correlation_count': negative_correlation_count,
-            'mean_pearson_r': float(np.mean(pearson_rs)) if pearson_rs else None,
-            'mean_spearman_r': float(np.mean(spearman_rs)) if spearman_rs else None,
-            'correlation_rate': significant_correlation_count / len(key_analysis) if key_analysis else 0.0
-        }
-    
-    
-    
     
     def _generate_interaction_plot_data(self, key_ids: List[int], replay_velocities: List[float], 
                                        delays: List[float], record_indices: List[int] = None,
@@ -885,16 +694,6 @@ class DelayAnalysis:
                 'message': f'生成交互效应图数据失败: {str(e)}'
             }
     
-    def _create_empty_force_delay_result(self, message: str) -> Dict[str, Any]:
-        """创建空的按键力度-延时分析结果"""
-        return {
-            'status': 'error',
-            'message': message,
-            'key_analysis': [],
-            'overall_summary': {},
-            'scatter_data': {}
-        }
-    
     def _create_empty_interaction_result(self, message: str) -> Dict[str, Any]:
         """创建空的交互效应分析结果"""
         return {
@@ -915,4 +714,3 @@ class DelayAnalysis:
             'anomaly_keys': [],
             'difference_pattern': {}
         }
-

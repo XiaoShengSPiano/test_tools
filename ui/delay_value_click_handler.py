@@ -4,6 +4,7 @@
 """
 
 import logging
+import traceback
 import ast
 from typing import Dict, List, Optional, Tuple, Any
 from dash import no_update, dcc
@@ -83,7 +84,7 @@ class DelayValueClickHandler:
             # 生成图表并返回
             logger.info("[DEBUG] 开始生成图表")
             chart_result = self._generate_chart_and_return(
-                record_note, replay_note, algorithm_name, delay_type,
+                backend, record_note, replay_note, algorithm_name, delay_type,
                 other_notes_result['other_algorithm_notes'], mean_delays_result['mean_delays'],
                 record_index, replay_index
             )
@@ -93,7 +94,6 @@ class DelayValueClickHandler:
 
         except Exception as e:
             logger.error(f"[ERROR] 处理延迟字段点击失败: {e}")
-            import traceback
             logger.error(traceback.format_exc())
             return current_style, [], None
 
@@ -231,16 +231,11 @@ class DelayValueClickHandler:
     def _get_notes_data(self, backend, algorithm_name, delay_type) -> Dict[str, Any]:
         """获取对应延迟类型的音符数据"""
         try:
-            logger.info(f"[DEBUG] 调用 backend.get_notes_by_delay_type({algorithm_name}, {delay_type})")
             # 获取对应延迟类型的音符
             notes = backend.get_notes_by_delay_type(algorithm_name, delay_type)
             if notes is None:
                 logger.warning(f"[WARNING] 无法获取{delay_type}延迟对应的音符")
                 return {'valid': False}
-
-            logger.info(f"[DEBUG] 成功获取音符数据: {type(notes)}")
-            if isinstance(notes, tuple) and len(notes) == 4:
-                logger.info(f"[DEBUG] 音符数据包含: record_note={type(notes[0])}, replay_note={type(notes[1])}, record_index={notes[2]}, replay_index={notes[3]}")
 
             return {
                 'valid': True,
@@ -249,7 +244,6 @@ class DelayValueClickHandler:
 
         except Exception as e:
             logger.error(f"[ERROR] 获取音符数据失败: {e}")
-            import traceback
             logger.error(traceback.format_exc())
             return {'valid': False}
 
@@ -296,7 +290,6 @@ class DelayValueClickHandler:
                 statistics = target_algorithm.get_statistics()
                 mean_error_0_1ms = statistics.get('mean_error', 0.0)
                 mean_delays[algorithm_name] = mean_error_0_1ms / 10.0  # 转换为ms单位
-                logger.info(f"[OK] 从统计数据获取平均延时: {mean_delays[algorithm_name]:.2f}ms")
             else:
                 logger.warning(f"[WARNING] 未找到算法 {algorithm_name}，使用默认平均延时0")
                 mean_delays[algorithm_name] = 0.0
@@ -306,22 +299,20 @@ class DelayValueClickHandler:
             if analyzer:
                 mean_error_0_1ms = analyzer.get_mean_error()
                 mean_delays[algorithm_name] = mean_error_0_1ms / 10.0
-                logger.info(f"[OK] 从单算法分析器获取平均延时: {mean_delays[algorithm_name]:.2f}ms")
             else:
                 logger.warning("[WARNING] 单算法模式无分析器，使用默认平均延时0")
                 mean_delays[algorithm_name] = 0.0
 
         return {'mean_delays': mean_delays}
 
-    def _generate_chart_and_return(self, record_note, replay_note, algorithm_name, delay_type,
+    def _generate_chart_and_return(self, backend, record_note, replay_note, algorithm_name, delay_type,
                                   other_algorithm_notes, mean_delays, record_index, replay_index) -> Dict[str, Any]:
         """生成对比曲线图并准备返回数据"""
         try:
             
 
             # 生成对比曲线（包含其他算法的播放曲线和平均延时偏移）
-            import spmid
-            detail_figure_combined = spmid.plot_note_comparison_plotly(
+            detail_figure_combined = backend.plot_generator.generate_note_comparison_plot(
                 record_note,
                 replay_note,
                 algorithm_name=algorithm_name,
@@ -330,10 +321,8 @@ class DelayValueClickHandler:
             )
 
             if not detail_figure_combined:
-                logger.error("[ERROR] 曲线生成失败 - spmid.plot_note_comparison_plotly 返回 None")
+                logger.error("[ERROR] 曲线生成失败 - generate_note_comparison_plot 返回 None")
                 return {'modal_style': {'display': 'none'}, 'rendered_row': [], 'clicked_point_info': None}
-
-            logger.info(f"[DEBUG] 图表生成成功: {type(detail_figure_combined)}")
 
             # 显示模态框
             modal_style = {
@@ -360,10 +349,7 @@ class DelayValueClickHandler:
                 'source_plot_id': 'delay-value-click',  # 标识来源是延迟值点击
                 'delay_type': delay_type
             }
-
-            delay_type_name = "最大" if delay_type == 'max' else "最小"
-            logger.info(f"[OK] {delay_type_name}延迟字段点击处理成功，算法: {algorithm_name}, 按键ID: {key_id}")
-
+    
             return {
                 'modal_style': modal_style,
                 'rendered_row': [rendered_row],

@@ -32,9 +32,7 @@ def register_session_callbacks(app, session_manager: SessionManager, history_man
         # 多算法模式始终启用
         session_id, backend = session_manager.get_or_create_backend(session_id)
         if backend:
-            # 确保multi_algorithm_manager已初始化
-            if not backend.multi_algorithm_manager:
-                backend._ensure_multi_algorithm_manager()
+            # multi_algorithm_manager 在初始化时已创建
             logger.info("[OK] 多算法模式已就绪")
 
         return session_id

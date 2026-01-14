@@ -13,13 +13,14 @@ SPMID数据分析器
 
 from matplotlib import figure
 from .spmid_reader import Note
-from .types import NoteInfo, Diffs, ErrorNote
-from .motor_threshold_checker import MotorThresholdChecker
+from .types import Diffs, ErrorNote
 from .data_filter import DataFilter
+from .invalid_notes_statistics import InvalidNotesStatistics
 from .note_matcher import NoteMatcher
 from .error_detector import ErrorDetector
-from .dtw_aligner import DTWAligner
-from typing import List, Tuple, Optional, Dict, Any, Union
+from .filter_collector import FilterCollector
+from .filter_integrator import FilterIntegrator
+from typing import List, Tuple, Optional, Dict, Any, Union, TYPE_CHECKING
 from utils.logger import Logger
 
 import pandas as pd
@@ -43,38 +44,45 @@ class SPMIDAnalyzer:
         self.data_filter: Optional[DataFilter] = None
         self.note_matcher: Optional[NoteMatcher] = None
         self.error_detector: Optional[ErrorDetector] = None
-        self.dtw_aligner: Optional[DTWAligner] = None
         
         # 分析结果
         self.multi_hammers: List[ErrorNote] = []
         self.drop_hammers: List[ErrorNote] = []
-        self.silent_hammers: List[ErrorNote] = []
         self.valid_record_data: List[Note] = []
         self.valid_replay_data: List[Note] = []
-        self.invalid_notes_table_data: Dict[str, Any] = {}
+        self.invalid_statistics: Optional[InvalidNotesStatistics] = None  # 使用统计对象
         self.matched_pairs: List[Tuple[int, int, Note, Note]] = []
         
         # 统计信息
         self.analysis_stats: Dict[str, Any] = {}
     
-    def analyze(self, record_data: List[Note], replay_data: List[Note]) -> Tuple[List[ErrorNote], List[ErrorNote], List[ErrorNote], List[Note], List[Note], dict, List[Tuple[int, int, Note, Note]]]:
+    def analyze(
+        self, 
+        record_data: List[Note], 
+        replay_data: List[Note],
+        filter_collector: FilterCollector = None
+    ) -> Tuple[List[ErrorNote], List[ErrorNote], List[ErrorNote], List[Note], List[Note], InvalidNotesStatistics, List[Tuple[int, int, Note, Note]]]:
         """
         执行完整的SPMID数据分析
 
         分析流程：
         1. 初始化各个分析组件
-        2. 过滤有效音符数据
-        3. 执行按键匹配
-        4. 分析异常（多锤、丢锤、不发声）
-        5. 提取正常匹配的音符对
-        6. 生成统计报告
+        2. 整合加载阶段的过滤信息（如果提供）
+        3. 执行按键匹配（使用原始数据，不预先过滤）
+        4. 分析异常（多锤、丢锤，使用原始数据和匹配结果）
+        5. 数据过滤（用于分类统计技术性无效数据，如不发声）
+        6. 提取正常匹配的音符对
+        7. 生成统计报告
+        
+        注意：匹配和错误检测在过滤之前，确保多锤/丢锤的准确识别
 
         Args:
-            record_data: 录制数据
-            replay_data: 播放数据
+            record_data: 录制数据（已经过滤的有效数据）
+            replay_data: 播放数据（已经过滤的有效数据）
+            filter_collector: 可选的过滤信息收集器（包含在加载阶段被过滤的音符信息）
 
         Returns:
-            tuple: (multi_hammers, drop_hammers, silent_hammers, matched_record_data, matched_replay_data, invalid_notes_table_data, matched_pairs)
+            tuple: (multi_hammers, drop_hammers, matched_record_data, matched_replay_data, invalid_statistics, matched_pairs)
         """
         import time
         total_start_time = time.time()
@@ -82,28 +90,26 @@ class SPMIDAnalyzer:
 
         # 步骤1：初始化各个分析组件
         self._initialize_components()
-        # TODO
-        # 步骤2：过滤有效音符数据
-        import time
-        filter_start_time = time.time()
-        logger.info(f"开始数据过滤: 录制数据{len(record_data)}个音符, 播放数据{len(replay_data)}个音符")
-
-        self.valid_record_data, self.valid_replay_data, invalid_counts = self.data_filter.filter_valid_notes_data(record_data, replay_data)
-
-        filter_end_time = time.time()
-        filter_duration = filter_end_time - filter_start_time
-        logger.info(f"数据过滤完成: 耗时{filter_duration:.3f}秒, 录制有效{len(self.valid_record_data)}个, 播放有效{len(self.valid_replay_data)}个")
         
-        # 保存第一次过滤后的数据快照，用于准确率计算和UI显示异常音符详情
-        self.initial_valid_record_data = self.valid_record_data.copy()
-        self.initial_valid_replay_data = self.valid_replay_data.copy()
+        # 步骤2：整合加载阶段的过滤信息
+        if filter_collector is not None:
+            self.invalid_statistics = FilterIntegrator.integrate_filter_data(
+                filter_collector, record_data, replay_data
+            )
+            logger.info(f"✅ 已整合加载阶段的过滤信息: {self.invalid_statistics}")
+        else:
+            # 如果没有提供过滤器，创建空的统计对象
+            self.invalid_statistics = InvalidNotesStatistics()
+            self.invalid_statistics.record_total = len(record_data)
+            self.invalid_statistics.record_valid = len(record_data)
+            self.invalid_statistics.replay_total = len(replay_data)
+            self.invalid_statistics.replay_valid = len(replay_data)
         
         # 步骤3：执行按键匹配
-        import time
         matching_start_time = time.time()
-        logger.info(f"开始按键匹配: 录制数据{len(self.valid_record_data)}个音符, 播放数据{len(self.valid_replay_data)}个音符")
+    
 
-        self.matched_pairs = self.note_matcher.find_all_matched_pairs(self.valid_record_data, self.valid_replay_data)
+        self.matched_pairs = self.note_matcher.find_all_matched_pairs(record_data, replay_data)
 
         matching_end_time = time.time()
         matching_duration = matching_end_time - matching_start_time
@@ -112,12 +118,13 @@ class SPMIDAnalyzer:
         # 保存匹配统计信息
         self.match_statistics = self.note_matcher.match_statistics
         
-        # 步骤4：分析异常（传递note_matcher以便识别超过阈值的匹配对）
+        # 步骤3：分析异常（使用原始数据和匹配结果）
+        # 基于匹配结果分析多锤和丢锤，使用原始数据确保所有音符都被考虑
         error_analysis_start_time = time.time()
         logger.info(f"开始异常检测: 匹配对{len(self.matched_pairs)}个")
 
         self.drop_hammers, self.multi_hammers = self.error_detector.analyze_hammer_issues(
-            self.valid_record_data, self.valid_replay_data, self.matched_pairs,
+            record_data, replay_data, self.matched_pairs,
             note_matcher=self.note_matcher
         )
 
@@ -125,115 +132,71 @@ class SPMIDAnalyzer:
         error_analysis_duration = error_analysis_end_time - error_analysis_start_time
         logger.info(f"异常检测完成: 耗时{error_analysis_duration:.3f}秒, 丢锤{len(self.drop_hammers)}个, 多锤{len(self.multi_hammers)}个")
         
-        # 步骤6：提取正常匹配的音符对
+        # # 步骤4：数据过滤（用于统计无效音符信息）
+        # filter_start_time = time.time()
+        # _, _, self.invalid_statistics = self.data_filter.filter_notes(record_data, replay_data)
+        # filter_end_time = time.time()
+        # filter_duration = filter_end_time - filter_start_time
+        # logger.info(f"数据过滤完成: 耗时{filter_duration:.3f}秒")
+        
+        # 步骤4.5：保存初始有效数据（用于错误详情展示）
+        # 这些是原始输入数据，未经过匹配过滤
+        self.initial_valid_record_data = record_data
+        self.initial_valid_replay_data = replay_data
+        
+        # 步骤5：提取正常匹配的音符对
         matched_record_data, matched_replay_data = self.note_matcher.extract_normal_matched_pairs(
             self.matched_pairs, self.multi_hammers, self.drop_hammers
         )
         
-        # 保存匹配后的数据，但不覆盖初始数据
+        # 保存匹配后的数据
         self.valid_record_data = matched_record_data
         self.valid_replay_data = matched_replay_data
+
+        # 步骤6：记录统计信息
+        self._log_invalid_notes_statistics(record_data, replay_data)
         
-        # 步骤7：记录统计信息
-        self._log_invalid_notes_statistics(record_data, replay_data, invalid_counts)
-        
-        # 步骤8：生成无效音符表格数据
-        self.invalid_notes_table_data = self.data_filter.generate_invalid_notes_table_data(invalid_counts)
-        
-        # 步骤9：从无效音符统计中提取不发声音符详细信息
-        self.silent_hammers = self._extract_silent_hammers_from_invalid_counts(invalid_counts)
-        
-        # 步骤10：生成分析统计
+        # 步骤8：生成分析统计
         self._generate_analysis_stats()
 
         # 计算总耗时并输出性能统计
         total_end_time = time.time()
         total_duration = total_end_time - total_start_time
         logger.info(f"🎉 SPMID数据分析完成: 总耗时{total_duration:.3f}秒")
-        logger.info(f"📊 性能统计: 过滤{filter_duration:.3f}s | 匹配{matching_duration:.3f}s | 异常检测{error_analysis_duration:.3f}s")
+
         
-        return (self.multi_hammers, self.drop_hammers, self.silent_hammers, 
-                self.valid_record_data, self.valid_replay_data, 
-                self.invalid_notes_table_data, self.matched_pairs)
+        return (self.multi_hammers, self.drop_hammers,
+                self.valid_record_data, self.valid_replay_data,
+                self.invalid_statistics, self.matched_pairs)
     
     def _initialize_components(self) -> None:
         """初始化各个分析组件"""
-        # 初始化电机阈值检查器
-        threshold_checker = self._initialize_threshold_checker()
         
         # 初始化各个组件
-        self.data_filter = DataFilter(threshold_checker)
+        self.data_filter = DataFilter()
         self.note_matcher = NoteMatcher()
         self.error_detector = ErrorDetector()
         
         logger.info("所有分析组件初始化完成")
     
-    def _initialize_threshold_checker(self) -> MotorThresholdChecker:
-        """初始化电机阈值检查器"""
-        pass
-        # try:
-        #     threshold_checker = MotorThresholdChecker(
-        #         fit_equations_path="spmid/quadratic_fit_formulas.json",
-        #         pwm_thresholds_path="spmid/inflection_pwm_values.json"
-        #     )
-        #     logger.info("✅ 电机阈值检查器初始化成功")
-        #     return threshold_checker
-        # except Exception as e:
-        #     logger.error(f"初始化电机阈值检查器失败: {e}")
-        #     raise RuntimeError("电机阈值检查器初始化失败，无法进行SPMID数据分析")
-    
-    def _extract_silent_hammers_from_invalid_counts(self, invalid_counts: Dict[str, Any]) -> List[ErrorNote]:
-        """
-        从无效音符统计中提取不发声音符的详细信息
-        
-        Args:
-            invalid_counts: 无效音符统计信息
-            
-        Returns:
-            List[ErrorNote]: 不发声音符的ErrorNote列表
-        """
-        from .types import NoteInfo
-        
-        silent_hammers = []
-        
-        # 获取录制和播放数据中的不发声音符详细信息
-        record_silent_details = invalid_counts.get('record_data', {}).get('silent_notes_details', [])
-        replay_silent_details = invalid_counts.get('replay_data', {}).get('silent_notes_details', [])
-        
-        # 合并处理所有不发声音符
-        for item in record_silent_details + replay_silent_details:
-            note = item['note']
-            index = item['index']
-            
-            # 计算时间信息
-            try:
-                keyon_time = note.after_touch.index[0] + note.offset if len(note.after_touch) > 0 else 0
-                keyoff_time = note.after_touch.index[-1] + note.offset if len(note.after_touch) > 0 else 0
-            except (IndexError, AttributeError) as e:
-                raise ValueError(f"音符ID {note.id} 的after_touch数据无效: {e}") from e
-            
-            error_note = ErrorNote(
-                infos=[NoteInfo(
-                    index=index,
-                    keyId=note.id,
-                    keyOn=keyon_time,
-                    keyOff=keyoff_time
-                )],
-                diffs=[],
-                error_type="不发声",
-                global_index=index
-            )
-            silent_hammers.append(error_note)
-        
-        logger.info(f"✅ 提取不发声音符: 录制{len(record_silent_details)}个, 播放{len(replay_silent_details)}个, 总计{len(silent_hammers)}个")
-        
-        return silent_hammers
-    
-    def _log_invalid_notes_statistics(self, record_data: List[Note], replay_data: List[Note], invalid_counts: Dict[str, Any]) -> None:
+    def _log_invalid_notes_statistics(self, record_data: List[Note], replay_data: List[Note]) -> None:
         """记录无效音符统计信息"""
+        if self.invalid_statistics is None:
+            logger.warning("无效音符统计对象未初始化，跳过统计日志")
+            return
+        
+        summary = self.invalid_statistics.get_summary()
         logger.info("📊 音符过滤统计:")
-        logger.info(f"  录制数据: 总计 {len(record_data)} 个音符, 有效 {len(self.valid_record_data)} 个, 无效 {len(record_data) - len(self.valid_record_data)} 个")
-        logger.info(f"  回放数据: 总计 {len(replay_data)} 个音符, 有效 {len(self.valid_replay_data)} 个, 无效 {len(replay_data) - len(self.valid_replay_data)} 个")
+        logger.info(
+            f"  录制数据: 总计 {len(record_data)} 个音符, "
+            f"有效 {summary['record']['valid']} 个, "
+            f"无效 {summary['record']['invalid']} 个"
+        )
+        logger.info(
+            f"  回放数据: 总计 {len(replay_data)} 个音符, "
+            f"有效 {summary['replay']['valid']} 个, "
+            f"无效 {summary['replay']['invalid']} 个"
+        )
     
     def _generate_analysis_stats(self) -> None:
         """生成分析统计信息"""
@@ -254,9 +217,6 @@ class SPMIDAnalyzer:
         """获取匹配对信息"""
         return self.matched_pairs.copy()
     
-    # def get_global_time_offset(self) -> float:
-    #     """获取全局时间偏移量（已删除时序对齐功能，固定返回0）"""
-    #     return 0.0
     
     def get_data_filter(self) -> Optional[DataFilter]:
         """获取数据过滤器实例"""
@@ -329,6 +289,16 @@ class SPMIDAnalyzer:
             return self.note_matcher.get_precision_offset_alignment_data()
         return []
     
+    def get_key_statistics_table_data(self) -> List[Dict[str, Union[int, float, str]]]:
+        """
+        获取按键统计表格数据
+        
+        Returns:
+            List[Dict[str, Any]]: 按键统计数据列表，每行包含一个按键的统计信息
+        """
+        if self.note_matcher:
+            return self.note_matcher.get_key_statistics_for_bar_chart()
+        return []
     
     def get_invalid_notes_offset_analysis(self) -> List[Dict[str, Any]]:
         """
@@ -443,7 +413,7 @@ class SPMIDAnalyzer:
             return self.note_matcher.get_offset_statistics()
 
 
-# 其他工具函数保持不变
+
 def get_figure_by_index(record_data: List[Note], replay_data: List[Note], record_index: int, replay_index: int) -> figure:
     """按索引获取对比图"""
     # 确保index是有效的非负索引

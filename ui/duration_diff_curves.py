@@ -191,14 +191,19 @@ class DurationDiffCurvePlotter:
             hammer_velocities = []
             
             for i in range(len(note.hammers)):
-                hammer_time_ms = (note.hammers.index[i] + note.offset) / 10.0
                 hammer_velocity = note.hammers.values[i]
-                
+
+                # 过滤掉锤速为0的锤击点
+                if hammer_velocity == 0:
+                    continue
+
+                hammer_time_ms = (note.hammers.index[i] + note.offset) / 10.0
+
                 # 在aftertouch曲线上找到对应的值
                 after_touch_value = self._find_closest_aftertouch_value(
                     hammer_time_ms, after_touch_times, after_touch_values
                 )
-                
+
                 hammer_times.append(hammer_time_ms)
                 hammer_values.append(after_touch_value)
                 hammer_velocities.append(hammer_velocity)

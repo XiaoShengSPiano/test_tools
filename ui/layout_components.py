@@ -8,6 +8,8 @@ from dash import dcc, html, dash_table
 import plotly.graph_objects as go
 
 from utils.logger import Logger
+from utils.constants import GRADE_DISPLAY_CONFIG, GRADE_LEVELS
+
 logger = Logger.get_logger()
 
 
@@ -20,16 +22,8 @@ empty_figure.add_annotation(
     font=dict(size=20, color='gray')
 )
 
-# 评级统计配置常量 - 统一版本
-# 基于误差范围进行评级，与评级统计和表格筛选保持一致
-GRADE_CONFIGS = [
-    ('correct', '优秀 (≤20ms)', 'success'),
-    ('minor', '良好 (20-30ms)', 'warning'),
-    ('moderate', '一般 (30-50ms)', 'info'),
-    ('large', '较差 (50-100ms)', 'danger'),
-    ('severe', '严重 (100-200ms)', 'dark')
-    # 注意：不再显示失败匹配，因为匹配质量评级只统计成功匹配
-]
+# 兼容性别名 - 使用统一的全局配置
+GRADE_CONFIGS = GRADE_DISPLAY_CONFIG
 
 def create_grade_statistics_rows(graded_stats, algorithm_name=None):
     """统一创建评级统计UI组件
@@ -45,7 +39,7 @@ def create_grade_statistics_rows(graded_stats, algorithm_name=None):
 
     # 计算总匹配对数（只统计成功匹配的评级）
     total_count = sum(graded_stats.get(level, {}).get('count', 0)
-                     for level in ['correct', 'minor', 'moderate', 'large', 'severe'])
+                     for level in GRADE_LEVELS)
     print(f"最终总匹配对数 total_count: {total_count}")
 
     if total_count > 0:
@@ -525,23 +519,6 @@ def create_main_layout():
                 columns=[]
             )
         ], style={'display': 'none'}),
-        html.Div([
-            dash_table.DataTable(
-                id='delay-histogram-detail-table',
-                data=[],
-                columns=[
-                    {"name": "算法名称", "id": "algorithm_name"},
-                    {"name": "按键ID", "id": "key_id"},
-                    {"name": "延时(ms)", "id": "delay_ms"},
-                    {"name": "录制索引", "id": "record_index"},
-                    {"name": "播放索引", "id": "replay_index"},
-                    {"name": "录制开始(0.1ms)", "id": "record_keyon"},
-                    {"name": "播放开始(0.1ms)", "id": "replay_keyon"},
-                    {"name": "持续时间差(0.1ms)", "id": "duration_offset"},
-                ]
-            )
-        ], style={'display': 'none'}),
-        html.Div(id='delay-histogram-selection-info', style={'display': 'none'}),
         # 相对延时分布图相关组件
         html.Div([
             html.Div(id='relative-delay-distribution-subplot-title', style={'display': 'none'}),
@@ -920,17 +897,12 @@ def _create_single_algorithm_overview_row(algorithm, algorithm_name, backend=Non
     """为单个算法创建数据概览行（不包含卡片，只返回行内容）"""
 
     try:
-
-        # 所有统计信息都从后端统一获取，无需前端重复计算
-
         # 获取完整统计信息：使用统一的后端统计服务
         if not backend or not hasattr(backend, 'get_algorithm_statistics'):
             raise ValueError("后端对象或get_algorithm_statistics方法不可用")
 
-        # 获取完整的统计信息（包括匹配率、错误统计等）
+        # 获取错误统计信息
         stats = backend.get_algorithm_statistics(algorithm)
-        accuracy = stats['accuracy']
-        matched_count = stats['matched_count']
         drop_count = stats['drop_count']
         multi_count = stats['multi_count']
 
@@ -946,32 +918,18 @@ def _create_single_algorithm_overview_row(algorithm, algorithm_name, backend=Non
                             dbc.Row([
                                 dbc.Col([
                                     html.Div([
-                        html.H3(f"{accuracy:.1f}%", className="text-success mb-1"),
-                                        html.P("匹配率", className="text-muted mb-0"),
-                                        html.Small("成功匹配音符数/总有效音符数", className="text-muted", style={'fontSize': '10px'})
-                                    ], className="text-center")
-                                ], width=3),
-                                dbc.Col([
-                                    html.Div([
                         html.H3(f"{drop_count}", className="text-warning mb-1"),
                                         html.P("丢锤数", className="text-muted mb-0"),
                                         html.Small("录制有但播放没有", className="text-muted", style={'fontSize': '10px'})
                                     ], className="text-center")
-                                ], width=3),
+                                ], width=4),
                                 dbc.Col([
                                     html.Div([
                         html.H3(f"{multi_count}", className="text-info mb-1"),
                                         html.P("多锤数", className="text-muted mb-0"),
                                         html.Small("播放有但录制没有", className="text-muted", style={'fontSize': '10px'})
                                     ], className="text-center")
-                                ], width=3),
-                                dbc.Col([
-                                    html.Div([
-                        html.H3(f"{matched_count}", className="text-secondary mb-1"),
-                        html.P("总匹配对数", className="text-muted mb-0"),
-                        html.Small("成功建立的record-play配对数量", className="text-muted", style={'fontSize': '10px'})
-                                    ], className="text-center")
-                                ], width=3)
+                                ], width=4)
             ], className="mb-3")
         ], className="mb-3", style={'borderBottom': '1px solid #dee2e6', 'paddingBottom': '15px'})
         
@@ -979,7 +937,7 @@ def _create_single_algorithm_overview_row(algorithm, algorithm_name, backend=Non
 
     except Exception as e:
         # 检查是否是后端不可用的严重错误
-        if isinstance(e, ValueError) and "后端对象或calculate_accuracy_for_algorithm方法不可用" in str(e):
+        if isinstance(e, ValueError) and "后端对象或get_algorithm_statistics方法不可用" in str(e):
             # 后端不可用，直接重新抛出
             raise
         else:
@@ -1178,22 +1136,23 @@ def _create_single_algorithm_error_tables(algorithm, algorithm_name):
         # 转换为表格数据格式
         drop_hammers_data = []
         for error_note in drop_hammers:
-            # ErrorNote对象包含infos列表，每个元素是NoteInfo对象
-            if len(error_note.infos) > 0:
-                rec = error_note.infos[0]  # 获取第一个NoteInfo对象
+            # ErrorNote对象包含notes列表，每个元素是Note对象（保留完整数据）
+            if len(error_note.notes) > 0:
+                rec_note = error_note.notes[0]  # 获取第一个Note对象
                 
                 # 获取详细的匹配失败原因
                 analysis_reason = '丢锤（录制有，播放无）'
-                if ('record', rec.index) in failure_reasons:
-                    analysis_reason = failure_reasons[('record', rec.index)]
+                # Note对象没有index属性，使用global_index
+                if ('record', error_note.global_index) in failure_reasons:
+                    analysis_reason = failure_reasons[('record', error_note.global_index)]
                 
-                # NoteInfo的keyOn和keyOff单位是0.1ms，需要除以10转换为ms
+                # Note对象的时间属性已经是ms，直接使用
                 row = {
                     'data_type': 'record',
-                    'keyId': rec.keyId,
-                    'keyOn': f"{rec.keyOn/10:.2f}",
-                    'keyOff': f"{rec.keyOff/10:.2f}",
-                    'index': rec.index,
+                    'keyId': rec_note.id,
+                    'keyOn': f"{rec_note.key_on_ms:.2f}" if rec_note.key_on_ms is not None else 'N/A',
+                    'keyOff': f"{rec_note.key_off_ms:.2f}" if rec_note.key_off_ms is not None else 'N/A',
+                    'index': error_note.global_index,
                     'analysis_reason': analysis_reason
                 }
                 drop_hammers_data.append(row)
@@ -1210,9 +1169,9 @@ def _create_single_algorithm_error_tables(algorithm, algorithm_name):
         
         multi_hammers_data = []
         for error_note in multi_hammers:
-            # ErrorNote对象包含infos列表，每个元素是NoteInfo对象
-            if len(error_note.infos) > 0:
-                play = error_note.infos[0]  # 获取第一个NoteInfo对象
+            # ErrorNote对象包含notes列表，每个元素是Note对象（保留完整数据）
+            if len(error_note.notes) > 0:
+                play_note = error_note.notes[0]  # 获取第一个Note对象
                 
                 # 多锤的分析原因
                 analysis_reason = '多锤（播放有，录制无）'
@@ -1228,13 +1187,13 @@ def _create_single_algorithm_error_tables(algorithm, algorithm_name):
                 })
                 
                 # 播放行显示实际数据
-                # NoteInfo的keyOn和keyOff单位是0.1ms，需要除以10转换为ms
+                # Note对象的时间属性已经是ms，直接使用
                 row = {
                     'data_type': 'play',
-                    'keyId': play.keyId,
-                    'keyOn': f"{play.keyOn/10:.2f}",
-                    'keyOff': f"{play.keyOff/10:.2f}",
-                    'index': play.index,
+                    'keyId': play_note.id,
+                    'keyOn': f"{play_note.key_on_ms:.2f}" if play_note.key_on_ms is not None else 'N/A',
+                    'keyOff': f"{play_note.key_off_ms:.2f}" if play_note.key_off_ms is not None else 'N/A',
+                    'index': error_note.global_index,
                     'analysis_reason': analysis_reason
                 }
                 multi_hammers_data.append(row)
@@ -1456,7 +1415,7 @@ def _hex_to_rgba(hex_color, alpha=0.3):
 def create_report_layout(backend):
     """创建完整的报告分析布局（仅支持多算法模式）"""
     # 多算法模式：为每个算法生成一行数据概览和一行延时误差统计指标
-    active_algorithms = backend.get_active_algorithms() if hasattr(backend, 'get_active_algorithms') else []
+    active_algorithms = backend.get_active_algorithms()
     
     # 获取算法颜色映射（用于表格行背景色）
     algorithm_colors = {}
@@ -1637,23 +1596,6 @@ def create_report_layout(backend):
                     columns=[]
                 )
             ], style={'display': 'none'}),
-            html.Div([
-                dash_table.DataTable(
-                    id='delay-histogram-detail-table',
-                    data=[],
-                    columns=[
-                        {"name": "算法名称", "id": "algorithm_name"},
-                        {"name": "按键ID", "id": "key_id"},
-                        {"name": "延时(ms)", "id": "delay_ms"},
-                        {"name": "录制索引", "id": "record_index"},
-                        {"name": "播放索引", "id": "replay_index"},
-                        {"name": "录制开始(0.1ms)", "id": "record_keyon"},
-                        {"name": "播放开始(0.1ms)", "id": "replay_keyon"},
-                        {"name": "持续时间差(0.1ms)", "id": "duration_offset"},
-                    ]
-                )
-            ], style={'display': 'none'}),
-            html.Div(id='delay-histogram-selection-info', style={'display': 'none'})
         ])
     
     # 为每个算法生成数据概览和延时误差统计指标（合并到同一个卡片中）
@@ -1977,8 +1919,7 @@ def create_report_layout(backend):
                     ),
                 ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
                     ], width=12)
-                ], style={'display': 'none'} if not (hasattr(backend, 'get_active_algorithms') and
-                       len(backend.get_active_algorithms()) >= 2) else {}),
+                ], style={'display': 'none'} if len(backend.get_active_algorithms()) < 2 else {}),
 
                 # 锤速与延时Z-Score标准化散点图区域（算法数量<2时隐藏）
                 dbc.Row([
@@ -2133,58 +2074,6 @@ def create_report_layout(backend):
                         figure={},
                         style={'height': '500px'}
                     ),
-                    html.Div([
-                        dbc.Row([
-                            dbc.Col([
-                                html.P("💡 提示：点击直方图中的柱状图区域，可查看该延时范围内的数据点详情",
-                                       className="text-muted",
-                                       style={'fontSize': '12px', 'marginTop': '10px', 'marginBottom': '10px'}),
-                                html.Div(id='delay-histogram-selection-info',
-                                        style={'marginBottom': '10px', 'fontSize': '14px', 'fontWeight': 'bold', 'color': '#2c3e50'}),
-                            ], width=8),
-                        ]),
-                        dash_table.DataTable(
-                            id='delay-histogram-detail-table',
-                            columns=[
-                                {"name": "算法名称", "id": "algorithm_name"},
-                                {"name": "按键ID", "id": "key_id"},
-                                {"name": "延时(ms)", "id": "delay_ms", "type": "numeric", "format": {"specifier": ".2f"}},
-                                {"name": "录制索引", "id": "record_index"},
-                                {"name": "播放索引", "id": "replay_index"},
-                                {"name": "录制开始(0.1ms)", "id": "record_keyon"},
-                                {"name": "播放开始(0.1ms)", "id": "replay_keyon"},
-                                {"name": "持续时间差(0.1ms)", "id": "duration_offset"},
-                            ],
-                            data=[],
-                            page_action='none',
-                            style_cell={
-                                'textAlign': 'center',
-                                'fontSize': '12px',
-                                'fontFamily': 'Arial, sans-serif',
-                                'padding': '8px',
-                                'overflow': 'hidden',
-                                'textOverflow': 'ellipsis',
-                            },
-                            style_header={
-                                'backgroundColor': '#f8f9fa',
-                                'fontWeight': 'bold',
-                                'border': '1px solid #dee2e6',
-                                'position': 'sticky',
-                                'top': 0,
-                                'zIndex': 1
-                            },
-                            style_data={
-                                'border': '1px solid #dee2e6'
-                            },
-                            style_data_conditional=[
-                                {
-                                    'if': {'row_index': 'odd'},
-                                    'backgroundColor': '#f8f9fa'
-                                }
-                            ],
-                            style_table={'overflowX': 'auto', 'display': 'none'}  # 默认隐藏，点击后显示
-                        )
-                    ])
                 ], className="mb-4", style={'backgroundColor': '#ffffff', 'padding': '20px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
             ], width=12)
         ]),
@@ -2412,9 +2301,9 @@ def create_report_layout(backend):
                                 {"name": "总音符数", "id": "total_notes"},
                                 {"name": "有效音符", "id": "valid_notes"},
                                 {"name": "无效音符", "id": "invalid_notes"},
-                                {"name": "持续时间过短", "id": "duration_too_short"},
+                                {"name": "压感值过低", "id": "low_after_value"},
+                                {"name": "持续时间过短", "id": "short_duration"},
                                 {"name": "数据为空", "id": "empty_data"},
-                                {"name": "不发声音符", "id": "silent_notes"},
                                 {"name": "其他错误", "id": "other_errors"}
                             ],
                             data=backend.get_invalid_notes_table_data(),
@@ -2435,9 +2324,9 @@ def create_report_layout(backend):
                                     {'if': {'column_id': 'total_notes'}, 'width': '11%' if True else '13%'},
                                     {'if': {'column_id': 'valid_notes'}, 'width': '11%' if True else '13%'},
                                     {'if': {'column_id': 'invalid_notes'}, 'width': '11%' if True else '13%'},
-                                    {'if': {'column_id': 'duration_too_short'}, 'width': '13%' if True else '15%'},
+                                    {'if': {'column_id': 'low_after_value'}, 'width': '12%' if True else '14%'},
+                                    {'if': {'column_id': 'short_duration'}, 'width': '13%' if True else '15%'},
                                     {'if': {'column_id': 'empty_data'}, 'width': '10%' if True else '12%'},
-                                    {'if': {'column_id': 'silent_notes'}, 'width': '10%' if True else '12%'},
                                     {'if': {'column_id': 'other_errors'}, 'width': '9%' if True else '10%'},
                             ],
                             style_header={
@@ -2498,6 +2387,150 @@ def create_report_layout(backend):
                             }
                         ),
                     ], className="mb-3", style={'backgroundColor': '#ffffff', 'padding': '15px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
+                    
+                    # 无效音符详细信息表格 - 录制数据
+                    html.Div([
+                        dbc.Row([
+                            dbc.Col([
+                                html.H6("无效音符详细列表 - 录制数据", className="mb-2",
+                                       style={'color': '#dc3545', 'fontWeight': 'bold', 'borderBottom': '2px solid #dc3545', 'paddingBottom': '5px'}),
+                            ], width=12)
+                        ]),
+                        dash_table.DataTable(
+                            id='invalid-notes-detail-record-table',
+                            columns=[
+                                {"name": "数据类型", "id": "data_type"},
+                                {"name": "键位ID", "id": "key_id"},
+                                {"name": "按下时间(ms)", "id": "key_on_ms"},
+                                {"name": "释放时间(ms)", "id": "key_off_ms"},
+                                {"name": "持续时间", "id": "duration_ms"},
+                                {"name": "第一个锤击时间", "id": "first_hammer_time_ms"},
+                                {"name": "无效原因", "id": "invalid_reason"}
+                            ],
+                            data=backend.get_invalid_notes_detail_table_data('录制'),
+                            page_action='native',
+                            page_size=10,
+                            style_cell={
+                                'textAlign': 'center',
+                                'fontSize': '13px',
+                                'fontFamily': 'Arial, sans-serif',
+                                'padding': '8px',
+                                'overflow': 'hidden',
+                                'textOverflow': 'ellipsis',
+                                'minWidth': '80px',
+                            },
+                            style_cell_conditional=[
+                                {'if': {'column_id': 'data_type'}, 'width': '12%'},
+                                {'if': {'column_id': 'key_id'}, 'width': '10%'},
+                                {'if': {'column_id': 'key_on_ms'}, 'width': '15%'},
+                                {'if': {'column_id': 'key_off_ms'}, 'width': '15%'},
+                                {'if': {'column_id': 'duration_ms'}, 'width': '13%'},
+                                {'if': {'column_id': 'first_hammer_time_ms'}, 'width': '15%'},
+                                {'if': {'column_id': 'invalid_reason'}, 'width': '20%'},
+                            ],
+                            style_header={
+                                'backgroundColor': '#f8d7da',
+                                'fontWeight': 'bold',
+                                'border': '2px solid #f5c6cb',
+                                'fontSize': '14px',
+                                'color': '#721c24',
+                                'textAlign': 'center',
+                                'padding': '10px',
+                                'whiteSpace': 'normal',
+                                'height': 'auto'
+                            },
+                            style_data={
+                                'border': '1px solid #f5c6cb',
+                                'fontSize': '13px',
+                                'padding': '8px'
+                            },
+                            style_data_conditional=[
+                                {
+                                    'if': {'row_index': 'odd'},
+                                    'backgroundColor': '#fff5f5'
+                                }
+                            ],
+                            style_table={
+                                'height': '300px',
+                                'overflowY': 'auto', 
+                                'overflowX': 'auto',
+                                'border': '2px solid #f5c6cb', 
+                                'borderRadius': '8px'
+                            }
+                        ),
+                    ], className="mb-3", style={'backgroundColor': '#ffffff', 'padding': '15px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
+                    
+                    # 无效音符详细信息表格 - 播放数据
+                    html.Div([
+                        dbc.Row([
+                            dbc.Col([
+                                html.H6("无效音符详细列表 - 播放数据", className="mb-2",
+                                       style={'color': '#0056b3', 'fontWeight': 'bold', 'borderBottom': '2px solid #0056b3', 'paddingBottom': '5px'}),
+                            ], width=12)
+                        ]),
+                        dash_table.DataTable(
+                            id='invalid-notes-detail-replay-table',
+                            columns=[
+                                {"name": "数据类型", "id": "data_type"},
+                                {"name": "键位ID", "id": "key_id"},
+                                {"name": "按下时间(ms)", "id": "key_on_ms"},
+                                {"name": "释放时间(ms)", "id": "key_off_ms"},
+                                {"name": "持续时间", "id": "duration_ms"},
+                                {"name": "第一个锤击时间", "id": "first_hammer_time_ms"},
+                                {"name": "无效原因", "id": "invalid_reason"}
+                            ],
+                            data=backend.get_invalid_notes_detail_table_data('播放'),
+                            page_action='native',
+                            page_size=10,
+                            style_cell={
+                                'textAlign': 'center',
+                                'fontSize': '13px',
+                                'fontFamily': 'Arial, sans-serif',
+                                'padding': '8px',
+                                'overflow': 'hidden',
+                                'textOverflow': 'ellipsis',
+                                'minWidth': '80px',
+                            },
+                            style_cell_conditional=[
+                                {'if': {'column_id': 'data_type'}, 'width': '12%'},
+                                {'if': {'column_id': 'key_id'}, 'width': '10%'},
+                                {'if': {'column_id': 'key_on_ms'}, 'width': '15%'},
+                                {'if': {'column_id': 'key_off_ms'}, 'width': '15%'},
+                                {'if': {'column_id': 'duration_ms'}, 'width': '13%'},
+                                {'if': {'column_id': 'first_hammer_time_ms'}, 'width': '15%'},
+                                {'if': {'column_id': 'invalid_reason'}, 'width': '20%'},
+                            ],
+                            style_header={
+                                'backgroundColor': '#d1ecf1',
+                                'fontWeight': 'bold',
+                                'border': '2px solid #bee5eb',
+                                'fontSize': '14px',
+                                'color': '#0c5460',
+                                'textAlign': 'center',
+                                'padding': '10px',
+                                'whiteSpace': 'normal',
+                                'height': 'auto'
+                            },
+                            style_data={
+                                'border': '1px solid #bee5eb',
+                                'fontSize': '13px',
+                                'padding': '8px'
+                            },
+                            style_data_conditional=[
+                                {
+                                    'if': {'row_index': 'odd'},
+                                    'backgroundColor': '#f0f8ff'
+                                }
+                            ],
+                            style_table={
+                                'height': '300px',
+                                'overflowY': 'auto', 
+                                'overflowX': 'auto',
+                                'border': '2px solid #bee5eb', 
+                                'borderRadius': '8px'
+                            }
+                        ),
+                    ], className="mb-3", style={'backgroundColor': '#ffffff', 'padding': '15px', 'borderRadius': '8px', 'boxShadow': '0 2px 8px rgba(0,0,0,0.1)'}),
 
                     # 偏移对齐数据表格
                     html.Div([
@@ -2524,7 +2557,7 @@ def create_report_layout(backend):
                                     {"name": "极差(ms)", "id": "range"},
                                 {"name": "状态", "id": "status"}
                             ],
-                            data=active_algorithms[0].get_offset_alignment_data() if active_algorithms else [],
+                            data=active_algorithms[0].get_key_statistics_table_data() if active_algorithms else [],
                                 page_action='none',
                             style_cell={
                                 'textAlign': 'center',
@@ -2664,8 +2697,8 @@ def create_detail_content(error_note):
     )
 
     # 录制数据信息
-    if len(error_note.infos) > 0:
-        record_info = error_note.infos[0]
+    if len(error_note.notes) > 0:
+        record_note = error_note.notes[0]  # Note对象
         record_diff = error_note.diffs[0] if len(error_note.diffs) > 0 else None
 
         details.append(
@@ -2678,21 +2711,21 @@ def create_detail_content(error_note):
                     dbc.Row([
                         dbc.Col([
                             html.Small("键位ID", className="text-muted d-block"),
-                            html.Strong(f"{record_info.keyId}", style={'fontSize': '14px'})
+                            html.Strong(f"{record_note.id}", style={'fontSize': '14px'})
                         ], width=6),
                         dbc.Col([
                             html.Small("持续时间", className="text-muted d-block"),
-                            html.Strong(f"{record_info.keyOff - record_info.keyOn}", style={'fontSize': '14px'})
+                            html.Strong(f"{record_note.duration_ms:.2f}ms" if record_note.duration_ms is not None else 'N/A', style={'fontSize': '14px'})
                         ], width=6)
                     ], className="mb-2"),
                     dbc.Row([
                         dbc.Col([
                             html.Small("按下时间", className="text-muted d-block"),
-                            html.Span(f"{record_info.keyOn}", style={'fontSize': '12px'})
+                            html.Span(f"{record_note.key_on_ms:.2f}ms" if record_note.key_on_ms is not None else 'N/A', style={'fontSize': '12px'})
                         ], width=6),
                         dbc.Col([
                             html.Small("释放时间", className="text-muted d-block"),
-                            html.Span(f"{record_info.keyOff}", style={'fontSize': '12px'})
+                            html.Span(f"{record_note.key_off_ms:.2f}ms" if record_note.key_off_ms is not None else 'N/A', style={'fontSize': '12px'})
                         ], width=6)
                     ])
                 ], style={'padding': '10px'})
@@ -2732,8 +2765,8 @@ def create_detail_content(error_note):
             )
 
     # 播放数据信息（如果有）
-    if len(error_note.infos) > 1:
-        play_info = error_note.infos[1]
+    if len(error_note.notes) > 1:
+        play_note = error_note.notes[1]  # Note对象
         play_diff = error_note.diffs[1] if len(error_note.diffs) > 1 else None
 
         details.append(
@@ -2746,21 +2779,21 @@ def create_detail_content(error_note):
                     dbc.Row([
                         dbc.Col([
                             html.Small("键位ID", className="text-muted d-block"),
-                            html.Strong(f"{play_info.keyId}", style={'fontSize': '14px'})
+                            html.Strong(f"{play_note.id}", style={'fontSize': '14px'})
                         ], width=6),
                         dbc.Col([
                             html.Small("持续时间", className="text-muted d-block"),
-                            html.Strong(f"{play_info.keyOff - play_info.keyOn}", style={'fontSize': '14px'})
+                            html.Strong(f"{play_note.duration_ms:.2f}ms" if play_note.duration_ms is not None else 'N/A', style={'fontSize': '14px'})
                         ], width=6)
                     ], className="mb-2"),
                     dbc.Row([
                         dbc.Col([
                             html.Small("按下时间", className="text-muted d-block"),
-                            html.Span(f"{play_info.keyOn}", style={'fontSize': '12px'})
+                            html.Span(f"{play_note.key_on_ms:.2f}ms" if play_note.key_on_ms is not None else 'N/A', style={'fontSize': '12px'})
                         ], width=6),
                         dbc.Col([
                             html.Small("释放时间", className="text-muted d-block"),
-                            html.Span(f"{play_info.keyOff}", style={'fontSize': '12px'})
+                            html.Span(f"{play_note.key_off_ms:.2f}ms" if play_note.key_off_ms is not None else 'N/A', style={'fontSize': '12px'})
                         ], width=6)
                     ])
                 ], style={'padding': '10px'})

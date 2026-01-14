@@ -23,36 +23,12 @@ from backend.session_manager import SessionManager
 from ui.multi_file_upload_handler import MultiFileUploadHandler
 from ui.layout_components import create_report_layout
 from utils.logger import Logger
+from utils.ui_helpers import create_empty_figure
 from plotly.graph_objects import Figure
 import plotly.graph_objects as go
 
 logger = Logger.get_logger()
 
-
-
-def _create_empty_figure_for_callback(title: str) -> Figure:
-    """创建用于回调的空Plotly figure对象"""
-    fig = go.Figure()
-    fig.add_annotation(
-        x=0.5,
-        y=0.5,
-        xref="paper",
-        yref="paper",
-        text=title,
-        showarrow=False,
-        font=dict(size=16, color="gray"),
-        align="center"
-    )
-
-    fig.update_layout(
-        title=title,
-        xaxis=dict(visible=False),
-        yaxis=dict(visible=False),
-        height=600,
-        template='plotly_white',
-        margin=dict(l=20, r=20, t=60, b=20)
-    )
-    return fig
 
 
 def _create_error_span(message: str, color: str = '#dc3545') -> html.Span:
@@ -77,9 +53,7 @@ def _validate_backend_and_data(session_manager: SessionManager, session_id: str,
     if not backend:
         return False, _create_error_span("会话无效")
 
-    # 确保多算法模式已启用
-    if not backend.multi_algorithm_manager:
-        backend._ensure_multi_algorithm_manager()
+    # multi_algorithm_manager 在初始化时已创建
 
     # 验证存储数据
     if not store_data or 'contents' not in store_data or 'filenames' not in store_data:
@@ -102,7 +76,7 @@ def _handle_plot_update_error(error: Exception, backend) -> Tuple[Figure, html.D
     logger.error(f"[ERROR] 更新多算法瀑布图失败: {str(error)}")
     logger.error(traceback.format_exc())
 
-    error_fig = _create_empty_figure_for_callback(f"更新失败: {str(error)}")
+    error_fig = create_empty_figure(f"更新失败: {str(error)}")
 
     # 尝试创建错误报告
     try:
@@ -226,9 +200,7 @@ def _handle_migration_trigger(backend, algorithm_name: str) -> Tuple[Any, Option
         Tuple[Any, Optional[dbc.Alert]]: (样式更新, 错误组件)
     """
     try:
-        # 确保multi_algorithm_manager已初始化
-        if not backend.multi_algorithm_manager:
-            backend._ensure_multi_algorithm_manager()
+        # multi_algorithm_manager 在初始化时已创建
 
         algorithm_name = algorithm_name.strip()
         logger.info(f"📤 开始迁移现有数据到算法: {algorithm_name}")
@@ -514,7 +486,6 @@ def _update_file_list_after_algorithm_change(
         }
 
         # 生成文件列表UI
-        from ui.multi_file_upload_handler import MultiFileUploadHandler
         upload_handler = MultiFileUploadHandler()
         file_items = []
         for content, filename, file_id in zip(filtered_contents, filtered_filenames, filtered_file_ids):
@@ -605,73 +576,6 @@ def register_algorithm_callbacks(app, session_manager: SessionManager):
         return file_list_children, upload_status_text, updated_store_data
 
     @app.callback(
-        Output({'type': 'algorithm-status', 'index': dash.dependencies.MATCH}, 'children'),
-        [Input({'type': 'confirm-algorithm-btn', 'index': dash.dependencies.MATCH}, 'n_clicks')],
-        [State({'type': 'algorithm-name-input', 'index': dash.dependencies.MATCH}, 'value'),
-         State({'type': 'confirm-algorithm-btn', 'index': dash.dependencies.MATCH}, 'id'),
-         State('multi-algorithm-files-store', 'data'),
-         State('session-id', 'data')],
-        prevent_initial_call=True
-    )
-    def confirm_add_algorithm(n_clicks, algorithm_name, button_id, store_data, session_id):
-        """确认添加算法"""
-        # 验证输入参数
-        if not n_clicks or not algorithm_name or not algorithm_name.strip():
-            return _create_error_span("请输入算法名称", '#ffc107')
-
-        # 验证后端和数据
-        is_valid, error_span = _validate_backend_and_data(session_manager, session_id, store_data)
-        if not is_valid:
-            return error_span
-
-        backend = session_manager.get_backend(session_id)
-
-        try:
-            # 获取文件数据
-            upload_handler = MultiFileUploadHandler()
-            file_id = button_id['index']
-            file_data = upload_handler.get_file_data_by_id(file_id, store_data)
-
-            if not file_data:
-                return _create_error_span("文件数据无效")
-
-            content, filename = file_data
-            algorithm_name = algorithm_name.strip()
-
-            # 解码base64文件内容
-            import base64
-            if ',' in content:
-                # 处理 "data:mime;base64,data" 格式
-                decoded_bytes = base64.b64decode(content.split(',')[1])
-            else:
-                # 处理纯base64字符串
-                decoded_bytes = base64.b64decode(content)
-
-            # 异步添加算法
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            success, error_msg = loop.run_until_complete(
-                backend.add_algorithm(algorithm_name, filename, decoded_bytes)
-            )
-            loop.close()
-
-            if success:
-                # 确保新添加的算法默认显示
-                algorithm = backend.multi_algorithm_manager.get_algorithm(algorithm_name) if hasattr(backend, 'multi_algorithm_manager') else None
-                if algorithm:
-                    algorithm.is_active = True
-                    logger.info(f"[OK] 确保算法 '{algorithm_name}' 默认显示: is_active={algorithm.is_active}")
-                logger.info(f"[OK] 算法 '{algorithm_name}' 添加成功")
-                return _create_success_span("[OK] 添加成功")
-            else:
-                return _create_error_span(f"[ERROR] {error_msg}")
-
-        except Exception as e:
-            logger.error(f"[ERROR] 添加算法失败: {e}")
-            logger.error(traceback.format_exc())
-            return _create_error_span(f"添加失败: {str(e)}")
-
-    @app.callback(
         [Output('algorithm-list-trigger', 'data', allow_duplicate=True),
          Output('algorithm-management-trigger', 'data', allow_duplicate=True)],
         [Input({'type': 'algorithm-status', 'index': dash.dependencies.ALL}, 'children'),
@@ -713,15 +617,13 @@ def register_algorithm_callbacks(app, session_manager: SessionManager):
         if not backend:
             return no_update, no_update
 
-        # 确保多算法模式已启用
-        if not backend.multi_algorithm_manager:
-            backend._ensure_multi_algorithm_manager()
+        # multi_algorithm_manager 在初始化时已创建
 
         # 检查是否有激活的算法
         active_algorithms = backend.get_active_algorithms()
         if not active_algorithms:
             # 没有激活的算法，显示空图表
-            empty_fig = _create_empty_figure_for_callback("请至少激活一个算法以查看瀑布图")
+            empty_fig = create_empty_figure("请至少激活一个算法以查看瀑布图")
             empty_report = create_report_layout(backend)
             return empty_fig, empty_report
 
@@ -814,10 +716,6 @@ def register_algorithm_callbacks(app, session_manager: SessionManager):
         if not backend:
             return [], html.Span("")
 
-        # 确保多算法模式已启用
-        if not backend.multi_algorithm_manager:
-            backend._ensure_multi_algorithm_manager()
-
         try:
             algorithms = backend.get_all_algorithms()
             logger.info(f"[PROCESS] 更新算法列表: 共 {len(algorithms)} 个算法")
@@ -894,9 +792,7 @@ def register_algorithm_callbacks(app, session_manager: SessionManager):
             logger.warning("[WARNING] handle_algorithm_management: 无法获取backend")
             return no_update, no_update, no_update, no_update
 
-        # 确保多算法模式已启用
-        if not backend.multi_algorithm_manager:
-            backend._ensure_multi_algorithm_manager()
+        # multi_algorithm_manager 在初始化时已创建
 
         ctx = callback_context
         if not ctx.triggered:

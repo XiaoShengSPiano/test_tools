@@ -16,37 +16,8 @@ from backend.session_manager import SessionManager
 logger = logging.getLogger(__name__)
 
 
-def _calculate_note_keyon_time(note) -> float:
-    """
-    计算音符的按键开始时间
-
-    Args:
-        note: Note对象
-
-    Returns:
-        float: keyon时间（0.1ms单位）
-    """
-    try:
-        if hasattr(note, 'after_touch') and note.after_touch is not None and len(note.after_touch.index) > 0:
-            return note.after_touch.index[0] + getattr(note, 'offset', 0)
-        elif hasattr(note, 'hammers') and note.hammers is not None and len(note.hammers.index) > 0:
-            # 如果没有after_touch，使用第一个锤子的时间作为keyon
-            return note.hammers.index[0] + getattr(note, 'offset', 0)
-        else:
-            return 0.0
-    except (IndexError, AttributeError, TypeError):
-        return 0.0
-
-# 评级配置常量 - 统一版本
-# 基于误差范围进行评级，与评级统计和表格筛选保持一致
-GRADE_RANGE_CONFIG: Dict[str, Tuple[float, float]] = {
-    'correct': (float('-inf'), 20),    # 优秀: 误差 ≤ 20ms
-    'minor': (20, 30),                 # 良好: 20ms < 误差 ≤ 30ms
-    'moderate': (30, 50),              # 一般: 30ms < 误差 ≤ 50ms
-    'large': (50, 1000),               # 较差: 50ms < 误差 ≤ 1000ms
-    'severe': (1000, float('inf')),    # 严重: 误差 > 1000ms
-    'major': (float('inf'), float('inf'))  # 失败: 无匹配 (特殊处理)
-}
+# 导入统一的评级配置
+from utils.constants import GRADE_RANGE_CONFIG, GRADE_LEVELS, GRADE_LEVELS_WITH_FAILED
 
 
 def get_note_matcher_from_backend(backend, algorithm_name: Optional[str] = None) -> Optional[Any]:
@@ -62,7 +33,7 @@ def get_note_matcher_from_backend(backend, algorithm_name: Optional[str] = None)
     """
     if algorithm_name:
         # 多算法模式
-        active_algorithms = backend.get_active_algorithms() if hasattr(backend, 'get_active_algorithms') else []
+        active_algorithms = backend.get_active_algorithms()
         target_algorithm = next((alg for alg in active_algorithms if alg.metadata.algorithm_name == algorithm_name), None)
         if not target_algorithm or not target_algorithm.analyzer or not hasattr(target_algorithm.analyzer, 'note_matcher'):
             return None
@@ -275,7 +246,7 @@ def _get_average_delay(backend, algorithm_name):
     try:
         if algorithm_name and algorithm_name != 'single':
             # 多算法模式
-            active_algorithms = backend.get_active_algorithms() if hasattr(backend, 'get_active_algorithms') else []
+            active_algorithms = backend.get_active_algorithms()
             target_algorithm = next((alg for alg in active_algorithms if alg.metadata.algorithm_name == algorithm_name), None)
             if target_algorithm and target_algorithm.analyzer and hasattr(target_algorithm.analyzer, 'get_global_average_delay'):
                 average_delay_0_1ms = target_algorithm.analyzer.get_global_average_delay()
@@ -286,10 +257,10 @@ def _get_average_delay(backend, algorithm_name):
             average_delay_0_1ms = backend.get_global_average_delay()
 
         average_delay_ms = average_delay_0_1ms / 10.0
-        print(f"[DEBUG] 获取平均延时: {average_delay_ms:.2f}ms (算法: {algorithm_name})")
+        logger.debug(f"[DEBUG] 获取平均延时: {average_delay_ms:.2f}ms (算法: {algorithm_name})")
         return average_delay_ms
     except Exception as e:
-        print(f"[WARNING] 获取平均延时失败: {e}")
+        logger.warning(f"[WARNING] 获取平均延时失败: {e}")
         return 0.0
 
 
@@ -705,15 +676,13 @@ def register_grade_detail_callbacks(app, session_manager: SessionManager):
         except (json.JSONDecodeError, KeyError):
             return [no_update], [no_update], [no_update], [no_update]
 
-        print(f"[DEBUG] 评级统计详情回调被触发: button_index={button_index}")
-
         # 获取后端实例，确定有多少个表格需要更新
         backend = session_manager.get_backend(session_id)
         if not backend:
             return [no_update], [no_update], [no_update], [no_update]
 
         # 确定输出值的数量和类型
-        active_algorithms = backend.get_active_algorithms() if hasattr(backend, 'get_active_algorithms') else []
+        active_algorithms = backend.get_active_algorithms()
         has_single_mode = hasattr(backend, 'analyzer') and backend.analyzer is not None
 
         # 计算表格数量：算法数量 + 单算法模式（如果没有多算法）
@@ -855,9 +824,6 @@ def get_grade_detail_data(backend, grade_key: str, algorithm_name: Optional[str]
 
                 detail_data.extend([record_row, replay_row])
 
-        # 调试信息
-        print(f"[DEBUG] 评级 {grade_key}: 总数据 {len(offset_data)}, 筛选后 {filtered_count}, 表格行 {len(detail_data)}")
-
         return detail_data
 
     except Exception as e:
@@ -981,7 +947,6 @@ def create_failed_match_row(note, index: int, data_type: str, reason: str, algor
 
 def show_single_grade_detail(button_index, session_id, session_manager):
     """处理单个评级统计按钮的点击"""
-    print(f"[DEBUG] 处理按钮: {button_index}")
 
     backend = session_manager.get_backend(session_id)
     if not backend:
@@ -998,15 +963,12 @@ def show_single_grade_detail(button_index, session_id, session_manager):
             algorithm_name = None
             actual_grade_key = grade_key
 
-        print(f"[DEBUG] 算法名称: {algorithm_name}, 评级类型: {actual_grade_key}")
-
         # 获取详细数据
         detail_data = get_grade_detail_data(backend, actual_grade_key, algorithm_name)
-        print(f"[DEBUG] 获取到数据条数: {len(detail_data)}")
+
 
         if not detail_data:
             # 没有数据，隐藏表格
-            print(f"[DEBUG] 没有数据，隐藏表格")
             return {'display': 'none'}, no_update, [], []
 
         # 创建表格列定义 - 根据评级类型选择不同的列
@@ -1103,11 +1065,10 @@ def show_single_grade_detail(button_index, session_id, session_manager):
             )
         ]
 
-        print(f"[DEBUG] 返回显示表格")
         return {'display': 'block', 'marginTop': '20px'}, table_children, columns, detail_data
 
     except Exception as e:
-        print(f"[DEBUG] 处理评级统计详情失败: {e}")
+        logger.warning(f"[WARNING] 处理评级统计详情失败: {e}")
         traceback.print_exc()
 
 

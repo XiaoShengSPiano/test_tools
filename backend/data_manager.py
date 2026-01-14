@@ -134,6 +134,10 @@ class DataManager:
         """获取播放数据"""
         return self.spmid_loader.get_replay_data()
     
+    def get_filter_collector(self):
+        """获取过滤信息收集器"""
+        return self.spmid_loader.get_filter_collector()
+    
     # ==================== 文件上传处理相关方法 ====================
     
     def process_file_upload(self, contents: Optional[str], filename: Optional[str], history_manager: Optional[HistoryManager]) -> Tuple[bool, Optional[Dict[str, Any]], Optional[str]]:

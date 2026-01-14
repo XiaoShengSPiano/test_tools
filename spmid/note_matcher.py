@@ -64,6 +64,7 @@ SPMID音符匹配器
 import pandas as pd
 import numpy as np
 from .spmid_reader import Note
+from .delay_metrics import DelayMetrics
 from typing import List, Tuple, Dict, Union, Optional
 from utils.logger import Logger
 from enum import Enum
@@ -160,6 +161,9 @@ class KeyMatchStatistics:
         self.mean_offset = 0.0
         self.std_offset = 0.0
         self.variance_offset = 0.0
+        self.min_offset = 0.0
+        self.max_offset = 0.0
+        self.range_offset = 0.0
 
         # 匹配质量分布
         self.excellent_count = 0
@@ -194,6 +198,9 @@ class KeyMatchStatistics:
             import statistics
             self.median_offset = statistics.median(self.offsets_ms)
             self.mean_offset = statistics.mean(self.offsets_ms)
+            self.min_offset = min(self.offsets_ms)
+            self.max_offset = max(self.offsets_ms)
+            self.range_offset = self.max_offset - self.min_offset
 
             if len(self.offsets_ms) > 1:
                 self.std_offset = statistics.stdev(self.offsets_ms)
@@ -292,116 +299,16 @@ class NoteMatcher:
 
         # 计算缓存
         self._mean_error_cached: Optional[float] = None
+        
+        # 延时指标计算器（延迟初始化）
+        self._delay_metrics: Optional[DelayMetrics] = None
     
         # 拆分索引起始值（使用大数字避免与原始索引冲突）
         self._split_index_offset = 1000000
         self._split_counter = 0  # 全局拆分计数器，确保跨key_group的唯一索引
+        self._record_split_count = 0  # 录制数据拆分次数
+        self._replay_split_count = 0  # 播放数据拆分次数
     
-    def find_all_matched_pairs_legacy(self, record_data: List[Note], replay_data: List[Note]) -> List[Tuple[int, int, Note, Note]]:
-        """
-        【旧版算法 - 已弃用】查找所有匹配对：按键分组贪心匹配
-
-        注意：此方法已被新算法替代，保留仅用于兼容性测试。
-        新算法使用基于堆的keyon优先匹配，支持双向拆分。
-
-        匹配逻辑：
-        1. 按按键ID分组录制和播放数据
-        2. 对每个按键分别进行贪心匹配（同按键ID的录制音符 vs 同按键ID的播放音符）
-        3. 按键之间完全独立，不允许跨按键配对
-
-        Args:
-            record_data: 录制数据
-            replay_data: 播放数据
-
-        Returns:
-            List[Tuple[int, int, Note, Note]]: 匹配对列表 (record_index, replay_index, record_note, replay_note)
-        """
-        import time
-        matching_start_time = time.time()
-
-        # 初始化状态
-        self._initialize_matching_state()
-
-        logger.info(f"开始按键分组贪心匹配: 录制数据{len(record_data)}个音符, 回放数据{len(replay_data)}个音符")
-
-        # 保存原始数据引用（用于失败匹配详情）
-        self._record_data = record_data
-        self._replay_data = replay_data
-
-        # 1. 按按键ID分组数据
-        record_by_key = self._group_notes_by_key(record_data)
-        replay_by_key = self._group_notes_by_key(replay_data)
-
-        logger.info(f"按键分组完成: 录制数据{len(record_by_key)}个按键, 播放数据{len(replay_by_key)}个按键")
-
-        # 2. 对每个按键分别进行贪心匹配
-        all_matched_pairs = []
-
-        for key_id in record_by_key.keys():
-            # 获取该按键的所有录制和播放音符
-            key_record_notes = record_by_key[key_id]  # [(original_index, note), ...]
-            key_replay_notes = replay_by_key.get(key_id, [])  # [(original_index, note), ...]
-
-            # 对该按键进行贪心匹配
-            key_matched_pairs, extra_hammers = self._match_notes_for_single_key_group(
-                key_id, key_record_notes, key_replay_notes
-            )
-
-            all_matched_pairs.extend(key_matched_pairs)
-
-            # 更新按键统计信息中的多锤数量
-            if key_id not in self.key_statistics:
-                self.key_statistics[key_id] = KeyMatchStatistics(key_id)
-                self.key_statistics[key_id].total_record_notes = len(key_record_notes)
-                self.key_statistics[key_id].total_replay_notes = len(key_replay_notes)
-            self.key_statistics[key_id].extra_hammers = extra_hammers
-
-            matched_count = len(key_matched_pairs)
-            record_count = len(key_record_notes)
-            replay_count = len(key_replay_notes)
-
-            logger.debug(f"按键{key_id}匹配完成: 录制{record_count}个, 播放{replay_count}个, 匹配{matched_count}个")
-
-        # 保存所有匹配对
-        self.matched_pairs = all_matched_pairs
-
-        # 3. 基于匹配结果计算按键统计信息
-        self._calculate_key_statistics_from_matches(record_by_key, replay_by_key)
-
-        # 记录按键级别的匹配统计
-        self._log_key_matching_statistics()
-
-        # 匹配完成后计算并缓存平均误差
-        self._mean_error_cached = self._calculate_mean_error()
-
-        # 计算并记录性能统计
-        matching_end_time = time.time()
-        matching_duration = matching_end_time - matching_start_time
-
-        # 打印匹配统计信息
-        logger.info(f"按键匹配性能统计: 耗时{matching_duration:.3f}秒")
-        logger.info(f"匹配结果: 精确{self.match_statistics.precision_matches} | 近似{self.match_statistics.approximate_matches} | 大误差{self.match_statistics.large_error_matches} | 失败{self.match_statistics.failed_matches} | 总数{len(all_matched_pairs)}")
-
-        # 输出持续时间差异统计
-        duration_diff_count = len(self.duration_diff_pairs)
-        if duration_diff_count > 0:
-            logger.info(f"持续时间差异检测: 发现{duration_diff_count}个持续时间差异显著的匹配对")
-        else:
-            logger.info("持续时间差异检测: 未发现持续时间差异显著的匹配对")
-
-        # 性能详情输出到控制台
-        print(f"[匹配统计] 精确匹配: {self.match_statistics.precision_matches} 个")
-        print(f"[匹配统计] 较差匹配: {self.match_statistics.approximate_matches} 个")
-        print(f"[匹配统计] 严重误差: {self.match_statistics.large_error_matches} 个")
-        print(f"[匹配统计] 失败匹配: {self.match_statistics.failed_matches} 个")
-        print(f"[匹配统计] 总匹配对: {len(all_matched_pairs)} 个 (准确率分子)")
-        print(f"[持续时间差异] 检测到: {duration_diff_count} 个持续时间差异显著的匹配对")
-        print(f"[性能统计] 按键匹配耗时: {matching_duration:.3f} 秒")
-
-        return all_matched_pairs
-
-    # ========== 主算法：基于堆的keyon优先匹配（支持拆分） ==========
-    # 注意：旧算法已重命名为 find_all_matched_pairs_legacy
     
     def find_all_matched_pairs(self, record_data: List[Note], replay_data: List[Note]) -> List[Tuple[int, int, Note, Note]]:
         """
@@ -420,10 +327,6 @@ class NoteMatcher:
         3. 按keyon顺序匹配，检测持续时间差异并拆分
         4. 拆分后的数据重新加入堆
         
-        算法优势：
-        - 解决了旧算法无法处理双向合并的问题
-        - 严格按keyon时间排序，避免匹配错误
-        - 支持智能拆分（拐点优先，触后值最小后备）
         
         Args:
             record_data: 录制数据
@@ -614,7 +517,7 @@ class NoteMatcher:
             
             # 查找播放候选（支持跳过可疑的多锤）
             replay_candidate = self._find_replay_candidate(
-                key_id, replay_heap, rec_keyon, skipped_replay_indices
+                key_id, replay_heap, rec_note, rec_keyon, skipped_replay_indices
             )
             
             if replay_candidate is None:
@@ -667,8 +570,8 @@ class NoteMatcher:
             else:
                 break
     
-    def _find_replay_candidate(self, key_id: int, replay_heap: List, rec_keyon: float,
-                                skipped_replay_indices: set) -> Optional[Tuple]:
+    def _find_replay_candidate(self, key_id: int, replay_heap: List, rec_note: Note,
+                                rec_keyon: float, skipped_replay_indices: set) -> Optional[Tuple]:
         """
         使用Lookahead窗口查找最佳播放候选
         
@@ -681,6 +584,7 @@ class NoteMatcher:
         Args:
             key_id: 按键ID
             replay_heap: 播放堆
+            rec_note: 录制Note对象
             rec_keyon: 录制keyon时间（ms）
             skipped_replay_indices: 跳过的播放索引集合（输出）
             
@@ -691,11 +595,11 @@ class NoteMatcher:
             logger.debug(f"      ✗ 无可用播放数据 → 失败")
             return None
         
-        # 【第一道防线】循环跳过"提前过多"的播放数据（>200ms，极端情况）
+        # 【第一道防线】循环跳过"提前过多"的播放数据（>200ms，极端情况）+ 锤速异常检测
         while replay_heap:
             rep_keyon, rep_idx, rep_note, rep_split_seq = replay_heap[0]
             
-            # 检查：播放是否"提前"过多？
+            # 检查条件1：播放是否"提前"过多？
             if rep_keyon < rec_keyon - ADVANCE_THRESHOLD:
                 # 播放明显提前录制，可能是多锤
                 advance_ms = rec_keyon - rep_keyon
@@ -714,8 +618,26 @@ class NoteMatcher:
                 heapq.heappop(replay_heap)
                 skipped_replay_indices.add((rep_idx, rep_note.key_on_ms, rep_split_seq, rep_note.is_split))
                 continue
-            else:
-                break
+            
+            # 检查条件2：锤速异常检测（录制无锤速但播放有锤速 = 多锤）
+            if self._is_multi_hammer_by_velocity(rec_note, rep_note):
+                # 录制数据无锤速，播放数据有锤速，判定为多锤
+                if rep_note.is_split:
+                    parent_idx = rep_note.split_parent_idx if rep_note.split_parent_idx is not None else rep_idx
+                    split_seq = rep_note.split_seq if rep_note.split_seq is not None else 0
+                    logger.debug(f"      ⚠️ [防线1] 跳过多锤（锤速异常） 播放[{parent_idx}:拆分{split_seq}] "
+                               f"keyon={rep_keyon:.1f}ms（录制无锤速，播放有锤速）")
+                else:
+                    logger.debug(f"      ⚠️ [防线1] 跳过多锤（锤速异常） 播放[{rep_idx}] "
+                               f"keyon={rep_keyon:.1f}ms（录制无锤速，播放有锤速）")
+                
+                # 移除并记录
+                heapq.heappop(replay_heap)
+                skipped_replay_indices.add((rep_idx, rep_note.key_on_ms, rep_split_seq, rep_note.is_split))
+                continue
+            
+            # 两个条件都不满足，跳出循环
+            break
         
         # 检查是否还有可用候选
         if not replay_heap:
@@ -760,8 +682,6 @@ class NoteMatcher:
                 'split_seq': rep_split_seq
             })
         
-        # 2. 评分每个候选
-        logger.debug(f"      📊 [Lookahead] 评估前{window_size}个候选:")
         
         scored_candidates = []
         for candidate in candidates:
@@ -771,12 +691,6 @@ class NoteMatcher:
             # 详细日志
             c = score_result['candidate']
             idx_str = self._format_note_index(c['idx'], c['note'], c['split_seq'])
-            logger.debug(f"        播放{idx_str} "
-                        f"keyon={score_result['keyon']:.1f}ms "
-                        f"误差={score_result['error']:.1f}ms "
-                        f"偏向={score_result['bias']:+.1f}ms "
-                        f"惩罚={score_result['penalty']:.1f} "
-                        f"→ 总分={score_result['score']:.1f}")
         
         # 3. 选择得分最低的
         scored_candidates.sort(key=lambda x: x['score'])
@@ -786,24 +700,35 @@ class NoteMatcher:
         # 日志：选择结果
         best_c = best['candidate']
         best_idx_str = self._format_note_index(best_c['idx'], best_c['note'], best_c['split_seq'])
-        logger.debug(f"      ✓ [Lookahead] 选择播放{best_idx_str} keyon={best['keyon']:.1f}ms (总分={best['score']:.1f})")
         
         # 4. 跳过前面的次优候选
         if best_index > 0:
-            logger.debug(f"      ⚠️ [Lookahead] 跳过前{best_index}个次优候选:")
             for i in range(best_index):
                 rep_keyon, rep_idx, rep_note, rep_split_seq = heapq.heappop(replay_heap)
                 skipped_replay_indices.add((rep_idx, rep_keyon, rep_split_seq, rep_note.is_split))
                 
                 idx_str = self._format_note_index(rep_idx, rep_note, rep_split_seq)
-                logger.debug(f"        播放{idx_str} keyon={rep_keyon:.1f}ms (综合得分不如后续候选)")
-        
+
         # 5. 返回最佳候选（现在在堆顶）
         rep_keyon, rep_idx, rep_note, rep_split_seq = replay_heap[0]
         keyon_error_ms = best['error']
         
         return (rep_keyon, rep_idx, rep_note, rep_split_seq, keyon_error_ms)
     
+    def _is_multi_hammer_by_velocity(self, rec_note: Note, rep_note: Note) -> bool:
+        """
+        通过锤速检测是否为多锤
+        
+        判定条件：录制无锤速或锤速=0，但播放有锤速>0
+        """
+        rec_hammer = rec_note.get_first_hammer_velocity()
+        rep_hammer = rep_note.get_first_hammer_velocity()
+        
+        rec_no_hammer = (rec_hammer is None or rec_hammer == 0)
+        rep_has_hammer = (rep_hammer is not None and rep_hammer > 0)
+        
+        return rec_no_hammer and rep_has_hammer
+
     def _calculate_candidate_score(self, candidate: dict, rec_keyon: float) -> dict:
         """
         计算候选的综合得分
@@ -875,8 +800,6 @@ class NoteMatcher:
         keyon_error_units = keyon_error_ms * 10.0
         
         if keyon_error_units > SEVERE_THRESHOLD:
-            logger.debug(f"      ✗ 误差{keyon_error_ms:.1f}ms超出阈值{SEVERE_THRESHOLD/10:.1f}ms → 失败")
-            
             self._create_failed_match(
                 rec_idx, keyon_error_ms,
                 f"所有候选误差超过阈值（{keyon_error_ms:.1f}ms > {SEVERE_THRESHOLD/10:.1f}ms）"
@@ -900,8 +823,6 @@ class NoteMatcher:
         """
         if not skipped_replay_indices:
             return 0
-        
-        logger.debug(f"  📋 处理按键{key_id}跳过的播放数据: {len(skipped_replay_indices)}个")
         
         # 统计多锤
         for rep_idx, keyon_ms, rep_split_seq, is_split in skipped_replay_indices:
@@ -956,8 +877,7 @@ class NoteMatcher:
             if duration_ratio >= 2.0:
                 should_split = True
                 trigger_reason = "主要条件"
-                logger.debug(f"      ⚠️ 【主要条件】持续时间差异显著: {duration_ratio:.2f}倍，尝试拆分...")
-            
+
             # 次要条件：持续时间相差不大，但短数据keyoff之后还有hammer和after_touch
             elif rec_duration != rep_duration:  # 确保有长短之分
                 long_note = rec_note if rec_duration > rep_duration else rep_note
@@ -967,16 +887,13 @@ class NoteMatcher:
                     should_split = True
                     trigger_reason = "次要条件"
                     force_record = True  # 次要条件触发时需要强制记录
-                    logger.debug(f"      ⚠️ 【次要条件】持续时间相差不大({duration_ratio:.2f}倍)，"
-                               f"但检测到短数据keyoff后仍有锤击和after_touch，尝试拆分...")
-            
+
             # 如果满足任一条件，进行拆分
             if should_split:
                 # 重要：在拆分之前先记录原始数据到持续时间差异列表
                 # 这样可以在UI中看到拆分前的原始曲线
                 self._check_duration_difference(rec_note, rep_note, rec_idx, rep_idx, force_record=force_record)
-                logger.debug(f"      📝 已记录拆分前的原始数据（触发原因：{trigger_reason}）")
-                
+
                 # 尝试拆分并立即匹配第一部分
                 split_result = self._try_split_and_match_first(
                     rec_idx, rec_note, rec_split_seq,
@@ -988,13 +905,13 @@ class NoteMatcher:
                 if split_result is not None:
                     # 拆分成功，返回用于匹配的Note（第一部分）
                     split_type, match_rec_note, match_rep_note = split_result
-                    logger.debug(f"      ↺ 拆分成功（拆分{split_type}数据），立即匹配第一部分")
+                    
                     # 更新rec_note和rep_note为拆分后的第一部分
                     rec_note = match_rec_note
                     rep_note = match_rep_note
                     # 继续下面的匹配逻辑
                 else:
-                    logger.debug(f"      ⚠️ 拆分失败，按原匹配处理")
+                    logger.warning(f"      ⚠️ 拆分失败，按原匹配处理")
         
         # 创建匹配对（使用父索引）
         final_rec_idx = rec_note.split_parent_idx if rec_note.is_split else rec_idx
@@ -1012,6 +929,15 @@ class NoteMatcher:
         )
         self.match_results.append(match_result)
         self.match_statistics.add_result(match_result)
+        
+        # 记录到对应的分类列表（用于统计数据计算）
+        matched_tuple = (final_rec_idx, final_rep_idx, rec_note, rep_note)
+        if match_type in [MatchType.EXCELLENT, MatchType.GOOD, MatchType.FAIR]:
+            self.precision_matched_pairs.append(matched_tuple)
+        elif match_type == MatchType.POOR:
+            self.approximate_matched_pairs.append(matched_tuple)
+        elif match_type == MatchType.SEVERE:
+            self.severe_matched_pairs.append(matched_tuple)
         
         # 标记为已使用
         used_replay_indices.add(rep_idx)
@@ -1045,6 +971,7 @@ class NoteMatcher:
             )
             if result:
                 rec_note_a, rec_note_b = result
+                self._record_split_count += 1  # 统计录制数据拆分次数
                 # rec_note_a用于匹配，rec_note_b已加入堆
                 return ('record', rec_note_a, rep_note)
             return None
@@ -1057,6 +984,7 @@ class NoteMatcher:
             )
             if result:
                 rep_note_a, rep_note_b = result
+                self._replay_split_count += 1  # 统计播放数据拆分次数
                 # rep_note_a用于匹配，rep_note_b已加入堆
                 return ('replay', rec_note, rep_note_a)
             return None
@@ -1877,11 +1805,14 @@ class NoteMatcher:
             if key_stats.matched_count > 0 and key_stats.offsets_ms:
                 result.append({
                     'key_id': key_id,
-                    'median': key_stats.median_offset,
-                    'mean': key_stats.mean_offset,
-                    'std': key_stats.std_offset,
-                    'variance': key_stats.variance_offset,
                     'count': key_stats.matched_count,
+                    'median': round(key_stats.median_offset, 3),
+                    'mean': round(key_stats.mean_offset, 3),
+                    'std': round(key_stats.std_offset, 3),
+                    'variance': round(key_stats.variance_offset, 3),
+                    'min': round(key_stats.min_offset, 3),
+                    'max': round(key_stats.max_offset, 3),
+                    'range': round(key_stats.range_offset, 3),
                     'status': 'matched'
                 })
 
@@ -2025,6 +1956,8 @@ class NoteMatcher:
         self.failure_reasons.clear()
         self._clear_mean_error_cache()
         self._split_counter = 0  # 重置全局拆分计数器
+        self._record_split_count = 0  # 重置录制数据拆分计数器
+        self._replay_split_count = 0  # 重置播放数据拆分计数器
 
     def _perform_single_note_matching(self, record_note: Note, record_index: int,
                                      replay_data: List[Note], used_replay_indices: set) -> MatchResult:
@@ -2238,6 +2171,28 @@ class NoteMatcher:
         """
         return self.matched_pairs.copy()
     
+    def get_split_statistics(self) -> Dict[str, int]:
+        """
+        获取拆分统计信息
+        
+        Returns:
+            Dict[str, int]: 拆分统计，包含：
+                - split_count: 拆分操作的总次数
+                - record_split_count: 录制数据拆分次数
+                - replay_split_count: 播放数据拆分次数
+                - additional_notes: 由于拆分而增加的按键数量（每次拆分产生1个额外的Note）
+                - additional_record_notes: 录制数据拆分产生的额外按键数
+                - additional_replay_notes: 播放数据拆分产生的额外按键数
+        """
+        return {
+            'split_count': self._split_counter,
+            'record_split_count': self._record_split_count,
+            'replay_split_count': self._replay_split_count,
+            'additional_notes': self._split_counter,  # 总拆分次数
+            'additional_record_notes': self._record_split_count,  # 录制拆分产生的额外按键
+            'additional_replay_notes': self._replay_split_count   # 播放拆分产生的额外按键
+        }
+    
     # TODO
     def get_offset_alignment_data(self) -> List[Dict[str, Union[int, float]]]:
         """
@@ -2315,16 +2270,13 @@ class NoteMatcher:
             # 计算原始偏移量
             keyon_offset = replay_keyon - record_keyon
 
-            # 计算校准后的偏移（去除全局固定延时）
-            corrected_offset = keyon_offset - self.global_time_offset
-
             record_duration = record_keyoff - record_keyon
             replay_duration = replay_keyoff - replay_keyon
             duration_diff = replay_duration - record_duration
             duration_offset = duration_diff
 
-            # 计算相对延时（用于悬停显示）
-            relative_delay = corrected_offset / 10.0  # 转换为ms
+            # 计算相对延时（用于悬停显示，单位：ms）
+            relative_delay = keyon_offset / 10.0
 
             offset_data.append({
                 'record_index': record_idx,
@@ -2335,13 +2287,13 @@ class NoteMatcher:
                 'record_velocity': record_velocity,    # 录制锤速
                 'replay_velocity': replay_velocity,    # 播放锤速
                 'velocity_diff': (replay_velocity - record_velocity) if record_velocity is not None and replay_velocity is not None else None,  # 锤速差值
-                'keyon_offset': keyon_offset,       # 原始偏移
-                'corrected_offset': corrected_offset, # 校准后偏移（用于分析）
+                'keyon_offset': keyon_offset,       # 原始偏移（单位：0.1ms）
+                'corrected_offset': keyon_offset,   # 兼容性字段，等同于 keyon_offset
                 'relative_delay': relative_delay,     # 相对延时（ms）
                 'record_keyoff': record_keyoff,
                 'replay_keyoff': replay_keyoff,
                 'duration_offset': duration_offset,
-                'average_offset': abs(corrected_offset),
+                'average_offset': abs(keyon_offset),
                 'record_duration': record_duration,
                 'replay_duration': replay_duration,
                 'duration_diff': duration_diff
@@ -2562,8 +2514,8 @@ class NoteMatcher:
             pairs_source = self.precision_matched_pairs
             error_filter = lambda error_ms: 30 < error_ms <= 50
         elif match_type == MatchType.POOR:
-            # 较差匹配：所有来自loose_matched_pairs的匹配
-            pairs_source = self.loose_matched_pairs
+            # 较差匹配：所有来自approximate_matched_pairs的匹配
+            pairs_source = self.approximate_matched_pairs
             error_filter = lambda error_ms: True  # 不需要额外筛选
         elif match_type == MatchType.SEVERE:
             # 严重误差：所有来自severe_matched_pairs的匹配
@@ -2757,257 +2709,128 @@ class NoteMatcher:
         # 有在阈值内的候选，但未被匹配 -> 可能全被占用（回放侧无法得知占用情况）
         return f"可能所有候选已被占用(候选数:{len(candidates)}, 阈值:{threshold:.1f}ms)"
     
+    def _get_delay_metrics(self) -> DelayMetrics:
+        """
+        获取延时指标计算器（延迟初始化）
+        
+        Returns:
+            DelayMetrics: 延时指标计算器实例
+        """
+        if self._delay_metrics is None:
+            self._delay_metrics = DelayMetrics(self.precision_matched_pairs)
+        return self._delay_metrics
+    
     def _calculate_note_times(self, note: Note) -> Tuple[float, float]:
         """
-        计算音符的按键开始和结束时间
+        获取音符的按键开始和结束时间
         
         Args:
             note: 音符对象
             
         Returns:
-            Tuple[float, float]: (keyon_time, keyoff_time)
+            Tuple[float, float]: (keyon_time, keyoff_time) 单位：0.1ms
         """
-
-        try:
-            keyon_time = note.after_touch.index[0] + note.offset
-            keyoff_time = note.after_touch.index[-1] + note.offset
-        except (IndexError, AttributeError) as e:
-            raise ValueError(f"音符ID {note.id} 的after_touch数据无效: {e}") from e
+        # 直接使用Note对象的预计算属性（已经是ms），转换为0.1ms单位
+        if note.key_on_ms is not None and note.key_off_ms is not None:
+            keyon_time = note.key_on_ms * 10.0
+            keyoff_time = note.key_off_ms * 10.0
+        else:
+            raise ValueError(f"音符ID {note.id} 的时间属性未初始化")
         
         return keyon_time, keyoff_time
     
     # TODO  
     def get_global_average_delay(self) -> float:
         """
-        计算整首曲子的平均时延（基于已配对数据）
+        获取全局平均延时（已废弃，重定向到 get_mean_error）
         
-        使用带符号的 keyon_offset 计算：全局平均时延 = mean(keyon_offset)
-        正值表示 replay 延迟，负值表示 replay 提前
-        
-        注意：此指标与平均误差（ME，get_mean_error()）在计算和概念上完全相同，
-        都是对所有 keyon_offset 求算术平均，反映整体的提前/滞后方向性。
-        如果需要不考虑方向的平均延时幅度，应使用平均绝对误差（MAE）。
+        注意：此方法已废弃，与 get_mean_error() 完全相同。
+        建议直接使用 get_mean_error()。
         
         Returns:
-            float: 平均时延（0.1ms单位，带符号）
+            float: 平均误差（0.1ms单位，带符号）
         """
-        if not self.matched_pairs:
-            return 0.0
-
-        # 获取偏移数据（只使用精确匹配对，误差 ≤ 50ms）
-        offset_data = self.get_precision_offset_alignment_data()
-
-        # 使用带符号的校准后偏移（不取绝对值，去除全局系统延时）
-        corrected_offsets = [item.get('corrected_offset', 0) for item in offset_data if item.get('corrected_offset') is not None]
-        
-        if not corrected_offsets:
-            return 0.0
-
-        # 计算平均值（0.1ms单位，带符号）
-        average_delay = sum(corrected_offsets) / len(corrected_offsets)
-
-        logger.info(f"📊 [后端] 全局平均延时: {average_delay/10:.2f}ms ({average_delay:.1f}单位，基于{len(corrected_offsets)}个精确匹配对)")
-        
-        return average_delay
+        return self.get_mean_error()
     
     def get_variance(self) -> float:
         """
-        计算已匹配按键对的总体方差（Population Variance）
+        获取总体方差（已废弃）
         
-        说明：
-        - "匹配对"指的是matched_pairs中的每个元素，是一个(record_note, replay_note)的配对
-        - 对每个匹配对计算keyon_offset = replay_keyon - record_keyon
-        - 使用带符号的keyon_offset计算方差，按照标准总体方差公式
-        
-        标准数学公式：
-        σ² = (1/n) * Σ(x_i - μ)²
-        其中 x_i 是带符号的keyon_offset，μ = (1/n) * Σ x_i（总体均值）
+        注意：此方法已废弃，UI 不需要显示方差。
+        如需波动程度，请使用 get_standard_deviation()。
         
         Returns:
-            float: 总体方差（单位：(0.1ms)²，转换为ms²需要除以100）
+            float: 总体方差（单位：(0.1ms)²）
         """
-        if not self.matched_pairs:
-            return 0.0
-
-        # 获取偏移对齐数据（只使用精确匹配对，误差 ≤ 50ms）
-        offset_data = self.get_precision_offset_alignment_data()
-
-        # 提取所有带符号的校准后偏移（去除全局系统延时）
-        offsets = []
-        for item in offset_data:
-            corrected_offset = item.get('corrected_offset', 0)
-            offsets.append(corrected_offset)  # 使用校准后的偏移值
-        
-        if len(offsets) <= 1:
-            return 0.0
-        
-        # 计算总体方差（使用标准公式，分母 n）
-        # 公式：σ² = (1/n) * Σ(x_i - μ)²
-        # 其中 μ = (1/n) * Σ x_i（总体均值）
-        mean = sum(offsets) / len(offsets)  # 总体均值（带符号）
-        variance = sum((x - mean) ** 2 for x in offsets) / len(offsets)  # 总体方差使用 n
-        return variance
+        std = self.get_standard_deviation()
+        return std ** 2 if std > 0 else 0.0
     
     def get_standard_deviation(self) -> float:
         """
         计算已配对按键的总体标准差（Population Standard Deviation）
-        对所有已匹配按键对的带符号keyon_offset计算总体标准差
-        总体标准差 = sqrt(总体方差)
-        
-        按照标准数学公式：σ = √(σ²) = √((1/n) * Σ(x_i - μ)²)
-        其中 x_i 是带符号的keyon_offset，μ = (1/n) * Σ x_i（总体均值）
-        
-        注意：此方法直接调用 get_variance() 然后开平方根，确保与方差计算的一致性
-        由于 get_variance() 使用带符号值计算，此方法也使用带符号值
         
         Returns:
-            float: 总体标准差（单位：0.1ms，转换为ms需要除以10）
+            float: 总体标准差（单位：0.1ms）
         """
-        variance = self.get_variance()
-        if variance < 0:
-            # 理论上不应该出现负数，但为了安全起见
-            logger.warning(f"总体方差为负数: {variance}，返回0")
-            return 0.0
-        std = variance ** 0.5
-        logger.info(f"[后端] 总体标准差: {std/10:.2f}ms ({std:.1f}单位，基于精确匹配数据)")
-        return std
+        return self._get_delay_metrics().get_standard_deviation()
     
     def get_mean_absolute_error(self) -> float:
         """
         计算已配对按键的平均绝对误差（MAE）
-        对所有已匹配按键对的延时绝对值求平均
         
         Returns:
-            float: 平均绝对误差（单位：0.1ms，转换为ms需要除以10）
+            float: 平均绝对误差（单位：0.1ms）
         """
-        if not self.matched_pairs:
-            return 0.0
-
-        # 获取偏移对齐数据（只使用精确匹配对，误差 ≤ 50ms）
-        offset_data = self.get_precision_offset_alignment_data()
-
-        # 提取所有校准后延时的绝对值（去除全局系统延时）
-        abs_errors = []
-        for item in offset_data:
-            corrected_offset = item.get('corrected_offset', 0)
-            abs_error = abs(corrected_offset)
-            abs_errors.append(abs_error)
-        
-        # 计算平均绝对误差
-        if abs_errors:
-            mae = sum(abs_errors) / len(abs_errors)
-            logger.info(f"[后端] 平均绝对误差 MAE: {mae/10:.2f}ms ({mae:.1f}单位，基于{len(abs_errors)}个精确匹配对)")
-            return mae
-        else:
-            return 0.0
+        return self._get_delay_metrics().get_mean_absolute_error()
     
     def get_coefficient_of_variation(self) -> float:
         """
-        计算已配对按键的变异系数（Coefficient of Variation, CV）
-        变异系数 = 总体标准差（σ）/ |总体均值（μ）| × 100%
-        
-        使用总体标准差（σ）与总体均值（μ）计算，反映相对变异程度
-        
-        注意：如果总体均值（μ）为0或接近0，变异系数可能无意义或非常大
+        计算已配对按键的变异系数（CV）
         
         Returns:
             float: 变异系数（百分比，例如 15.5 表示 15.5%）
         """
-        if not self.matched_pairs:
-            return 0.0
-        
-        # 获取总体均值（μ，带符号）
-        mean_0_1ms = self.get_mean_error()
-        if abs(mean_0_1ms) < 1e-6:  # 如果均值接近0，无法计算CV
-            return 0.0
-        
-        # 获取总体标准差（σ）
-        std_0_1ms = self.get_standard_deviation()
-        if std_0_1ms == 0:
-            return 0.0
-        
-        # 计算变异系数：CV = (σ / |μ|) × 100%
-        cv = (std_0_1ms / abs(mean_0_1ms)) * 100.0
-        return cv
+        return self._get_delay_metrics().get_coefficient_of_variation()
     
     def get_mean_squared_error(self) -> float:
         """
-        计算已配对按键的均方误差（MSE）
-        对所有已匹配按键对的延时的平方求平均
+        获取均方误差（MSE）（已废弃）
+        
+        注意：此方法已废弃，UI 不需要显示 MSE。
+        如需误差水平，请使用 get_root_mean_squared_error()。
         
         Returns:
-            float: 均方误差（单位：(0.1ms)²，转换为ms²需要除以100）
+            float: 均方误差（单位：(0.1ms)²）
         """
-        if not self.matched_pairs:
-            return 0.0
-        
-        # 获取偏移对齐数据（只使用精确匹配对，误差 ≤ 50ms）
-        offset_data = self.get_precision_offset_alignment_data()
-        
-        # 提取所有校准后延时的平方值（去除全局系统延时）
-        squared_errors = []
-        for item in offset_data:
-            corrected_offset = item.get('corrected_offset', 0)
-            squared_error = corrected_offset ** 2  # 使用校准后的偏移值
-            squared_errors.append(squared_error)
-        
-        # 计算均方误差
-        if squared_errors:
-            mse = sum(squared_errors) / len(squared_errors)
-            return mse
-        else:
-            return 0.0
+        rmse = self.get_root_mean_squared_error()
+        return rmse ** 2 if rmse > 0 else 0.0
 
     def get_root_mean_squared_error(self) -> float:
         """
         计算已配对按键的均方根误差（RMSE）
-        RMSE = sqrt(MSE) = sqrt(mean((keyon_offset)^2))
         
         Returns:
-            float: 均方根误差（单位：0.1ms，转换为ms需要除以10）
+            float: 均方根误差（单位：0.1ms）
         """
-        if not self.matched_pairs:
-            return 0.0
-        
-        # 获取MSE
-        mse = self.get_mean_squared_error()
-        
-        # 计算RMSE = sqrt(MSE)
-        import math
-        rmse = math.sqrt(mse) if mse > 0 else 0.0
-        
-        return rmse
+        return self._get_delay_metrics().get_root_mean_squared_error()
     
     def get_mean_error(self) -> float:
         """
-        获取已匹配按键对的平均误差（ME，带符号的平均偏差）
-        对所有匹配对的keyon_offset（replay_keyon - record_keyon）求算术平均。
-
-        Returns:
-            float: 平均误差ME（单位：0.1ms，UI显示为ms需除以10）
-        """
-        # 返回缓存的平均误差，如果没有缓存则计算
-        if self._mean_error_cached is None:
-            self._mean_error_cached = self._calculate_mean_error()
-        return self._mean_error_cached
-
-    def _calculate_mean_error(self) -> float:
-        """
-        计算已匹配按键对的平均误差（内部方法）
-
+        获取已匹配按键对的平均误差（ME，带符号）
+        
         Returns:
             float: 平均误差ME（单位：0.1ms）
         """
-        if not self.matched_pairs:
-            return 0.0
+        return self._get_delay_metrics().get_mean_error()
 
-        offset_data = self.get_precision_offset_alignment_data()
-        offsets = [item.get('corrected_offset', 0) for item in offset_data]
-        if not offsets:
-            return 0.0
-        mean_error = sum(offsets) / len(offsets)
-        logger.info(f"📊 [后端] 平均误差 ME: {mean_error/10:.2f}ms ({mean_error:.1f}单位，基于{len(offsets)}个精确匹配对)")
-        return mean_error
+    def _calculate_mean_error(self) -> float:
+        """
+        计算已匹配按键对的平均误差（内部方法，已废弃）
+        
+        Returns:
+            float: 平均误差ME（单位：0.1ms）
+        """
+        return self.get_mean_error()
 
     def _clear_mean_error_cache(self) -> None:
         """

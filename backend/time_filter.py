@@ -252,6 +252,4 @@ class TimeFilter:
             if self._is_note_in_time_range(note)
         ]
         
-        logger.info(f"✅ 时间范围过滤完成: 录制{len(filtered_record_data)}/{len(self.valid_record_data)}个音符, 播放{len(filtered_replay_data)}/{len(self.valid_replay_data)}个音符")
-        
         return filtered_record_data, filtered_replay_data

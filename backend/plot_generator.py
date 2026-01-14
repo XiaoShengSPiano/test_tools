@@ -21,122 +21,26 @@ from utils.colors import ALGORITHM_COLOR_PALETTE
 import spmid
 import plotly.graph_objects as go
 
-# 导入新的瀑布图生成器
-from .waterfall_plot_generator import WaterfallPlotGenerator
-
 logger = Logger.get_logger()
 
 
 class PlotGenerator:
     """绘图生成器 - 负责各种图表的生成"""
     
-    def __init__(self, data_filter=None):
+    def __init__(self, key_filter=None):
         """初始化绘图生成器"""
         self.valid_record_data = None
         self.valid_replay_data = None
         self.matched_pairs = None
         self.analyzer = None  # SPMIDAnalyzer实例
-        self.data_filter = data_filter  # DataFilter实例
-
-        # 初始化新的瀑布图生成器
-        self.waterfall_generator = WaterfallPlotGenerator()
-
-        self._setup_chinese_font()
+        self.key_filter = key_filter  # KeyFilter实例
     
     def set_data(self, valid_record_data=None, valid_replay_data=None, matched_pairs=None, analyzer=None):
         self.valid_record_data = valid_record_data
         self.valid_replay_data = valid_replay_data
         self.matched_pairs = matched_pairs
         self.analyzer = analyzer
-    
-    def _setup_chinese_font(self) -> None:
-        """设置中文字体"""
-        try:
-            # 获取系统字体候选列表
-            font_candidates = self._get_system_font_candidates()
-            
-            # 查找可用字体
-            available_font = self._find_available_font(font_candidates)
-            
-            if available_font:
-                # 设置matplotlib字体
-                plt.rcParams['font.sans-serif'] = [available_font]
-                plt.rcParams['axes.unicode_minus'] = False
-                logger.info(f"✅ 中文字体设置成功: {available_font}")
-            else:
-                logger.warning("⚠️ 未找到可用的中文字体，可能影响中文显示")
-                
-        except Exception as e:
-            logger.error(f"中文字体设置失败: {e}")
-    
-    def _get_system_font_candidates(self) -> list:
-        """获取系统字体候选列表"""
-        return [
-            'Microsoft YaHei',  # 微软雅黑
-            'SimHei',           # 黑体
-            'SimSun',           # 宋体
-            'KaiTi',            # 楷体
-            'FangSong',         # 仿宋
-            'Arial Unicode MS', # Arial Unicode MS
-            'DejaVu Sans'       # DejaVu Sans
-        ]
-    
-    def _find_available_font(self, font_candidates: list) -> Optional[str]:
-        """查找可用的字体"""
-        available_fonts = [f.name for f in fm.fontManager.ttflist]
         
-        for font in font_candidates:
-            if font in available_fonts:
-                logger.info(f"✅ 找到可用字体: {font}")
-                return font
-        
-        logger.warning("⚠️ 未找到候选字体，使用系统默认字体")
-        return None
-    
-    def _is_font_available(self, font_name: str) -> bool:
-        """检查字体是否可用"""
-        try:
-            available_fonts = [f.name for f in fm.fontManager.ttflist]
-            return font_name in available_fonts
-        except Exception as e:
-            logger.debug(f"⚠️ 字体检查失败: {font_name}, 错误: {e}")
-            return False
-    
-    # TODO
-    def generate_waterfall_plot(self, time_filter=None, include_all_data=True) -> Any:
-        """
-        生成瀑布图 - 基于匹配等级划分的数据
-
-        Args:
-            time_filter: 时间过滤器实例，用于过滤数据
-            include_all_data: 兼容性参数（已废弃），现在总是使用基于匹配等级的模式
-
-        Returns:
-            Any: 瀑布图对象
-        """
-        try:
-            # 检查是否有analyzer（包含note_matcher）
-            if not self.analyzer or not hasattr(self.analyzer, 'note_matcher'):
-                logger.error("没有可用的分析器或音符匹配器，无法生成瀑布图")
-                return self._create_empty_plot("数据源不存在")
-
-            # 使用基于匹配等级划分的瀑布图生成器
-            logger.info("🎨 使用基于匹配等级划分的瀑布图生成器")
-
-            fig = self.waterfall_generator.generate_comprehensive_waterfall_plot(
-                self.analyzer,  # 传递完整的analyzer，包含note_matcher和错误数据
-                time_filter,
-                self.data_filter.key_filter if self.data_filter else None
-            )
-
-            logger.info("✅ 瀑布图生成成功")
-            return fig
-
-        except Exception as e:
-            logger.error(f"瀑布图生成失败: {e}")
-            logger.error(traceback.format_exc())
-            return self._create_empty_plot(f"生成瀑布图失败: {str(e)}")
-    
     def _apply_key_filter(self, notes_data, key_filter: set):
         """
         应用按键过滤
@@ -276,8 +180,6 @@ class PlotGenerator:
         except Exception as e:
             logger.error(f"创建空图表失败: {e}")
             return None
-    
-    # 已移除：EDA抖动点图及其数据准备与统计方法，改用现有散点图方案
     
     def _convert_plot_to_base64(self) -> str:
         """
@@ -502,24 +404,10 @@ class PlotGenerator:
         
         return [mcolors.rgb2hex(c[:3]) for c in colors]
     
-    def _handle_single_algorithm_plot(self, fig, analysis_result):
-        """处理单算法模式的图表绘制"""
-        interaction_plot_data = analysis_result.get('interaction_plot_data', {})
-        key_data = interaction_plot_data.get('key_data', {})
-        
-        if not key_data:
-            return
-        
-        # 生成按键颜色
-        key_colors = self._generate_key_colors(len(key_data))
-        
-        # 添加数据散点
-        self._add_single_algorithm_data_traces(fig, key_data, key_colors)
-    
-    def _configure_plot_layout(self, fig, analysis_result, is_multi_algorithm, algorithm_results):
+    def _configure_plot_layout(self, fig, analysis_result, algorithm_results):
         """配置图表布局（横轴、纵轴、图注等）"""
         # 收集所有播放锤速用于生成横轴刻度
-        all_velocities = self._collect_all_velocities(analysis_result, is_multi_algorithm, algorithm_results)
+        all_velocities = self._collect_all_velocities(analysis_result, algorithm_results)
 
         # 生成横轴刻度
         tick_positions, tick_texts = self._generate_log_ticks(all_velocities)
@@ -573,22 +461,16 @@ class PlotGenerator:
             'tickformat': '.1f'
         }
 
-    def _collect_all_velocities(self, analysis_result, is_multi_algorithm, algorithm_results):
+    def _collect_all_velocities(self, analysis_result, algorithm_results):
         """收集所有播放锤速"""
         all_velocities = []
         
-        if is_multi_algorithm and algorithm_results:
+        if algorithm_results:
             for alg_result in algorithm_results.values():
                 interaction_data = alg_result.get('interaction_plot_data', {})
                 key_data = interaction_data.get('key_data', {})
                 for data in key_data.values():
                     velocities = data.get('forces', [])  # 这里的forces实际是播放锤速
-                    all_velocities.extend([v for v in velocities if v > 0])
-        else:
-            interaction_data = analysis_result.get('interaction_plot_data', {})
-            key_data = interaction_data.get('key_data', {})
-            for data in key_data.values():
-                velocities = data.get('forces', [])
                 all_velocities.extend([v for v in velocities if v > 0])
         
         return all_velocities
@@ -653,42 +535,28 @@ class PlotGenerator:
                 if key_id not in key_data:
                     continue
                 
-                # 提取数据并添加trace
+                # 提取数据并添加trace（传入内部名称用于customdata）
                 self._add_single_trace(
                     fig, key_data[key_id], key_id,
-                    alg_display_name, alg_color,
+                    alg_internal_name, alg_color,
                     key_idx, key_colors,
-                    show_legend_for_algorithm if key_idx == 0 else False  # 只为每个算法的第一个按键显示图注
-                )
-    
-    def _add_single_algorithm_data_traces(self, fig, key_data, key_colors):
-        """为单算法模式添加数据散点"""
-        key_ids = sorted(key_data.keys())
-        
-        for idx, key_id in enumerate(key_ids):
-            data = key_data[key_id]
-            color = key_colors[idx % len(key_colors)]
-            
-            # 使用统一的trace添加函数
-            self._add_single_trace(
-                fig, data, key_id,
-                algorithm_name=None,  # 单算法模式无需算法名
-                algorithm_color=None,
-                key_idx=idx,
-                key_colors=key_colors
+                    show_legend_for_algorithm if key_idx == 0 else False,  # 只为每个算法的第一个按键显示图注
+                    alg_display_name  # 传入显示名称用于图例
             )
     
-    def _add_single_trace(self, fig, data, key_id, algorithm_name, algorithm_color, key_idx, key_colors, show_legend=None):
+    def _add_single_trace(self, fig, data, key_id, algorithm_name, algorithm_color, key_idx, key_colors, show_legend=None, display_name=None):
         """添加单个散点trace
         
         Args:
             fig: Plotly图表对象
             data: 按键数据字典（forces=播放锤速, delays=锤速差值）
             key_id: 按键ID
-            algorithm_name: 算法名称（多算法模式）
-            algorithm_color: 算法颜色（多算法模式）
+            algorithm_name: 算法的唯一标识（用于customdata）
+            algorithm_color: 算法颜色
             key_idx: 按键索引
-            key_colors: 按键颜色列表
+            key_colors: 按键颜色列表（未使用，保留用于兼容）
+            show_legend: 是否显示图例
+            display_name: 显示名称（用于图例和hover，如果为None则使用algorithm_name）
         """
         # 提取数据
         replay_velocities = data.get('forces', [])  # 播放锤速
@@ -725,19 +593,14 @@ class PlotGenerator:
                      for rv, rd, ad in zip(replay_vels, rel_delays, abs_delays)]
         
         # 确定颜色和图例
-        if algorithm_name:  # 多算法模式
-            color = algorithm_color
-            showlegend = show_legend if show_legend is not None else True
-            # 所有同一个算法的trace使用相同的legendgroup，确保图注点击能控制所有相关数据点
-            legendgroup = f'algorithm_{algorithm_name}'
-            name = algorithm_name  # 使用算法名称作为图注
-            hover_prefix = f'<b>{algorithm_name}</b><br>'
-        else:  # 单算法模式
-            color = key_colors[key_idx % len(key_colors)]
-            showlegend = True
-            legendgroup = f'key_{key_id}'
-            name = f'按键 {key_id}'
-            hover_prefix = ''
+        color = algorithm_color
+        showlegend = show_legend if show_legend is not None else True
+        # 使用algorithm_name作为legendgroup（唯一标识），使用display_name作为显示名称
+        legendgroup = f'algorithm_{algorithm_name}'
+        legend_display_name = display_name if display_name else algorithm_name
+        name = legend_display_name  # 使用显示名称作为图注
+        hover_prefix = f'<b>{legend_display_name}</b><br>'
+        marker_size = 8
         
         fig.add_trace(go.Scatter(
             x=log10_vels,
@@ -745,7 +608,7 @@ class PlotGenerator:
             mode='markers',
             name=name,
             marker=dict(
-                size=8 if algorithm_name else 10,
+                size=marker_size,
                 color=color,
                 opacity=0.8,
                 line=dict(width=1, color='white')
@@ -753,13 +616,13 @@ class PlotGenerator:
             legendgroup=legendgroup,
             showlegend=showlegend,
             customdata=customdata,
-            visible=True if algorithm_name else 'legendonly',
+            visible=True,  # 统一默认显示
             hovertemplate=hover_prefix +
                          f'<b>按键 {key_id}</b><br>' +
                          '<b>log₁₀(播放锤速)</b>: %{x:.2f}<br>' +
-                         '<b>播放锤速</b>: %{customdata[1]:.0f}<br>' +
+                         '<b>播放锤速</b>: %{customdata[2]:.0f}<br>' +
                          '<b>相对延时</b>: %{y:.2f}ms<br>' +
-                         '<b>原始延时</b>: %{customdata[3]:.2f}ms<br>' +
+                         '<b>原始延时</b>: %{customdata[4]:.2f}ms<br>' +
                          f'<i>平均延时: {mean_delay:.2f}ms</i><extra></extra>'
         ))
     
@@ -782,24 +645,22 @@ class PlotGenerator:
             if analysis_result.get('status') != 'success':
                 return self._create_empty_plot("分析失败或数据不足")
             
-            # 检查是否是多算法模式
-            is_multi_algorithm = analysis_result.get('multi_algorithm_mode', False)
+            # 统一使用多算法模式处理
             algorithm_results = analysis_result.get('algorithm_results', {})
+            
+            if not algorithm_results:
+                return self._create_empty_plot("没有可用的算法结果")
             
             fig = go.Figure()
             
             # 使用全局算法颜色方案
             algorithm_colors = ALGORITHM_COLOR_PALETTE
             
-            if is_multi_algorithm and algorithm_results:
-                # 多算法模式
-                self._handle_multi_algorithm_plot(fig, algorithm_results, algorithm_colors)
-            else:
-                # 单算法模式
-                self._handle_single_algorithm_plot(fig, analysis_result)
+            # 统一使用多算法模式处理（即使只有1个算法）
+            self._handle_multi_algorithm_plot(fig, algorithm_results, algorithm_colors)
             
             # 配置图表布局
-            self._configure_plot_layout(fig, analysis_result, is_multi_algorithm, algorithm_results)
+            self._configure_plot_layout(fig, analysis_result, algorithm_results)
             
             return fig
             
@@ -807,3 +668,244 @@ class PlotGenerator:
             logger.error(f"生成交互效应图失败: {e}")
             logger.error(traceback.format_exc())
             return self._create_empty_plot(f"生成交互效应图失败: {str(e)}")
+    
+    # ==================== 音符对比图相关方法 ====================
+    
+    def _has_valid_data(self, note, data_type):
+        """检查音符是否有有效的触后或锤子数据"""
+        if note is None:
+            return False
+        data = getattr(note, data_type, None)
+        return data is not None and not data.empty
+    
+    def _calculate_time_data(self, note, data_type, mean_delay_ms=0.0):
+        """计算音符数据的时间轴（毫秒）"""
+        data = getattr(note, data_type)
+        time_actual = (data.index + note.offset) / 10.0
+        time_adjusted = time_actual - mean_delay_ms
+        return time_actual, time_adjusted, data.values
+    
+    def _add_after_touch_trace(self, fig, note, color, name, legend_name, legendgroup, 
+                               row, mean_delay_ms=0.0, is_adjusted=False, algorithm_name=None):
+        """添加触后曲线轨迹"""
+        if not self._has_valid_data(note, 'after_touch'):
+            return
+        
+        time_actual, time_adjusted, values = self._calculate_time_data(note, 'after_touch', mean_delay_ms)
+        x_data = time_adjusted if is_adjusted else time_actual
+        
+        # 构建hover模板
+        if algorithm_name:
+            hover_parts = [f'算法: {algorithm_name}', f'实际播放时间: %{{customdata:.2f}} ms']
+            if is_adjusted:
+                hover_parts.extend([f'平均延时: {mean_delay_ms:.2f} ms', '调整后时间: %{x:.2f} ms', '类型: 调整后曲线'])
+            else:
+                hover_parts.append('类型: 原始曲线')
+            hover_parts.append('触后压力: %{y}')
+            hovertemplate = '<br>'.join(hover_parts) + '<extra></extra>'
+        else:
+            hovertemplate = f'{name}时间: %{{x:.2f}} ms<br>触后压力: %{{y}}<extra></extra>'
+        
+        fig.add_trace(
+            go.Scatter(
+                x=x_data, y=values, mode='lines', name=name,
+                line=dict(color=color, width=3 if '录制' in name or '回放' in name else 2, 
+                         dash='solid' if '录制' in name or not is_adjusted else 'dash'),
+                showlegend=True, legend=legend_name, legendgroup=legendgroup,
+                customdata=time_actual, hovertemplate=hovertemplate
+            ),
+            row=row, col=1
+        )
+    
+    def _add_hammer_trace(self, fig, note, color, name, legend_name, legendgroup, 
+                         row, symbol='circle', size=8, algorithm_name=None):
+        """添加锤子数据点轨迹"""
+        if not self._has_valid_data(note, 'hammers'):
+            return
+        
+        time_actual, _, values = self._calculate_time_data(note, 'hammers')
+        first_hammer_time = time_actual[0] if len(time_actual) > 0 else 0.0
+        
+        # 构建hover模板
+        if algorithm_name:
+            hovertemplate = f'算法: {algorithm_name}<br>锤子时间: %{{customdata:.2f}} ms<br>锤子速度: %{{y}}<extra></extra>'
+        else:
+            hover_parts = [f'{name}时间: %{{x:.2f}} ms', f'锤子速度: %{{y}}']
+            if '录制' in name:
+                hover_parts.append(f'第一个锤子时间: {first_hammer_time:.2f} ms')
+            hovertemplate = '<br>'.join(hover_parts) + '<extra></extra>'
+        
+        fig.add_trace(
+            go.Scatter(
+                x=time_actual, y=values, mode='markers', name=name,
+                marker=dict(color=color, size=size, symbol=symbol),
+                showlegend=True, legend=legend_name, legendgroup=legendgroup,
+                customdata=time_actual, hovertemplate=hovertemplate
+            ),
+            row=row, col=1
+        )
+    
+    def _add_record_traces(self, fig, record_note):
+        """添加录制数据轨迹（触后+锤子，在两个子图）"""
+        if record_note is None:
+            return
+        
+        try:
+            for row in [1, 2]:
+                legend_name = "legend" if row == 1 else "legend2"
+                self._add_after_touch_trace(fig, record_note, 'blue', '录制触后', 
+                                           legend_name, 'record', row)
+                self._add_hammer_trace(fig, record_note, 'blue', '录制锤子', 
+                                      legend_name, 'record', row)
+        except Exception as e:
+            logger.warning(f"⚠️ 绘制录制数据时出错: {e}")
+    
+    def _add_play_traces(self, fig, play_note, algorithm_name, mean_delays, 
+                        show_other_algorithms):
+        """添加回放数据轨迹（触后+锤子，上子图原始曲线，下子图调整曲线）"""
+        if play_note is None:
+            return
+        
+        try:
+            mean_delay_ms = mean_delays.get(algorithm_name, 0.0) if algorithm_name else 0.0
+            alg_prefix = f"{algorithm_name} - " if algorithm_name and show_other_algorithms else ""
+            alg_group = f'algorithm_{algorithm_name}' if algorithm_name else 'algorithm_default'
+            
+            # 上子图：原始曲线（不偏移）
+            self._add_after_touch_trace(fig, play_note, 'red', f'{alg_prefix}回放触后(原始)', 
+                                        'legend', alg_group, 1, 0.0, False, 
+                                        algorithm_name if algorithm_name else None)
+            
+            # 下子图：调整后曲线（偏移）
+            self._add_after_touch_trace(fig, play_note, 'red', f'{alg_prefix}回放触后(调整后)', 
+                                        'legend2', alg_group, 2, mean_delay_ms, True, 
+                                        algorithm_name if algorithm_name else None)
+            
+            # 锤子数据在两个子图（不偏移）
+            for row in [1, 2]:
+                legend_name = "legend" if row == 1 else "legend2"
+                self._add_hammer_trace(fig, play_note, 'red', f'{alg_prefix}回放锤子', 
+                                      legend_name, alg_group, row, 'circle', 8, 
+                                      algorithm_name if algorithm_name else None)
+        except Exception as e:
+            logger.warning(f"⚠️ 绘制回放数据时出错: {e}")
+    
+    def _add_other_algorithm_traces(self, fig, other_algorithm_notes, mean_delays):
+        """添加其他算法的播放曲线（在上下两个子图都显示）"""
+        colors = ['green', 'orange', 'purple', 'brown', 'pink', 'gray', 'olive', 'cyan']
+        
+        for idx, (alg_name, play_note) in enumerate(other_algorithm_notes):
+            if play_note is None:
+                continue
+            
+            color = colors[idx % len(colors)]
+            mean_delay_ms = mean_delays.get(alg_name, 0.0)
+            alg_group = f'algorithm_{alg_name}'
+            
+            try:
+                # 上子图：显示原始曲线（不偏移）
+                self._add_after_touch_trace(fig, play_note, color, f'{alg_name} - 回放触后(原始)',
+                                           'legend', alg_group, 1, 0.0, False, alg_name)
+                self._add_hammer_trace(fig, play_note, color, f'{alg_name} - 回放锤子',
+                                      'legend', alg_group, 1, 'square', 6, alg_name)
+                
+                # 下子图：显示调整后曲线（偏移）
+                self._add_after_touch_trace(fig, play_note, color, f'{alg_name} - 回放触后(调整后)',
+                                           'legend2', alg_group, 2, mean_delay_ms, True, alg_name)
+                self._add_hammer_trace(fig, play_note, color, f'{alg_name} - 回放锤子',
+                                      'legend2', alg_group, 2, 'square', 6, alg_name)
+            except Exception as e:
+                logger.warning(f"⚠️ 绘制算法 '{alg_name}' 的回放数据时出错: {e}")
+    
+    def _configure_note_comparison_layout(self, fig, record_note, play_note, algorithm_name):
+        """配置音符对比图的布局"""
+        # 生成标题
+        title_parts = []
+        if algorithm_name:
+            title_parts.append(f"算法: {algorithm_name}")
+        if record_note:
+            title_parts.append(f"录制音符ID: {record_note.id}")
+        if play_note:
+            title_parts.append(f"回放音符ID: {play_note.id}")
+        
+        title = "音符数据对比分析"
+        if title_parts:
+            title += f" ({', '.join(title_parts)})"
+        
+        # 无数据提示
+        if len(fig.data) == 0:
+            fig.add_annotation(
+                text="无数据可显示", xref="paper", yref="paper",
+                x=0.5, y=0.5, xanchor='center', yanchor='middle',
+                showarrow=False, font_size=16
+            )
+        
+        # 轴配置（复用配置）
+        axis_config = dict(
+            title=dict(text='时间 (ms)', font=dict(size=12)),
+            showgrid=True, showline=True, linewidth=1, 
+            linecolor='black', mirror=True
+        )
+        yaxis_config = dict(
+            title=dict(text='数值（触后压力/锤子速度）', font=dict(size=12)),
+            showgrid=True, showline=True, linewidth=1,
+            linecolor='black', mirror=True
+        )
+        
+        # 图例配置（复用配置）
+        legend_config_base = dict(
+            orientation="h", yanchor="bottom", xanchor="left", x=0.0,
+            traceorder='grouped', tracegroupgap=10, itemwidth=30,
+            font=dict(size=9), bgcolor='rgba(255,255,255,0.95)',
+            entrywidthmode='pixels', entrywidth=240,
+            groupclick='toggleitem', itemsizing='trace', itemclick='toggle'
+        )
+        
+        fig.update_layout(
+            title=dict(text=title, x=0.5, xanchor='center', y=0.95, 
+                      yanchor='top', font=dict(size=16, weight='bold')),
+            xaxis=axis_config, yaxis=yaxis_config,
+            xaxis2=axis_config, yaxis2=yaxis_config,
+            height=900, width=1200, template='simple_white',
+            legend=dict(**legend_config_base, y=1.05, bordercolor='blue', borderwidth=1),
+            legend2=dict(**legend_config_base, y=0.40, bordercolor='red', borderwidth=1),
+            hovermode='x unified',
+            margin=dict(l=80, r=60, t=160, b=100)
+        )
+    
+    def generate_note_comparison_plot(self, record_note, play_note, algorithm_name=None, other_algorithm_notes=None, mean_delays=None):
+        """
+        生成音符详细对比图（触后数据和锤子数据对比）
+
+        Args:
+            record_note: 录制音符数据，如果为None则不绘制录制数据
+            play_note: 回放音符数据，如果为None则不绘制回放数据
+            algorithm_name: 算法名称（可选），用于在标题中显示
+            other_algorithm_notes: 其他算法的播放音符列表，格式为 [(algorithm_name, play_note), ...]
+            mean_delays: 各算法的平均延时字典，格式为 {algorithm_name: mean_delay_ms}，用于调整播放曲线的时间轴
+
+        Returns:
+            go.Figure: Plotly图表对象
+        """
+        other_algorithm_notes = other_algorithm_notes or []
+        mean_delays = mean_delays or {}
+
+        # 创建子图：上方显示偏移前曲线，下方显示偏移后曲线
+        from plotly.subplots import make_subplots
+        fig = make_subplots(
+            rows=2, cols=1,
+            subplot_titles=('偏移前曲线对比', '偏移后曲线对比'),
+            shared_xaxes=False,
+            vertical_spacing=0.3,
+            row_heights=[0.5, 0.5]
+        )
+        
+        # 添加各类轨迹
+        self._add_record_traces(fig, record_note)
+        self._add_play_traces(fig, play_note, algorithm_name, mean_delays, bool(other_algorithm_notes))
+        self._add_other_algorithm_traces(fig, other_algorithm_notes, mean_delays)
+        
+        # 配置布局
+        self._configure_note_comparison_layout(fig, record_note, play_note, algorithm_name)
+        
+        return fig

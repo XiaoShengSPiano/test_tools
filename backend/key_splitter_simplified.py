@@ -62,7 +62,6 @@ class KeySplitter:
             # 如果没有找到在keyoff之后的hammer，说明无法拆分
             if next_hammer is None:
                 logger.warning(f"未找到在短数据keyoff({short_keyoff:.1f}ms)之后的锤击点")
-                logger.debug(f"  长数据所有hammers: {[f'{h:.1f}ms' for h in long_hammer_times]}")
                 return None
             
             logger.info(f"拆分分析: 短数据keyoff={short_keyoff:.1f}ms, "
@@ -234,9 +233,7 @@ class KeySplitter:
                 # 选择平滑区的最后一个点（如果有平滑区）
                 turning_point = plateau_end - 1 if plateau_end > i else i
                 turning_points.append(turning_point)
-                logger.debug(f"拐点 idx={turning_point}, 前斜率={prev_avg:.2f}, 后斜率={next_avg:.2f}")
-        
-        logger.debug(f"检测到{len(turning_points)}个拐点")
+
         return turning_points
     
     def _extract_hammer_times(self, note) -> Optional[List[float]]:
@@ -271,7 +268,4 @@ class KeySplitter:
         except Exception as e:
             logger.error(f"提取aftertouch失败: {e}")
             return [], []
-
-
-print("Key splitter (simplified) loaded successfully")
 

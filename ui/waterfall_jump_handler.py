@@ -1,21 +1,25 @@
 """
 瀑布图跳转处理器
 重构自 ui/callbacks.py 中的 handle_jump_to_waterfall 函数
+继承 ScatterHandlerBase 以复用通用功能
 """
 
 import logging
 import traceback
+from typing import Optional
 from dash import no_update
 from backend.session_manager import SessionManager
+from backend.piano_analysis_backend import PianoAnalysisBackend
+from ui.scatter_handler_base import ScatterHandlerBase
 
 logger = logging.getLogger(__name__)
 
 
-class WaterfallJumpHandler:
-    """瀑布图跳转处理器类"""
+class WaterfallJumpHandler(ScatterHandlerBase):
+    """瀑布图跳转处理器类 - 继承自 ScatterHandlerBase"""
 
     def __init__(self, session_manager: SessionManager):
-        self.session_manager = session_manager
+        super().__init__(session_manager)
 
     def handle_jump_to_waterfall(self, n_clicks, session_id, point_info):
         """处理跳转到瀑布图按钮点击"""
@@ -72,7 +76,7 @@ class WaterfallJumpHandler:
                 return no_update, no_update, no_update, no_update
 
             # 计算时间信息
-            center_time_ms = self._calculate_center_time_ms(
+            center_time_ms = self._calculate_jump_center_time_ms(
                 point_info, algorithm_name, record_idx, replay_idx,
                 key_id, is_error_table, backend
             )
@@ -131,8 +135,12 @@ class WaterfallJumpHandler:
             logger.warning(f"[WARNING] 瀑布图生成失败")
         return waterfall_fig
 
-    def _calculate_center_time_ms(self, point_info, algorithm_name, record_idx, replay_idx, key_id, is_error_table, backend):
-        """计算中心时间（毫秒）"""
+    def _calculate_jump_center_time_ms(self, point_info, algorithm_name, record_idx, replay_idx, key_id, is_error_table, backend):
+        """
+        计算跳转点的中心时间（毫秒）
+        
+        优先使用 point_info 中预先计算的时间，否则使用继承的方法计算
+        """
         # 优先使用 point_info 中预先计算的时间信息
         center_time_ms = point_info.get('center_time_ms')
 
@@ -141,20 +149,20 @@ class WaterfallJumpHandler:
             logger.info(f"[OK] 使用错误表格预先计算的时间信息: center_time_ms={center_time_ms:.1f}ms")
             return center_time_ms
 
-        # 如果没有预先计算的时间信息，则重新计算
+        # 如果没有预先计算的时间信息，使用继承的方法计算
         if center_time_ms is None:
             try:
                 logger.info(f"🔍 开始计算跳转点时间: algorithm_name={algorithm_name}, record_idx={record_idx}, replay_idx={replay_idx}, key_id={key_id}")
-
-                if algorithm_name:
-                    # 多算法模式
-                    center_time_ms = self._calculate_time_multi_algorithm(
-                        algorithm_name, record_idx, replay_idx, is_error_table, backend
-                    )
-                else:
-                    # 单算法模式
-                    center_time_ms = self._calculate_time_single_algorithm(
-                        record_idx, replay_idx, is_error_table, backend
+                
+                # 使用继承的统一方法计算时间
+                center_time_ms = self._calculate_center_time_for_note_pair(
+                    backend, record_idx, replay_idx, algorithm_name
+                )
+                
+                # 如果标准方法失败且是错误表格，尝试从初始数据获取
+                if center_time_ms is None and is_error_table:
+                    center_time_ms = self._calculate_time_from_error_table(
+                        backend, algorithm_name, record_idx, replay_idx
                     )
 
             except Exception as e:
@@ -162,173 +170,73 @@ class WaterfallJumpHandler:
                 logger.error(traceback.format_exc())
 
         if center_time_ms is not None:
-            logger.info(f"[OK] 使用预先计算的时间信息: center_time_ms={center_time_ms:.1f}ms")
+            logger.info(f"[OK] 计算得到时间信息: center_time_ms={center_time_ms:.1f}ms")
 
         logger.info(f"🔍 最终结果: center_time_ms={center_time_ms}, key_id={key_id}")
         return center_time_ms
 
-    def _calculate_time_multi_algorithm(self, algorithm_name, record_idx, replay_idx, is_error_table, backend):
-        """多算法模式下的时间计算"""
-        active_algorithms = backend.multi_algorithm_manager.get_active_algorithms() if backend.multi_algorithm_manager else []
-        if len(active_algorithms) <= 1:
+    def _calculate_time_from_error_table(self, backend: PianoAnalysisBackend, 
+                                         algorithm_name: Optional[str], 
+                                         record_idx: Optional[int], 
+                                         replay_idx: Optional[int]) -> Optional[float]:
+        """
+        从错误表格（丢锤/多锤）获取时间信息
+        
+        Args:
+            backend: 后端实例
+            algorithm_name: 算法名称（多算法模式）
+            record_idx: 录制音符索引
+            replay_idx: 播放音符索引
+            
+        Returns:
+            Optional[float]: 时间（毫秒），失败返回 None
+        """
+        # 获取分析器
+        analyzer = self._get_analyzer_for_algorithm(backend, algorithm_name)
+        if not analyzer:
             return None
-
-        algorithm = backend.multi_algorithm_manager.get_algorithm(algorithm_name)
-        if not algorithm or not algorithm.analyzer or not algorithm.analyzer.note_matcher:
-            return None
-
-        matched_pairs = algorithm.analyzer.matched_pairs
-        logger.info(f"🔍 多算法模式: 找到 {len(matched_pairs)} 个匹配对")
-
-        # 首先尝试从 matched_pairs 获取时间
-        center_time_ms = self._calculate_from_matched_pairs(matched_pairs, record_idx, replay_idx)
-
-        if center_time_ms is None and is_error_table:
-            # 备用方案：从 initial_valid_data 获取时间信息
-            center_time_ms = self._calculate_from_initial_data_multi(
-                algorithm, record_idx, replay_idx
-            )
-
-        if center_time_ms is None:
-            # 备用方案2：从 offset_data 获取时间信息
-            center_time_ms = self._calculate_from_offset_data_multi(
-                algorithm, record_idx, replay_idx
-            )
-
-        return center_time_ms
-
-    def _calculate_time_single_algorithm(self, record_idx, replay_idx, is_error_table, backend):
-        """单算法模式下的时间计算"""
-        analyzer = backend._get_current_analyzer()
-        if not analyzer or not analyzer.note_matcher:
-            return None
-
-        matched_pairs = analyzer.matched_pairs
-        logger.info(f"🔍 单算法模式: 找到 {len(matched_pairs)} 个匹配对")
-
-        # 首先尝试从 matched_pairs 获取时间
-        center_time_ms = self._calculate_from_matched_pairs(matched_pairs, record_idx, replay_idx)
-
-        if center_time_ms is None and is_error_table:
-            # 备用方案：从 initial_valid_data 获取时间信息
-            center_time_ms = self._calculate_from_initial_data_single(
-                analyzer, record_idx, replay_idx
-            )
-
-        if center_time_ms is None:
-            # 备用方案2：从 offset_data 获取时间信息
-            center_time_ms = self._calculate_from_offset_data_single(
-                analyzer, record_idx, replay_idx
-            )
-
-        return center_time_ms
-
-    def _calculate_from_matched_pairs(self, matched_pairs, record_idx, replay_idx):
-        """从匹配对中计算时间"""
-        for r_idx, p_idx, r_note, p_note in matched_pairs:
-            if r_idx == record_idx and p_idx == replay_idx:
-                # 计算keyon时间
-                record_keyon = r_note.after_touch.index[0] + r_note.offset if hasattr(r_note, 'after_touch') and not r_note.after_touch.empty else r_note.offset
-                replay_keyon = p_note.after_touch.index[0] + p_note.offset if hasattr(p_note, 'after_touch') and not p_note.after_touch.empty else p_note.offset
-                center_time_ms = ((record_keyon + replay_keyon) / 2.0) / 10.0  # 转换为ms
-                logger.info(f"[OK] 找到匹配对，计算得到 center_time_ms={center_time_ms:.1f}ms")
-                return center_time_ms
-        return None
-
-    def _calculate_from_initial_data_multi(self, algorithm, record_idx, replay_idx):
-        """多算法模式下从初始数据计算时间"""
-        center_time_ms = None
-
-        if record_idx is not None:
-            # 丢锤：从录制数据获取时间
-            initial_data = getattr(algorithm.analyzer, 'initial_valid_record_data', [])
-            if record_idx < len(initial_data):
-                note = initial_data[record_idx]
-                center_time_ms = self._extract_time_from_note(note)
-                if center_time_ms is not None:
-                    logger.info(f"[OK] 多算法模式(丢锤): 从录制数据获取时间，center_time_ms={center_time_ms:.1f}ms")
-
-        elif replay_idx is not None:
-            # 多锤：从播放数据获取时间
-            initial_data = getattr(algorithm.analyzer, 'initial_valid_replay_data', [])
-            if replay_idx < len(initial_data):
-                note = initial_data[replay_idx]
-                center_time_ms = self._extract_time_from_note(note)
-                if center_time_ms is not None:
-                    logger.info(f"[OK] 多算法模式(多锤): 从播放数据获取时间，center_time_ms={center_time_ms:.1f}ms")
-
-        return center_time_ms
-
-    def _calculate_from_initial_data_single(self, analyzer, record_idx, replay_idx):
-        """单算法模式下从初始数据计算时间"""
-        center_time_ms = None
-
+        
+        # 从初始数据获取时间
         if record_idx is not None:
             # 丢锤：从录制数据获取时间
             initial_data = getattr(analyzer, 'initial_valid_record_data', [])
             if record_idx < len(initial_data):
                 note = initial_data[record_idx]
-                center_time_ms = self._extract_time_from_note(note)
-                if center_time_ms is not None:
-                    logger.info(f"[OK] 单算法模式(丢锤): 从录制数据获取时间，center_time_ms={center_time_ms:.1f}ms")
-
-        elif replay_idx is not None:
+                time_ms = self._extract_time_from_note_ms(note)
+                if time_ms is not None:
+                    logger.info(f"[OK] 错误表格(丢锤): 从录制数据获取时间，time_ms={time_ms:.1f}ms")
+                    return time_ms
+        
+        if replay_idx is not None:
             # 多锤：从播放数据获取时间
             initial_data = getattr(analyzer, 'initial_valid_replay_data', [])
             if replay_idx < len(initial_data):
                 note = initial_data[replay_idx]
-                center_time_ms = self._extract_time_from_note(note)
-                if center_time_ms is not None:
-                    logger.info(f"[OK] 单算法模式(多锤): 从播放数据获取时间，center_time_ms={center_time_ms:.1f}ms")
-
-        return center_time_ms
-
-    def _extract_time_from_note(self, note):
-        """从音符对象中提取时间信息"""
-        if hasattr(note, 'after_touch') and not note.after_touch.empty:
+                time_ms = self._extract_time_from_note_ms(note)
+                if time_ms is not None:
+                    logger.info(f"[OK] 错误表格(多锤): 从播放数据获取时间，time_ms={time_ms:.1f}ms")
+                    return time_ms
+        
+        return None
+    
+    def _extract_time_from_note_ms(self, note) -> Optional[float]:
+        """
+        从音符对象中提取时间信息（毫秒）
+        
+        Args:
+            note: Note对象
+            
+        Returns:
+            Optional[float]: 时间（毫秒），失败返回 None
+        """
+        if hasattr(note, 'key_on_ms') and note.key_on_ms is not None:
             return note.key_on_ms
+        elif hasattr(note, 'after_touch') and not note.after_touch.empty:
+            return (note.after_touch.index[0] + note.offset) / 10.0
         elif hasattr(note, 'hammers') and not note.hammers.empty:
             return (note.hammers.index[0] + note.offset) / 10.0
         elif hasattr(note, 'offset'):
             return note.offset / 10.0
-        return None
-
-    def _calculate_from_offset_data_multi(self, algorithm, record_idx, replay_idx):
-        """多算法模式下从偏移数据计算时间"""
-        if not algorithm.analyzer or not algorithm.analyzer.note_matcher:
-            return None
-
-        offset_data = algorithm.analyzer.note_matcher.get_offset_alignment_data()
-        if not offset_data:
-            return None
-
-        for item in offset_data:
-            if item.get('record_index') == record_idx and item.get('replay_index') == replay_idx:
-                record_keyon = item.get('record_keyon', 0)
-                replay_keyon = item.get('replay_keyon', 0)
-                if record_keyon and replay_keyon:
-                    center_time_ms = ((record_keyon + replay_keyon) / 2.0) / 10.0
-                    logger.info(f"[OK] 多算法模式: 从 offset_data 获取时间，center_time_ms={center_time_ms:.1f}ms")
-                    return center_time_ms
-        return None
-
-    def _calculate_from_offset_data_single(self, analyzer, record_idx, replay_idx):
-        """单算法模式下从偏移数据计算时间"""
-        if not analyzer.note_matcher:
-            return None
-
-        offset_data = analyzer.note_matcher.get_offset_alignment_data()
-        if not offset_data:
-            return None
-
-        for item in offset_data:
-            if item.get('record_index') == record_idx and item.get('replay_index') == replay_idx:
-                record_keyon = item.get('record_keyon', 0)
-                replay_keyon = item.get('replay_keyon', 0)
-                if record_keyon and replay_keyon:
-                    center_time_ms = ((record_keyon + replay_keyon) / 2.0) / 10.0
-                    logger.info(f"[OK] 单算法模式: 从 offset_data 获取时间，center_time_ms={center_time_ms:.1f}ms")
-                    return center_time_ms
         return None
 
     def _add_jump_markers_to_waterfall(self, waterfall_fig, center_time_ms, key_id, algorithm_name, source_plot_id, backend):

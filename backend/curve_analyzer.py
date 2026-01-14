@@ -357,8 +357,6 @@ class DTWCurveAligner:
                 alignment_path = list(zip(alignment.index1, alignment.index2))
                 dtw_distance = alignment.distance
                 
-                logger.debug(f"✅ DTW对齐成功（无窗口，{self.distance_metric}距离）: 路径长度={len(alignment_path)}, 距离={dtw_distance:.2f}")
-                
                 return {
                     'alignment_path': alignment_path,
                     'dtw_distance': dtw_distance
@@ -386,9 +384,7 @@ class DTWCurveAligner:
                     )
                     alignment_path = list(zip(alignment.index1, alignment.index2))
                     dtw_distance = alignment.distance
-                    
-                    logger.debug(f"✅ DTW对齐成功（窗口={window_size}ms，{self.distance_metric}距离）: 路径长度={len(alignment_path)}, 距离={dtw_distance:.2f}")
-                    
+
                     return {
                         'alignment_path': alignment_path,
                         'dtw_distance': dtw_distance
@@ -709,7 +705,6 @@ class CurveAnalyzer:
                 
                 if alignment_result is None:
                     pair.alignment_status = "failed"
-                    logger.debug(f"⚠️ 对齐失败: record_idx={record_idx}, replay_idx={replay_idx}")
                 else:
                     pair.alignment_result = alignment_result
                     pair.alignment_status = "success"
