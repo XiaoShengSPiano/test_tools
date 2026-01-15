@@ -149,13 +149,22 @@ def _create_error_content(title, message):
     ])
     
 def register_callbacks(app, session_manager: SessionManager, history_manager):
-    """注册所有回调函数"""
+    """
+    注册所有回调函数
+    
+    注意：多页面重构后，只注册核心回调：
+    - 会话管理
+    - 文件上传
+    - 算法管理
+    
+    散点图等详细分析回调将在各自页面中实现
+    """
 
     # 导入回调模块
     from ui.session_callbacks import register_session_callbacks
     from ui.file_upload_callbacks import register_file_upload_callbacks
     from ui.algorithm_callbacks import register_algorithm_callbacks
-    from ui.scatter_callbacks import register_scatter_callbacks
+    # from ui.scatter_callbacks import register_scatter_callbacks  # 暂时禁用，将在散点图页面重新实现
 
     # 注册会话和初始化管理回调
     register_session_callbacks(app, session_manager, history_manager)
@@ -163,13 +172,21 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
     # 注册文件上传回调
     register_file_upload_callbacks(app, session_manager)
 
-    # 注册算法管理回调
+    # 注册算法管理回调（可能需要调整）
     register_algorithm_callbacks(app, session_manager)
 
-    # 注册散点图回调
-    register_scatter_callbacks(app, session_manager)
-
-
+    # 注册散点图回调 - 暂时禁用
+    # register_scatter_callbacks(app, session_manager)
+    
+    logger.info("[多页面架构] 核心回调注册完成（文件上传、会话管理、算法管理）")
+    logger.info("[多页面架构] 旧UI的内联回调已全部禁用，将在各页面中重新实现")
+    
+    # 多页面架构：禁用所有依赖旧UI的内联回调
+    # 这些回调都引用了 main-plot, report-content 等旧组件
+    # 新架构中，功能将在各自的页面中重新实现
+    return
+    
+    # ==================== 以下是旧架构的内联回调（已禁用） ====================
 
     # 创建瀑布图跳转处理器实例
     waterfall_jump_handler = WaterfallJumpHandler(session_manager)

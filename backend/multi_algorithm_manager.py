@@ -69,15 +69,15 @@ class AlgorithmDataset:
         )
         
         # 分析器实例
-        self.analyzer: Optional[SPMIDAnalyzer] = None
+        self.analyzer: SPMIDAnalyzer()
         
         # 显示控制
         self.color = ALGORITHM_COLOR_PALETTE[color_index % len(ALGORITHM_COLOR_PALETTE)]
         self.is_active: bool = True  # 是否在对比中显示
         
         # 原始数据（用于重新分析）
-        self.record_data: Optional[List[Note]] = None
-        self.replay_data: Optional[List[Note]] = None
+        self.record_data: List[Note] = []
+        self.replay_data: List[Note] = []
         
         logger.info(f"✅ AlgorithmDataset初始化: {algorithm_name} (文件: {filename})")
     
@@ -332,6 +332,9 @@ class MultiAlgorithmManager:
             total_time_ms = (perf_manager_end - perf_manager_start) * 1000
             logger.info(f"            🏁 [Manager] 算法添加完成，总耗时: {total_time_ms:.2f}ms")
             logger.info(f"            ✅ 算法 '{algorithm_name}' (文件: {filename}) 添加成功，唯一标识: {unique_algorithm_name}")
+            logger.info(f"            [DEBUG] MultiAlgorithmManager对象地址: {self}")
+            logger.info(f"            [DEBUG] 添加后的算法总数: {len(self.algorithms)}")
+            logger.info(f"            [DEBUG] 当前所有算法: {list(self.algorithms.keys())}")
             return True, unique_algorithm_name  # 返回唯一标识符
         else:
             error_msg = algorithm.metadata.error_message or "未知错误"
@@ -361,11 +364,18 @@ class MultiAlgorithmManager:
     
     def get_all_algorithms(self) -> List[AlgorithmDataset]:
         """获取所有算法列表"""
+        logger.debug(f"[DEBUG] get_all_algorithms被调用, MultiAlgorithmManager地址: {self}")
+        logger.debug(f"[DEBUG] self.algorithms: {list(self.algorithms.keys())}, 数量: {len(self.algorithms)}")
         return list(self.algorithms.values())
     
     def get_active_algorithms(self) -> List[AlgorithmDataset]:
         """获取激活的算法列表（用于对比显示）"""
-        return [alg for alg in self.algorithms.values() if alg.is_active and alg.is_ready()]
+        active_algorithms = []    
+        for algorithm in self.algorithms.values():
+            if algorithm.is_active and algorithm.is_ready():
+                active_algorithms.append(algorithm)
+        
+        return active_algorithms
     
     def toggle_algorithm(self, algorithm_name: str) -> bool:
         """

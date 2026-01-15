@@ -229,14 +229,9 @@ class WaterfallJumpHandler(ScatterHandlerBase):
         Returns:
             Optional[float]: 时间（毫秒），失败返回 None
         """
-        if hasattr(note, 'key_on_ms') and note.key_on_ms is not None:
+        if note.key_on_ms is not None:
             return note.key_on_ms
-        elif hasattr(note, 'after_touch') and not note.after_touch.empty:
-            return (note.after_touch.index[0] + note.offset) / 10.0
-        elif hasattr(note, 'hammers') and not note.hammers.empty:
-            return (note.hammers.index[0] + note.offset) / 10.0
-        elif hasattr(note, 'offset'):
-            return note.offset / 10.0
+
         return None
 
     def _add_jump_markers_to_waterfall(self, waterfall_fig, center_time_ms, key_id, algorithm_name, source_plot_id, backend):

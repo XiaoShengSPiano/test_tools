@@ -25,13 +25,13 @@ class Note:
     after_touch: pd.Series
 
     # 时间属性 - 在初始化后计算
-    key_on_ms: Optional[float] = None     # 按键开始时间（毫秒）
-    key_off_ms: Optional[float] = None    # 按键结束时间（毫秒）
-    duration_ms: Optional[float] = None   # 持续时间（毫秒）
+    key_on_ms: float = None     # 按键开始时间（毫秒）
+    key_off_ms: float = None    # 按键结束时间（毫秒）
+    duration_ms: float = None   # 持续时间（毫秒）
 
     # 拆分元数据 - 用于标识拆分后的音符
-    split_parent_idx: Optional[int] = None   # 父索引（原始数据的索引）
-    split_seq: Optional[int] = None          # 拆分序号（0, 1, 2...）
+    split_parent_idx: int = None   # 父索引（原始数据的索引）
+    split_seq: int = None          # 拆分序号（0, 1, 2...）
     is_split: bool = False                   # 是否是拆分数据
 
     def __post_init__(self):
@@ -53,7 +53,7 @@ class Note:
             self.key_off_ms = None
             self.duration_ms = None
 
-    def get_first_hammer_velocity(self) -> Optional[float]:
+    def get_first_hammer_velocity(self) -> int:
         """获取第一个锤速值"""
         if self.hammers is not None and not self.hammers.empty:
            return self.hammers.iloc[0]

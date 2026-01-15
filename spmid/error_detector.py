@@ -52,7 +52,7 @@ class ErrorDetector:
         Returns:
             Tuple[List[ErrorNote], List[ErrorNote]]: (drop_hammers, multi_hammers)
         """
-        # 简化的逻辑：直接基于匹配结果分析未匹配的音符
+        # 直接基于匹配结果分析未匹配的音符
         self._analyze_unmatched_notes_for_hammer_issues(record_data, replay_data, matched_pairs, note_matcher)
 
 
@@ -181,7 +181,6 @@ class ErrorDetector:
         
         return ErrorNote(
             notes=[note],  # 直接使用完整的 Note 对象
-            diffs=[],
             error_type=error_type,
             global_index=note_info['index'],
             reason=reason

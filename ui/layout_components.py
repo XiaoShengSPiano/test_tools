@@ -903,8 +903,8 @@ def _create_single_algorithm_overview_row(algorithm, algorithm_name, backend=Non
 
         # 获取错误统计信息
         stats = backend.get_algorithm_statistics(algorithm)
-        drop_count = stats['drop_count']
-        multi_count = stats['multi_count']
+        drop_count = stats.get('drop_hammers', stats.get('drop_count', 0))  # 兼容新旧字段名
+        multi_count = stats.get('multi_hammers', stats.get('multi_count', 0))  # 兼容新旧字段名
 
         # 生成数据概览行（带算法名称标识）
         overview_row = html.Div([

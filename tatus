@@ -1,0 +1,125 @@
+[33mcommit 20ae48ec1094a85c36410509a753e0a860f62b1f[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mdev[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m, [m[1;32mtest[m[33m, [m[1;32mmain[m[33m)[m
+Author: XiaoShengSPiano <”xuchen@superpiano.com.cn“>
+Date:   Wed Jan 14 17:04:33 2026 +0800
+
+    删除冗余代码，优化程序结构
+
+[33mcommit 9c67f60411ef989c675e5d550c437d1fce19fdfe[m
+Author: XiaoShengSPiano <”xuchen@superpiano.com.cn“>
+Date:   Thu Jan 8 20:31:49 2026 +0800
+
+    修复模态框关闭回调的bug，实现按键切割功能
+
+[33mcommit 5be2d472a6f39e8399566e158493aa65e1e5e02a[m
+Author: XiaoShengSPiano <”xuchen@superpiano.com.cn“>
+Date:   Tue Dec 30 15:22:35 2025 +0800
+
+    修改延时时间序列图偏移前后的bug
+
+[33mcommit 61949de75cc522005f40b991eff715a7255731ab[m
+Author: XiaoShengSPiano <”xuchen@superpiano.com.cn“>
+Date:   Tue Dec 30 11:34:13 2025 +0800
+
+    修改按键曲线对比无法显示以及按键无法跳转的bug
+
+[33mcommit ad8e5e484dca824e670002a068be982c394c94ab[m
+Author: XiaoShengSPiano <”xuchen@superpiano.com.cn“>
+Date:   Sat Dec 27 14:33:47 2025 +0800
+
+    重构力度对比图的逻辑
+
+[33mcommit e2525c84235261ddb6eb18ebb5ddf8b606115b60[m
+Author: XiaoShengSPiano <”xuchen@superpiano.com.cn“>
+Date:   Fri Dec 26 10:17:08 2025 +0800
+
+    重构所有散点图的生成逻辑
+
+[33mcommit c15c9e7a88d3d565c2040f2a5c66e0266b31002f[m
+Author: XiaoShengSPiano <”xuchen@superpiano.com.cn“>
+Date:   Fri Dec 19 11:47:13 2025 +0800
+
+    修复多锤列表曲线绘制错误的bug
+
+[33mcommit 6c3bd0ba59d981c1a23f3c2e4de6f0d513b3cc7f[m
+Author: XiaoShengSPiano <”xuchen@superpiano.com.cn“>
+Date:   Tue Dec 16 17:53:43 2025 +0800
+
+    优化部分功能，并修改bug
+
+[33mcommit 33274dc6c5babcad1a24d998d62231dc11dc4f95[m
+Author: XiaoShengSPiano <”xuchen@superpiano.com.cn“>
+Date:   Thu Dec 11 20:41:09 2025 +0800
+
+    完善评级等级
+
+[33mcommit 76c3b4b41ef7a775f1520b2948d879cfcdbf3787[m
+Author: XiaoShengSPiano <”xuchen@superpiano.com.cn“>
+Date:   Thu Dec 11 13:46:10 2025 +0800
+
+    添加等级评价
+
+[33mcommit 66e97d74b4b20650807299dc70fffc60702045c4[m
+Author: XiaoShengSPiano <”xuchen@superpiano.com.cn“>
+Date:   Tue Dec 2 21:27:24 2025 +0800
+
+    修改条形统计图的UI界面
+
+[33mcommit 7ef549d07c4cd093e075e1860c6d80e3589e8566[m
+Author: XiaoShengSPiano <”xuchen@superpiano.com.cn“>
+Date:   Tue Dec 2 14:18:38 2025 +0800
+
+    修复多次点击相同散点，却无法显示曲线对比图的bug
+
+[33mcommit 630024c26e0a7c47ff09b9219e701e1957cc23ed[m
+Author: XiaoShengSPiano <”xuchen@superpiano.com.cn“>
+Date:   Fri Nov 28 15:59:54 2025 +0800
+
+    添加锤速对比图
+
+[33mcommit c443d0d390fcd976accacf6387c070dd6bbe5954[m
+Author: XiaoShengSPiano <”xuchen@superpiano.com.cn“>
+Date:   Tue Nov 25 16:29:46 2025 +0800
+
+    添加散点跳转功能
+
+[33mcommit ffc80d06c3e25b647b91eb0321d513021c918d6b[m
+Author: XiaoShengSPiano <”xuchen@superpiano.com.cn“>
+Date:   Fri Nov 21 16:38:16 2025 +0800
+
+    修复算法管理UI的bug，添加相对延时的分布直方图
+
+[33mcommit 9a614cffece1fccbf79ede0329a1ea58d93e826f[m
+Author: XiaoShengSPiano <”xuchen@superpiano.com.cn“>
+Date:   Wed Nov 19 10:49:17 2025 +0800
+
+    添加每个按键与锤速、延时的散点图
+
+[33mcommit ecddf885947469dadd72e7aa61b2350803e4bb0f[m
+Author: XiaoShengSPiano <”xuchen@superpiano.com.cn“>
+Date:   Fri Nov 14 20:57:56 2025 +0800
+
+    添加延时时序图
+
+[33mcommit eafbce0d7457b5b305827946b2a8096c0d06b624[m
+Author: XiaoShengSPiano <”xuchen@superpiano.com.cn“>
+Date:   Wed Nov 12 19:07:29 2025 +0800
+
+    修复删除与加载spmid文件的bug
+
+[33mcommit bfbe0ce2c78a42d3b9b0c927108c9d6b4c535f51[m
+Author: XiaoShengSPiano <”xuchen@superpiano.com.cn“>
+Date:   Tue Nov 11 19:12:13 2025 +0800
+
+    添加已配对按键的曲线对比数据图
+
+[33mcommit 66b2a81296f8a058cba79d0fb0f62725b824d434[m
+Author: XiaoShengSPiano <”xuchen@superpiano.com.cn“>
+Date:   Tue Nov 11 16:19:33 2025 +0800
+
+    修改页面切换的bug
+
+[33mcommit 81dcb9160adb1ff13a7f56aaf22794283a1f5463[m
+Author: XiaoShengSPiano <”xuchen@superpiano.com.cn“>
+Date:   Tue Nov 11 11:29:41 2025 +0800
+
+    添加曲线对比

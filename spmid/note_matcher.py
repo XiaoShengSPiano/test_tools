@@ -340,7 +340,7 @@ class NoteMatcher:
         # 初始化状态
         self._initialize_matching_state()
         
-        logger.info(f"🚀 开始新算法匹配（基于堆的keyon优先）: 录制{len(record_data)}个音符, 播放{len(replay_data)}个音符")
+        # logger.info(f"🚀 开始新算法匹配（基于堆的keyon优先）: 录制{len(record_data)}个音符, 播放{len(replay_data)}个音符")
         
         # 保存原始数据引用
         self._record_data = record_data
@@ -350,7 +350,7 @@ class NoteMatcher:
         record_by_key = self._group_notes_by_key(record_data)
         replay_by_key = self._group_notes_by_key(replay_data)
         
-        logger.info(f"按键分组完成: 录制{len(record_by_key)}个按键, 播放{len(replay_by_key)}个按键")
+        # logger.info(f"按键分组完成: 录制{len(record_by_key)}个按键, 播放{len(replay_by_key)}个按键")
         
         # 2. 对每个按键分别进行堆匹配
         all_matched_pairs = []
@@ -359,7 +359,7 @@ class NoteMatcher:
             key_record_notes = record_by_key[key_id]
             key_replay_notes = replay_by_key.get(key_id, [])
             
-            logger.info(f"📌 处理按键{key_id}: 录制{len(key_record_notes)}个, 播放{len(key_replay_notes)}个")
+            # logger.info(f"📌 处理按键{key_id}: 录制{len(key_record_notes)}个, 播放{len(key_replay_notes)}个")
             
             # 对该按键进行堆匹配
             key_matched_pairs = self._match_single_key_with_heap(
@@ -368,7 +368,7 @@ class NoteMatcher:
             
             all_matched_pairs.extend(key_matched_pairs)
             
-            logger.info(f"✅ 按键{key_id}匹配完成: 匹配{len(key_matched_pairs)}对")
+            # logger.info(f"✅ 按键{key_id}匹配完成: 匹配{len(key_matched_pairs)}对")
         
         # 保存匹配对
         self.matched_pairs = all_matched_pairs
@@ -384,28 +384,17 @@ class NoteMatcher:
         matching_duration = matching_end_time - matching_start_time
         
         # 输出统计信息
-        logger.info(f"🎯 新算法匹配完成: 总匹配对{len(all_matched_pairs)}个, 耗时{matching_duration:.3f}秒")
-        logger.info(f"质量分布: 优秀{self.match_statistics.precision_matches} | "
-                   f"近似{self.match_statistics.approximate_matches} | "
-                   f"大误差{self.match_statistics.large_error_matches} | "
-                   f"失败{self.match_statistics.failed_matches}")
+        # logger.info(f"🎯 新算法匹配完成: 总匹配对{len(all_matched_pairs)}个, 耗时{matching_duration:.3f}秒")
+        # logger.info(f"质量分布: 优秀{self.match_statistics.precision_matches} | "
+        #            f"近似{self.match_statistics.approximate_matches} | "
+        #            f"大误差{self.match_statistics.large_error_matches} | "
+        #            f"失败{self.match_statistics.failed_matches}")
         
         duration_diff_count = len(self.duration_diff_pairs)
         if duration_diff_count > 0:
-            logger.info(f"持续时间差异: 检测到{duration_diff_count}个（拆分处理后）")
-        
-        # 控制台输出
-        print(f"\n{'='*60}")
-        print(f"[新算法] 匹配完成")
-        print(f"{'='*60}")
-        print(f"[匹配统计] 总匹配对: {len(all_matched_pairs)} 个")
-        print(f"[质量分布] 优秀: {self.match_statistics.precision_matches} 个")
-        print(f"[质量分布] 近似: {self.match_statistics.approximate_matches} 个")
-        print(f"[质量分布] 大误差: {self.match_statistics.large_error_matches} 个")
-        print(f"[质量分布] 失败: {self.match_statistics.failed_matches} 个")
-        print(f"[持续时间差异] 检测到: {duration_diff_count} 个")
-        print(f"[性能统计] 匹配耗时: {matching_duration:.3f} 秒")
-        print(f"{'='*60}\n")
+            # logger.info(f"持续时间差异: 检测到{duration_diff_count}个（拆分处理后）")
+            pass
+
         
         return all_matched_pairs
     
@@ -423,7 +412,7 @@ class NoteMatcher:
         Returns:
             List[Tuple[int, int, Note, Note]]: 该按键的匹配对列表
         """
-        logger.debug(f"  🔧 初始化按键{key_id}的堆结构...")
+        # logger.debug(f"  🔧 初始化按键{key_id}的堆结构...")
         
         # 构建最小堆
         record_heap, replay_heap = self._build_matching_heaps(key_id, record_notes, replay_notes)
@@ -433,7 +422,7 @@ class NoteMatcher:
         used_replay_indices = set()
         skipped_replay_indices = set()  # 跳过的播放数据索引（可疑的多锤）
         
-        logger.debug(f"  🔄 开始主循环匹配...")
+        # logger.debug(f"  🔄 开始主循环匹配...")
         
         # 主循环：处理所有录制数据
         match_count, failed_count = self._process_record_notes(
@@ -446,7 +435,7 @@ class NoteMatcher:
             key_id, skipped_replay_indices, replay_notes
         )
         
-        logger.debug(f"  ✅ 按键{key_id}匹配完成: 成功{match_count}个, 失败{failed_count}个, 多锤{extra_hammer_count}个")
+        # logger.debug(f"  ✅ 按键{key_id}匹配完成: 成功{match_count}个, 失败{failed_count}个, 多锤{extra_hammer_count}个")
         
         return matched_pairs
     
@@ -483,7 +472,7 @@ class NoteMatcher:
             else:
                 logger.warning(f"  ⚠️ 按键{key_id}的播放音符索引{orig_idx}没有key_on_ms，跳过")
         
-        logger.debug(f"  📊 堆构建完成: 录制堆{len(record_heap)}个, 播放堆{len(replay_heap)}个")
+        # logger.debug(f"  📊 堆构建完成: 录制堆{len(record_heap)}个, 播放堆{len(replay_heap)}个")
         
         return record_heap, replay_heap
     
@@ -554,9 +543,10 @@ class NoteMatcher:
         if rec_note.is_split:
             parent_idx = rec_note.split_parent_idx if rec_note.split_parent_idx is not None else rec_idx
             split_seq = rec_note.split_seq if rec_note.split_seq is not None else 0
-            logger.debug(f"    处理录制[{parent_idx}:拆分{split_seq}] keyon={rec_keyon:.1f}ms")
+            # logger.debug(f"    处理录制[{parent_idx}:拆分{split_seq}] keyon={rec_keyon:.1f}ms")
         else:
-            logger.debug(f"    处理录制[{rec_idx}] keyon={rec_keyon:.1f}ms")
+            pass
+            # logger.debug(f"    处理录制[{rec_idx}] keyon={rec_keyon:.1f}ms")
     
     def _clean_used_replay_notes(self, replay_heap: List, used_replay_indices: set):
         """清理播放堆顶的已使用数据（惰性删除）"""
@@ -945,7 +935,7 @@ class NoteMatcher:
         # 日志
         rec_display = f"[{rec_note.split_parent_idx}:拆分{rec_note.split_seq}]" if rec_note.is_split else f"[{rec_idx}]"
         rep_display = f"[{rep_note.split_parent_idx}:拆分{rep_note.split_seq}]" if rep_note.is_split else f"[{rep_idx}]"
-        logger.debug(f"      ✓ 匹配成功: 录制{rec_display} ↔ 播放{rep_display} ({match_type.value}, {keyon_error_ms:.1f}ms)")
+        # logger.debug(f"      ✓ 匹配成功: 录制{rec_display} ↔ 播放{rep_display} ({match_type.value}, {keyon_error_ms:.1f}ms)")
         
         return (True, 'none')  # 成功创建，无拆分
     
@@ -977,7 +967,7 @@ class NoteMatcher:
             return None
         else:
             # 播放数据更长 → 拆分播放数据
-            logger.debug(f"        拆分播放数据（播放{rep_duration:.1f}ms > 录制{rec_duration:.1f}ms）")
+            # logger.debug(f"        拆分播放数据（播放{rep_duration:.1f}ms > 录制{rec_duration:.1f}ms）")
             result = self._split_replay_note_and_return_first(
                 rep_idx, rep_note, rec_note, replay_heap, used_replay_indices,
                 rec_duration, rep_duration
@@ -1119,10 +1109,10 @@ class NoteMatcher:
             # 创建KeySplitter实例
             splitter = KeySplitter()
             
-            # 调试信息：输出要拆分的数据
-            logger.debug(f"        🔍 拆分点查找参数:")
-            logger.debug(f"          短数据: keyon={short_note.key_on_ms:.1f}ms, keyoff={short_note.key_off_ms:.1f}ms")
-            logger.debug(f"          长数据: keyon={long_note.key_on_ms:.1f}ms, keyoff={long_note.key_off_ms:.1f}ms")
+            # # 调试信息：输出要拆分的数据
+            # logger.debug(f"        🔍 拆分点查找参数:")
+            # logger.debug(f"          短数据: keyon={short_note.key_on_ms:.1f}ms, keyoff={short_note.key_off_ms:.1f}ms")
+            # logger.debug(f"          长数据: keyon={long_note.key_on_ms:.1f}ms, keyoff={long_note.key_off_ms:.1f}ms")
             
             # 提取长数据的hammers（检查是否足够）
             long_hammers = []
@@ -1189,8 +1179,8 @@ class NoteMatcher:
         # 所以：relative_index = absolute_time * 10 - offset
         split_time_units = int(split_time_ms * 10) - note.offset
         
-        logger.debug(f"        拆分参数: split_time={split_time_ms:.1f}ms (绝对时间), "
-                    f"offset={note.offset}, split_units={split_time_units} (相对索引)")
+        # logger.debug(f"        拆分参数: split_time={split_time_ms:.1f}ms (绝对时间), "
+        #             f"offset={note.offset}, split_units={split_time_units} (相对索引)")
         
         # 拆分aftertouch：拆分点同时出现在note_a的末尾和note_b的开头
         # note_a: <= split_time（包含拆分点作为结束点）
@@ -1366,10 +1356,10 @@ class NoteMatcher:
             ))
 
             # 输出日志
-            logger.info(f"🔍 发现持续时间差异显著的匹配对: 按键{record_note.id} "
-                       f"录制[{record_keyon:.1f}-{record_keyoff:.1f}ms, {record_duration:.1f}ms], "
-                       f"播放[{replay_keyon:.1f}-{replay_keyoff:.1f}ms, {replay_duration:.1f}ms], "
-                       f"比例={duration_ratio:.2f}")
+            # logger.info(f"🔍 发现持续时间差异显著的匹配对: 按键{record_note.id} "
+            #            f"录制[{record_keyon:.1f}-{record_keyoff:.1f}ms, {record_duration:.1f}ms], "
+            #            f"播放[{replay_keyon:.1f}-{replay_keyoff:.1f}ms, {replay_duration:.1f}ms], "
+            #            f"比例={duration_ratio:.2f}")
 
     def _match_notes_for_single_key_group(self, key_id: int,
                                         record_notes_with_indices: List[Tuple[int, Note]],

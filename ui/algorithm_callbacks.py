@@ -589,20 +589,44 @@ def register_algorithm_callbacks(app, session_manager: SessionManager):
         logger.info(f"[PROCESS] 触发算法列表更新")
         return trigger_value, trigger_value
 
+    # 多页面架构：禁用旧的瀑布图+报告联合更新回调
+    # 新架构中，报告和瀑布图在各自的页面中独立更新
+    # @app.callback(
+    #     [Output('main-plot', 'figure', allow_duplicate=True),
+    #      Output('report-content', 'children', allow_duplicate=True)],
+    #     [Input('algorithm-list-trigger', 'data'),
+    #      Input({'type': 'algorithm-toggle', 'index': dash.dependencies.ALL}, 'value')],
+    #     [State('session-id', 'data')],
+    #     prevent_initial_call=True
+    # )
+    # def update_plot_on_algorithm_change(...):
+    #     """旧架构回调 - 已禁用"""
+    #     pass
+    
+    # 新架构：算法变化时触发报告内容更新
     @app.callback(
-        [Output('main-plot', 'figure', allow_duplicate=True),
-         Output('report-content', 'children', allow_duplicate=True)],
+        Output('algorithm-management-trigger', 'data', allow_duplicate=True),
         [Input('algorithm-list-trigger', 'data'),
          Input({'type': 'algorithm-toggle', 'index': dash.dependencies.ALL}, 'value')],
-        [State('session-id', 'data')],
         prevent_initial_call=True
     )
-    def update_plot_on_algorithm_change(
+    def trigger_report_update_on_algorithm_change(trigger_data, toggle_values):
+        """
+        当算法添加/删除/切换时，触发报告更新
+        
+        新架构：通过更新 algorithm-management-trigger 来通知报告页面刷新
+        """
+        return time.time()
+    
+    # 保留原有的错误处理代码结构（但实际回调已禁用）
+    def _old_update_plot_on_algorithm_change_logic(
         trigger_data: Any,
         toggle_values: List[Any],
         session_id: str
     ) -> Tuple[Union[Figure, Any], Union[html.Div, Any]]:
         """
+        旧架构逻辑（已禁用） - 保留供参考
+        
         当算法添加/删除/切换时，自动更新瀑布图和报告
 
         Args:
@@ -712,7 +736,9 @@ def register_algorithm_callbacks(app, session_manager: SessionManager):
         Returns:
             Tuple[List[dbc.Card], html.Span]: (算法列表, 状态文本)
         """
+        logger.info(f"[DEBUG] algorithm_callbacks - session_manager地址: {id(session_manager)}")
         backend = session_manager.get_backend(session_id)
+        logger.info(f"[DEBUG] algorithm_callbacks - backend: {backend}")
         if not backend:
             return [], html.Span("")
 

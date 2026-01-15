@@ -3,10 +3,13 @@
 
 """
 全局常量配置文件
-统一管理评级标准、阈值、配置等全局常量
+统一管理评级标准、阈值、配置等全局常量（不包括颜色定义）
 """
 
 from typing import Dict, Tuple, List
+
+# 导入颜色定义（颜色相关配置统一在 colors.py 中管理）
+from .colors import GRADE_BOOTSTRAP_COLORS as GRADE_COLORS
 
 # ==================== 评级配置 ====================
 
@@ -42,15 +45,8 @@ GRADE_NAMES: Dict[str, str] = {
     'major': '失败'
 }
 
-# 评级颜色映射（Bootstrap样式类）
-GRADE_COLORS: Dict[str, str] = {
-    'correct': 'success',   # 绿色
-    'minor': 'warning',     # 黄色
-    'moderate': 'info',     # 蓝色
-    'large': 'danger',      # 红色
-    'severe': 'dark',       # 深色
-    'major': 'secondary'    # 灰色
-}
+# 评级颜色映射（从 colors.py 导入，见文件顶部）
+# GRADE_COLORS 已在顶部从 colors.py 导入
 
 # 所有评级级别（按顺序）
 GRADE_LEVELS: List[str] = ['correct', 'minor', 'moderate', 'large', 'severe']
@@ -70,8 +66,7 @@ GRADE_CONFIGS = GRADE_DISPLAY_CONFIG  # layout_components.py 中使用的名称
 # 时间相关常量
 TIME_UNIT_0_1MS_TO_MS = 10.0  # 0.1ms 转换为 ms 的倍数
 
-# 默认值
-DEFAULT_MIN_DURATION_MS = 10  # 最小音符持续时间（毫秒）
+
 DEFAULT_MAX_DELAY_THRESHOLD_MS = 200  # 默认最大延时阈值（毫秒）
 
 # UI相关常量

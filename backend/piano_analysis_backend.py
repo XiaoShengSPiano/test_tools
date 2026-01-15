@@ -90,7 +90,7 @@ class PianoAnalysisBackend:
         self.data_manager.clear_data_state()
         self.plot_generator.set_data()
         self.key_filter.set_data(None, None)
-
+        
         # 清理多算法管理器
         if self.multi_algorithm_manager:
             self.multi_algorithm_manager.clear_all()
@@ -494,11 +494,11 @@ class PianoAnalysisBackend:
     def generate_key_delay_scatter_plot(self, only_common_keys: bool = False, selected_algorithm_names: List[str] = None) -> Any:
         """生成按键与延时的散点图（委托给PlotService）"""
         return self.plot_service.generate_key_delay_scatter_plot(only_common_keys, selected_algorithm_names)
-    
+
     def generate_hammer_velocity_delay_scatter_plot(self) -> Any:
         """生成锤速与延时的散点图（委托给PlotService）"""
         return self.plot_service.generate_hammer_velocity_delay_scatter_plot()
-    
+        
     def generate_hammer_velocity_relative_delay_scatter_plot(self) -> Any:
         """生成锤速与相对延时的散点图（委托给PlotService）"""
         return self.plot_service.generate_hammer_velocity_relative_delay_scatter_plot()
@@ -864,39 +864,116 @@ class PianoAnalysisBackend:
     
     def get_algorithm_statistics(self, algorithm) -> dict:
         """
-        获取算法的统计信息
-        
+        获取算法的统计信息（包含所有错误类型）
+
         Args:
             algorithm: 算法对象
-            
+
         Returns:
-            dict: 包含错误统计的信息
+            dict: 包含完整错误统计的信息
+                - drop_hammers: 丢锤数
+                - multi_hammers: 多锤数
+                - invalid_record_notes: 录制无效音符数
+                - invalid_replay_notes: 播放无效音符数
+                - total_errors: 总错误数（丢锤+多锤+无效音符）
         """
         try:
             if not hasattr(algorithm, 'analyzer') or not algorithm.analyzer:
                 return {
-                    'drop_count': 0,
-                    'multi_count': 0,
+                    'drop_hammers': 0,
+                    'multi_hammers': 0,
+                    'invalid_record_notes': 0,
+                    'invalid_replay_notes': 0,
                     'total_errors': 0
                 }
-            
+
             # 直接从analyzer获取错误统计
             analyzer = algorithm.analyzer
-            drop_count = len(analyzer.drop_hammers) if hasattr(analyzer, 'drop_hammers') else 0
-            multi_count = len(analyzer.multi_hammers) if hasattr(analyzer, 'multi_hammers') else 0
-            
+
+            # 锤击错误统计
+            drop_hammers = len(analyzer.drop_hammers) 
+            multi_hammers = len(analyzer.multi_hammers)
+
+            # 无效音符统计
+            analysis_stats = analyzer.get_analysis_stats()
+            invalid_record_notes = analysis_stats.get('record_invalid_notes', 0)
+            invalid_replay_notes = analysis_stats.get('replay_invalid_notes', 0)
+
+            # 计算总错误数
+            total_errors = drop_hammers + multi_hammers + invalid_record_notes + invalid_replay_notes
+
             return {
-                'drop_count': drop_count,
-                'multi_count': multi_count,
-                'total_errors': drop_count + multi_count
+                'drop_hammers': drop_hammers,
+                'multi_hammers': multi_hammers,
+                'invalid_record_notes': invalid_record_notes,
+                'invalid_replay_notes': invalid_replay_notes,
+                'total_errors': total_errors
             }
             
         except Exception as e:
             logger.error(f"获取算法统计信息失败: {e}")
             return {
-                'drop_count': 0,
-                'multi_count': 0,
+                'drop_hammers': 0,
+                'multi_hammers': 0,
+                'invalid_record_notes': 0,
+                'invalid_replay_notes': 0,
                 'total_errors': 0
+            }
+    
+    def get_data_overview_statistics(self, algorithm) -> dict:
+        """
+        获取数据概览统计信息
+        
+        Args:
+            algorithm: 算法对象
+        
+        Returns:
+            dict: 包含音符总数、有效音符数、匹配对数等信息
+        """
+        try:
+            if not hasattr(algorithm, 'analyzer') or not algorithm.analyzer:
+                return {
+                    'total_notes': 0,
+                    'valid_record_notes': 0,
+                    'valid_replay_notes': 0,
+                    'matched_pairs': 0,
+                    'invalid_record_notes': 0,
+                    'invalid_replay_notes': 0
+                }
+            
+            # 从analyzer获取统计数据
+            analyzer = algorithm.analyzer
+            stats = analyzer.get_analysis_stats()
+            
+            # 计算有效音符数（total_record_notes 就是有效的录制音符数）
+            valid_record = stats.get('total_record_notes', 0)
+            valid_replay = stats.get('total_replay_notes', 0)
+            invalid_record = stats.get('record_invalid_notes', 0)
+            invalid_replay = stats.get('replay_invalid_notes', 0)
+            
+            # 音符总数 = 有效音符 + 无效音符
+            total_notes = valid_record + valid_replay + invalid_record + invalid_replay
+            
+            return {
+                'total_notes': total_notes,
+                'valid_record_notes': valid_record,
+                'valid_replay_notes': valid_replay,
+                'matched_pairs': stats.get('matched_pairs', 0),
+                'invalid_record_notes': invalid_record,
+                'invalid_replay_notes': invalid_replay
+            }
+            
+        except Exception as e:
+            logger.error(f"获取数据概览统计信息失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                        'total_notes': 0,
+                'valid_record_notes': 0,
+                'valid_replay_notes': 0,
+                'matched_pairs': 0,
+                'invalid_record_notes': 0,
+                'invalid_replay_notes': 0
             }
     
     def get_invalid_notes_table_data(self) -> List[Dict[str, Any]]:
@@ -906,6 +983,30 @@ class PianoAnalysisBackend:
     def get_invalid_notes_detail_table_data(self, data_type: str) -> List[Dict[str, Any]]:
         """获取无效音符详细列表数据（委托给TableDataGenerator）"""
         return self.table_data_generator.get_invalid_notes_detail_table_data(data_type)
+
+    def get_drop_hammers_detail_table_data(self, algorithm_name: str) -> List[Dict[str, Any]]:
+        """获取指定算法的丢锤详细列表数据"""
+        all_drop_data = self.table_data_generator.get_error_table_data('丢锤')
+
+        # 过滤出指定算法的数据
+        algorithm_drop_data = []
+        for item in all_drop_data:
+            if item.get('algorithm_name') == algorithm_name:
+                algorithm_drop_data.append(item)
+
+        return algorithm_drop_data
+
+    def get_multi_hammers_detail_table_data(self, algorithm_name: str) -> List[Dict[str, Any]]:
+        """获取指定算法的多锤详细列表数据"""
+        all_multi_data = self.table_data_generator.get_error_table_data('多锤')
+
+        # 过滤出指定算法的数据
+        algorithm_multi_data = []
+        for item in all_multi_data:
+            if item.get('algorithm_name') == algorithm_name:
+                algorithm_multi_data.append(item)
+
+        return algorithm_multi_data
 
     # TODO
     def get_error_table_data(self, error_type: str) -> List[Dict[str, Any]]:
@@ -1329,7 +1430,7 @@ class PianoAnalysisBackend:
     def generate_relative_delay_distribution_plot(self) -> Any:
         """生成同种算法不同曲子的相对延时分布图（委托给PlotService）"""
         return self.plot_service.generate_relative_delay_distribution_plot()
-    
+
     def get_graded_error_stats(self, algorithm=None) -> Dict[str, Any]:
         """
         获取分级误差统计数据

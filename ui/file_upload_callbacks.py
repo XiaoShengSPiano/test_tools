@@ -120,9 +120,6 @@ def register_file_upload_callbacks(app, session_manager: SessionManager):
         
         用户上传文件并输入算法名后，点击确认按钮触发此回调。
         """
-        perf_start_total = time.time()
-        logger.info("=" * 80)
-        logger.info(f"🚀 [性能监控] 开始文件上传流程")
         
         # 验证输入参数
         if not n_clicks or not algorithm_name or not algorithm_name.strip():
@@ -133,39 +130,36 @@ def register_file_upload_callbacks(app, session_manager: SessionManager):
         if not is_valid:
             return error_span
 
+        logger.info(f"[DEBUG] file_upload_callbacks - session_manager地址: {id(session_manager)}")
+        logger.info(f"[DEBUG] file_upload_callbacks - session_manager.backends: {list(session_manager.backends.keys())}")
         backend = session_manager.get_backend(session_id)
+        
+        logger.info(f"[DEBUG] 文件上传使用的backend: {backend}")
+        if backend:
+            logger.info(f"[DEBUG] backend.multi_algorithm_manager: {backend.multi_algorithm_manager}")
+            logger.info(f"[DEBUG] backend.file_upload_service: {backend.file_upload_service}")
+            logger.info(f"[DEBUG] backend.file_upload_service.multi_algorithm_manager: {backend.file_upload_service.multi_algorithm_manager}")
 
         try:
-            # ============ 步骤1: 获取文件数据 ============
-            perf_step1_start = time.time()
             upload_handler = MultiFileUploadHandler()
             file_id = button_id['index']
             file_data = upload_handler.get_file_data_by_id(file_id, store_data)
-            perf_step1_end = time.time()
-            logger.info(f"⏱️  [性能] 步骤1-获取文件数据: {(perf_step1_end - perf_step1_start)*1000:.2f}ms")
-
+           
             if not file_data:
                 return _create_error_span("文件数据无效")
 
             content, filename = file_data
             algorithm_name = algorithm_name.strip()
-            file_size_kb = len(content) / 1024
-            logger.info(f"📦 [性能] 文件信息: {filename}, 大小: {file_size_kb:.2f}KB")
 
             # ============ 步骤2: Base64解码 ============
-            perf_step2_start = time.time()
+
             decoded_bytes = FileUploadService.decode_base64_file_content(content)
-            perf_step2_end = time.time()
-            logger.info(f"⏱️  [性能] 步骤2-Base64解码: {(perf_step2_end - perf_step2_start)*1000:.2f}ms")
-            
+           
             if decoded_bytes is None:
                 return _create_error_span("文件解码失败")
             
-            decoded_size_kb = len(decoded_bytes) / 1024
-            logger.info(f"📦 [性能] 解码后大小: {decoded_size_kb:.2f}KB")
-
             # ============ 步骤3: 添加算法（后端处理） ============
-            perf_step3_start = time.time()
+
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             success, error_msg = loop.run_until_complete(
@@ -174,15 +168,6 @@ def register_file_upload_callbacks(app, session_manager: SessionManager):
                 )
             )
             loop.close()
-            perf_step3_end = time.time()
-            logger.info(f"⏱️  [性能] 步骤3-后端处理总耗时: {(perf_step3_end - perf_step3_start)*1000:.2f}ms")
-
-            # ============ 总耗时统计 ============
-            perf_end_total = time.time()
-            total_time_ms = (perf_end_total - perf_start_total) * 1000
-            logger.info(f"🏁 [性能监控] 文件上传流程完成，总耗时: {total_time_ms:.2f}ms ({total_time_ms/1000:.2f}s)")
-            logger.info("=" * 80)
-
             if success:
                 logger.info(f"[OK] 算法 '{algorithm_name}' 添加成功")
                 return _create_success_span("[OK] 添加成功")
@@ -193,4 +178,30 @@ def register_file_upload_callbacks(app, session_manager: SessionManager):
             logger.error(f"[ERROR] 添加算法失败: {e}")
             logger.error(traceback.format_exc())
             return _create_error_span(f"添加失败: {str(e)}")
+    
+    # 独立的回调：监听algorithm-status变化，触发报告刷新
+    @app.callback(
+        Output('algorithm-management-trigger', 'data', allow_duplicate=True),
+        Input({'type': 'algorithm-status', 'index': dash.dependencies.ALL}, 'children'),
+        prevent_initial_call=True
+    )
+    def trigger_report_on_upload_success(status_children):
+        """
+        当有算法上传成功时，触发报告页面刷新
+        
+        这个回调监听所有 algorithm-status 的变化，
+        当检测到成功状态时，更新 trigger 以通知报告页面
+        """
+        # 检查是否有成功状态
+        if status_children:
+            for status in status_children:
+                if status and isinstance(status, dict):
+                    # 检查是否包含成功标记
+                    if 'props' in status and 'children' in status['props']:
+                        children_text = str(status['props']['children'])
+                        if 'OK' in children_text or '添加成功' in children_text:
+                            logger.info(f"[TRIGGER] 检测到算法上传成功，触发报告刷新")
+                            return time.time()
+        
+        return no_update
 

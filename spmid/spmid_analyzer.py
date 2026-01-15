@@ -13,7 +13,7 @@ SPMID数据分析器
 
 from matplotlib import figure
 from .spmid_reader import Note
-from .types import Diffs, ErrorNote
+from .types import ErrorNote
 from .data_filter import DataFilter
 from .invalid_notes_statistics import InvalidNotesStatistics
 from .note_matcher import NoteMatcher
@@ -41,16 +41,16 @@ class SPMIDAnalyzer:
     def __init__(self):
         """初始化分析器"""
         # 初始化各个组件
-        self.data_filter: Optional[DataFilter] = None
-        self.note_matcher: Optional[NoteMatcher] = None
-        self.error_detector: Optional[ErrorDetector] = None
+        self.data_filter: DataFilter()
+        self.note_matcher: NoteMatcher()
+        self.error_detector: ErrorDetector()
         
         # 分析结果
         self.multi_hammers: List[ErrorNote] = []
         self.drop_hammers: List[ErrorNote] = []
         self.valid_record_data: List[Note] = []
         self.valid_replay_data: List[Note] = []
-        self.invalid_statistics: Optional[InvalidNotesStatistics] = None  # 使用统计对象
+        self.invalid_statistics: InvalidNotesStatistics()  # 使用统计对象
         self.matched_pairs: List[Tuple[int, int, Note, Note]] = []
         
         # 统计信息
@@ -113,7 +113,7 @@ class SPMIDAnalyzer:
 
         matching_end_time = time.time()
         matching_duration = matching_end_time - matching_start_time
-        logger.info(f"按键匹配完成: 耗时{matching_duration:.3f}秒, 匹配对{len(self.matched_pairs)}个")
+        # logger.info(f"按键匹配完成: 耗时{matching_duration:.3f}秒, 匹配对{len(self.matched_pairs)}个")
         
         # 保存匹配统计信息
         self.match_statistics = self.note_matcher.match_statistics
@@ -121,7 +121,7 @@ class SPMIDAnalyzer:
         # 步骤3：分析异常（使用原始数据和匹配结果）
         # 基于匹配结果分析多锤和丢锤，使用原始数据确保所有音符都被考虑
         error_analysis_start_time = time.time()
-        logger.info(f"开始异常检测: 匹配对{len(self.matched_pairs)}个")
+        # logger.info(f"开始异常检测: 匹配对{len(self.matched_pairs)}个")
 
         self.drop_hammers, self.multi_hammers = self.error_detector.analyze_hammer_issues(
             record_data, replay_data, self.matched_pairs,
@@ -130,7 +130,7 @@ class SPMIDAnalyzer:
 
         error_analysis_end_time = time.time()
         error_analysis_duration = error_analysis_end_time - error_analysis_start_time
-        logger.info(f"异常检测完成: 耗时{error_analysis_duration:.3f}秒, 丢锤{len(self.drop_hammers)}个, 多锤{len(self.multi_hammers)}个")
+        # logger.info(f"异常检测完成: 耗时{error_analysis_duration:.3f}秒, 丢锤{len(self.drop_hammers)}个, 多锤{len(self.multi_hammers)}个")
         
         # # 步骤4：数据过滤（用于统计无效音符信息）
         # filter_start_time = time.time()
@@ -200,12 +200,18 @@ class SPMIDAnalyzer:
     
     def _generate_analysis_stats(self) -> None:
         """生成分析统计信息"""
+        # 获取无效音符数
+        record_invalid = self.invalid_statistics.record_invalid_count if self.invalid_statistics else 0
+        replay_invalid = self.invalid_statistics.replay_invalid_count if self.invalid_statistics else 0
+        
         self.analysis_stats = {
             'total_record_notes': len(self.valid_record_data),
             'total_replay_notes': len(self.valid_replay_data),
             'matched_pairs': len(self.matched_pairs),
             'drop_hammers': len(self.drop_hammers),
             'multi_hammers': len(self.multi_hammers),
+            'record_invalid_notes': record_invalid,
+            'replay_invalid_notes': replay_invalid,
             'global_time_offset': 0.0  # 已删除时序对齐功能，固定为0
         }
     

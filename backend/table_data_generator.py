@@ -146,10 +146,11 @@ class TableDataGenerator:
         active_algorithms = self.backend.get_active_algorithms()
         
         if not active_algorithms:
+            logger.error("[ERROR] 没有活跃算法")
             return []
         
         table_data = []
-        is_multi_algorithm = len(active_algorithms) > 1
+
         
         for algorithm in active_algorithms:
             algorithm_name = algorithm.metadata.algorithm_name
@@ -159,36 +160,34 @@ class TableDataGenerator:
             
             # 获取该算法的错误数据
             if error_type == '丢锤':
-                error_notes = algorithm.analyzer.drop_hammers if hasattr(algorithm.analyzer, 'drop_hammers') else []
+                error_notes = algorithm.analyzer.drop_hammers
             elif error_type == '多锤':
-                error_notes = algorithm.analyzer.multi_hammers if hasattr(algorithm.analyzer, 'multi_hammers') else []
+                error_notes = algorithm.analyzer.multi_hammers
             else:
                 continue
-            
+
+            # 确定错误原因描述
+            analysis_reason = '丢锤（录制有，播放无）' if error_type == '丢锤' else '多锤（播放有，录制无）'
+
             # 转换为表格数据格式
-            for note in error_notes:
+            for error_note in error_notes:
+                if not error_note.notes:
+                    continue
+
+                note = error_note.notes[0]
                 row = {
-                    'data_type': 'record' if error_type == '丢锤' else 'play',
-                    'keyId': note.keyId if hasattr(note, 'keyId') else 'N/A',
+                    'data_type': 'record',
+                    'keyId': note.id,
+                    'keyOn': f"{note.key_on_ms:.2f}" if note.key_on_ms is not None else 'N/A',
+                    'keyOff': f"{note.key_off_ms:.2f}" if note.key_off_ms is not None else 'N/A',
+                    'duration': f"{note.duration_ms:.2f}" if note.duration_ms is not None else 'N/A',
+                    'velocity': note.get_first_hammer_velocity() if note.get_first_hammer_velocity() is not None else 0,
+                    'index': error_note.global_index,
+                    'analysis_reason': analysis_reason
                 }
-                # 多算法模式时添加算法名称列
-                if is_multi_algorithm:
-                    row['algorithm_name'] = algorithm_name
-                # 添加时间和索引信息
-                if error_type == '丢锤':
-                    row.update({
-                        'keyOn': f"{note.keyOn/10:.2f}" if hasattr(note, 'keyOn') else 'N/A',
-                        'keyOff': f"{note.keyOff/10:.2f}" if hasattr(note, 'keyOff') else 'N/A',
-                        'index': note.index if hasattr(note, 'index') else 'N/A',
-                        'analysis_reason': '丢锤（录制有，播放无）'
-                    })
-                else:  # 多锤
-                    row.update({
-                        'keyOn': f"{note.keyOn/10:.2f}" if hasattr(note, 'keyOn') else 'N/A',
-                        'keyOff': f"{note.keyOff/10:.2f}" if hasattr(note, 'keyOff') else 'N/A',
-                        'index': note.index if hasattr(note, 'index') else 'N/A',
-                        'analysis_reason': '多锤（播放有，录制无）'
-                    })
+
+                row['algorithm_name'] = algorithm_name
+
                 table_data.append(row)
         
         return table_data
@@ -481,3 +480,4 @@ class TableDataGenerator:
                 },
                 'error': f'生成摘要信息失败: {str(e)}'
             }
+
