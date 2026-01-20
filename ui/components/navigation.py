@@ -44,6 +44,16 @@ def create_navbar():
                     active="exact",
                 )
             ),
+            dbc.NavItem(
+                dbc.NavLink(
+                    [
+                        html.I(className="fas fa-code-compare me-2"),
+                        html.Span("音轨对比")
+                    ], 
+                    href="/track-comparison", 
+                    active="exact",
+                )
+            ),
         ],
         brand=[
             html.I(className="fas fa-piano me-2", style={'fontSize': '24px'}),

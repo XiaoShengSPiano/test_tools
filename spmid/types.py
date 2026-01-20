@@ -13,17 +13,16 @@ class ErrorNote:
     """
     错误音符信息
     
-    重构后直接使用 Note 对象，保留完整的音符数据，便于后续绘制曲线等操作。
+    直接使用 Note 对象，通过 note.uuid 唯一标识音符。
     
     Attributes:
-        notes: 音符对象列表（直接使用 Note，包含完整的 hammers, after_touch 等数据）
-        diffs: 锤击间隔统计列表
-        error_type: 错误类型（"多锤" 或 "丢锤" 或 "不发声音符"）
-        global_index: 全局索引
+        note: 音符对象（包含 uuid, hammers, after_touch 等完整数据）
+        error_type: 错误类型（"多锤" 或 "丢锤" 或 "异常匹配对"）
         reason: 失败原因（可选）
+    
+    通过 note.uuid 访问音符的唯一标识符
     """
-    notes: List[Note]  # 改为使用 Note 对象，而不是 NoteInfo
-    error_type: str = ""      # 错误类型："多锤" 或 "丢锤" 或 "不发声音符"
-    global_index: int = -1    # 全局索引
-    reason: str = ""         # 失败原因（可选）
+    note: Note                # Note 对象（含uuid属性）
+    error_type: str = ""      # 错误类型
+    reason: str = ""          # 失败原因
 

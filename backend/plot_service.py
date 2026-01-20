@@ -346,20 +346,14 @@ class PlotService:
             self.logger.warning(f"算法 {algorithm_name} 的分析器或匹配器不存在")
             return None, None, None
 
-        # 从precision_matched_pairs中查找对应的Note对象
-        precision_matched_pairs = analyzer.note_matcher.precision_matched_pairs
-        record_note = None
-        play_note = None
-        
-        for r_idx, p_idx, r_note, p_note in precision_matched_pairs:
-            if r_idx == record_index and p_idx == replay_index:
-                record_note = r_note
-                play_note = p_note
-                break
-        
-        if record_note is None or play_note is None:
-            self.logger.warning(f"未找到匹配对 (算法={algorithm_name}): record_index={record_index}, replay_index={replay_index}")
+        # 通过UUID查找对应的Note对象
+        matched_pair = analyzer.note_matcher.find_matched_pair_by_uuid(record_index, replay_index)
+
+        if matched_pair is None:
+            self.logger.warning(f"未找到匹配对 (算法={algorithm_name}): record_uuid={record_index}, replay_uuid={replay_index}")
             return None, None, None
+
+        record_note, play_note, match_type, error_ms = matched_pair
 
         # 计算该算法的平均延时
         mean_delays = {}

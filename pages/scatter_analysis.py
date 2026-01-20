@@ -4,6 +4,7 @@
 from dash import html, dcc, callback, Input, Output, State
 import dash_bootstrap_components as dbc
 from utils.logger import Logger
+from pages.scatter_helper_functions import _parse_customdata_by_type, _handle_scatter_click_logic
 
 logger = Logger.get_logger()
 
@@ -279,19 +280,78 @@ def register_callbacks(app, session_manager):
                 logger.warning(f"[WARN] Backend尚未初始化 (session={session_id})")
                 return _create_no_backend_alert()
             
-            logger.info(f"[开始生成散点图] session={session_id}, 类型={analysis_type}")
+            logger.info(f'馃搳 寮€濮嬬敓鎴愭暎鐐瑰浘: session={session_id}, 绫诲瀷={analysis_type}')
             
-            # 根据类型生成对应的图表
-            # 注意：这里需要调用相应的生成函数，具体实现需要根据实际情况调整
-            # 暂时返回提示信息
-            return dbc.Alert([
-                html.H4("🚧 开发中", className="alert-heading"),
-                html.P(f"图表类型: {analysis_type}"),
-                html.P("此功能正在开发中，即将上线"),
-            ], color="info", className="mt-4")
+            
+            if analysis_type == 'key-delay':
+                figure = backend.generate_key_delay_scatter_plot()
+            elif analysis_type == 'zscore':
+                figure = backend.generate_key_delay_zscore_scatter_plot()
+            elif analysis_type == 'hammer-velocity':
+                # 锤速对比图（横轴：按键ID，纵轴：锤速差值）
+                from ui.velocity_comparison_handler import VelocityComparisonHandler
+                handler = VelocityComparisonHandler(session_manager)
+                figure = handler.handle_generate_hammer_velocity_comparison_plot(None, session_id)
+            elif analysis_type == 'key-force':
+                figure = backend.generate_key_hammer_velocity_scatter_plot()
+            elif analysis_type == 'relative-delay':
+                figure = backend.generate_hammer_velocity_relative_delay_scatter_plot()
+            elif analysis_type == 'time-series':
+                # 延时时间序列图（返回两个图：原始延时和相对延时）
+                result = backend.generate_delay_time_series_plot()
+                
+                # 检查返回结果
+                if isinstance(result, dict) and 'raw_delay_plot' in result and 'relative_delay_plot' in result:
+                    # 返回两个图表的组合显示
+                    return html.Div([
+                        html.H6('原始延时时间序列图', className='mb-2', style={'color': '#2c3e50', 'fontWeight': 'bold'}),
+                        dcc.Graph(
+                            id='scatter-analysis-raw-delay-plot',
+                            figure=result['raw_delay_plot'],
+                            style={'height': '500px', 'marginBottom': '30px'}
+                        ),
+                        html.Hr(),
+                        html.H6('相对延时时间序列图', className='mb-2', style={'color': '#2c3e50', 'fontWeight': 'bold'}),
+                        dcc.Graph(
+                            id='scatter-analysis-relative-delay-plot',
+                            figure=result['relative_delay_plot'],
+                            style={'height': '500px'}
+                        )
+                    ])
+                else:
+                    figure = result  # 单算法模式
+            
+            if figure:
+                logger.info(f'鉁?鏁ｇ偣鍥剧敓鎴愭垚鍔? {analysis_type}')
+                return dcc.Graph(id='scatter-analysis-dynamic-plot', figure=figure, style={'height': '700px'}, config={'displayModeBar': True, 'displaylogo': False, 'modeBarButtonsToRemove': ['lasso2d', 'select2d']})
+            else:
+                logger.warning(f'鈿狅笍 鏁ｇ偣鍥剧敓鎴愯繑鍥濶one: {analysis_type}')
+                return _create_error_alert('鍥捐〃鐢熸垚澶辫触锛岃妫€鏌ユ暟鎹槸鍚﹀凡鍔犺浇')
             
         except Exception as e:
             logger.error(f"[ERROR] 加载散点图失败: {e}")
             import traceback
             traceback.print_exc()
             return _create_error_alert(str(e))
+
+    
+    # 鏁ｇ偣鍥剧偣鍑诲洖璋?- 鏄剧ず璇︾粏鏇茬嚎瀵规瘮
+    @app.callback(
+        [Output('scatter-analysis-modal', 'style'), Output('scatter-analysis-modal-content', 'children')],
+        [Input('scatter-analysis-dynamic-plot', 'clickData'), Input('close-scatter-analysis-modal', 'n_clicks'), Input('close-scatter-analysis-modal-btn', 'n_clicks')],
+        [State('scatter-analysis-type-selector', 'value'), State('session-id', 'data'), State('scatter-analysis-modal', 'style')],
+        prevent_initial_call=True
+    )
+    def handle_scatter_plot_click(click_data, close_clicks, close_btn_clicks, analysis_type, session_id, current_style):
+        from dash import no_update, callback_context
+        ctx = callback_context
+        if not ctx.triggered:
+            return no_update, no_update
+        trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
+        if trigger_id in ['close-scatter-analysis-modal', 'close-scatter-analysis-modal-btn']:
+            logger.info('[OK] 鍏抽棴鏁ｇ偣鍥捐鎯呮ā鎬佹')
+            modal_style = {'display': 'none', 'position': 'fixed', 'zIndex': '1000', 'left': '0', 'top': '0', 'width': '100%', 'height': '100%', 'backgroundColor': 'rgba(0,0,0,0.6)', 'backdropFilter': 'blur(5px)'}
+            return modal_style, []
+        if trigger_id == 'scatter-analysis-dynamic-plot' and click_data:
+            return _handle_scatter_click_logic(click_data, analysis_type, session_id, session_manager)
+        return no_update, no_update

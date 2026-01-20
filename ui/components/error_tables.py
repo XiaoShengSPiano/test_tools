@@ -258,23 +258,39 @@ def _create_hammer_error_detail_table(data, algorithm_name, error_type):
             ])
         ], className="shadow-sm mb-4")
 
+    # 生成唯一的表格ID
+    table_id = {'type': 'error-detail-table', 'index': f"{algorithm_name}_{error_type}"}
+
     return dbc.Card([
         dbc.CardHeader([
             html.H5([
                 html.I(className="fas fa-list me-2"),
-                f"{type_name}详细列表 - {algorithm_name}"
+                f"{type_name}详细列表 - {algorithm_name}",
+                html.Small(" (点击行查看按键曲线)", className="text-muted ms-2", style={'fontSize': '0.8rem'})
             ])
         ]),
         dbc.CardBody([
             dash_table.DataTable(
+                id=table_id,
                 data=data,
                 page_size=5,
                 style_table={'overflowX': 'auto'},
-                style_cell={'textAlign': 'center', 'padding': '8px'},
+                style_cell={
+                    'textAlign': 'center',
+                    'padding': '8px',
+                    'cursor': 'pointer'
+                },
                 style_header={
                     'backgroundColor': '#f8f9fa',
                     'fontWeight': 'bold'
-                }
+                },
+                style_data_conditional=[
+                    {
+                        'if': {'state': 'active'},
+                        'backgroundColor': 'rgba(0, 116, 217, 0.3)',
+                        'border': '1px solid rgb(0, 116, 217)'
+                    }
+                ]
             )
         ])
     ], className="shadow-sm mb-4")
@@ -286,24 +302,40 @@ def _create_invalid_detail_table(data, algorithm_name, data_type):
         return html.Div()
 
     type_name = "录制数据" if data_type == 'record' else "播放数据"
+    
+    # 生成唯一的表格ID
+    table_id = {'type': 'error-detail-table', 'index': f"{algorithm_name}_invalid_{data_type}"}
 
     return dbc.Card([
         dbc.CardHeader([
             html.H5([
                 html.I(className="fas fa-list me-2"),
-                f"无效音符详细列表 - {type_name} - {algorithm_name}"
+                f"无效音符详细列表 - {type_name} - {algorithm_name}",
+                html.Small(" (点击行查看按键曲线)", className="text-muted ms-2", style={'fontSize': '0.8rem'})
             ])
         ]),
         dbc.CardBody([
             dash_table.DataTable(
+                id=table_id,
                 data=data,
                 page_size=5,
                 style_table={'overflowX': 'auto'},
-                style_cell={'textAlign': 'center', 'padding': '8px'},
+                style_cell={
+                    'textAlign': 'center',
+                    'padding': '8px',
+                    'cursor': 'pointer'
+                },
                 style_header={
                     'backgroundColor': '#f8f9fa',
                     'fontWeight': 'bold'
-                }
+                },
+                style_data_conditional=[
+                    {
+                        'if': {'state': 'active'},
+                        'backgroundColor': 'rgba(0, 116, 217, 0.3)',
+                        'border': '1px solid rgb(0, 116, 217)'
+                    }
+                ]
             )
         ])
     ], className="shadow-sm mb-4")

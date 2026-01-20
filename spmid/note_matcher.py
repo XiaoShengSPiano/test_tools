@@ -34,31 +34,8 @@ SPMID音符匹配器
    ├── 第二阶段：如无候选则扩展到全局 (_generate_all_candidates_sorted)
    └── 第三阶段：应用扩展阈值过滤 (≤300ms)
 
-【匹配分类 - 六等级系统】
-- 优秀匹配 (≤20ms)：高质量匹配
-- 良好匹配 (20-30ms)：较高质量匹配
-- 一般匹配 (30-50ms)：可接受匹配
-- 较差匹配 (50-100ms)：需要改进的匹配
-- 严重匹配 (100-200ms)：质量极差但找到的匹配
-- 失败匹配 (>200ms)：误差过大，标记为丢锤/多锤异常
 
-【搜索策略 - 三阶段分层搜索】
-- 第一阶段：精确搜索 (≤50ms) - 寻找优秀/良好/一般匹配
-- 第二阶段：较差搜索 (50-100ms) - 寻找较差匹配
-- 第三阶段：严重搜索 (100-200ms) - 寻找严重误差匹配
 
-【阈值体系 - 六等级精确分类】
-- 优秀阈值：≤20ms
-- 良好阈值：20-30ms
-- 一般阈值：30-50ms
-- 较差阈值：50-100ms
-- 严重阈值：100-200ms
-- 失败阈值：>200ms
-
-【错误检测】
-- 丢锤：录制数据中未匹配的按键
-- 多锤：播放数据中未匹配的按键
-- 基于两阶段匹配后的剩余音符直接判断，无需复杂统计
 """
 
 import pandas as pd
@@ -70,7 +47,7 @@ from utils.logger import Logger
 from enum import Enum
 from collections import defaultdict
 import heapq
-import time
+import statistics
 
 logger = Logger.get_logger()
 
@@ -133,8 +110,7 @@ class MatchResult:
 # 候选信息类
 class Candidate:
     """候选匹配信息"""
-    def __init__(self, index: int, total_error: float, note: Optional[Note] = None):
-        self.index = index
+    def __init__(self, total_error: float, note: Note):
         self.total_error = total_error
         self.note = note
 
@@ -142,35 +118,6 @@ class Candidate:
     def error_ms(self) -> float:
         """误差转换为毫秒"""
         return self.total_error / 10.0
-
-# 按键匹配统计类 - 新增：按键级别的统计信息
-class KeyMatchStatistics:
-    """单个按键的匹配统计信息"""
-
-    def __init__(self, key_id: int):
-        self.key_id = key_id
-        self.total_record_notes = 0    # 该按键录制音符总数
-        self.total_replay_notes = 0    # 该按键播放音符总数
-        self.matched_count = 0         # 成功匹配数
-        self.failed_count = 0          # 失败匹配数
-        self.extra_hammers = 0         # 多锤数（未使用的播放音符）
-
-        # 误差统计（只统计成功匹配）
-        self.offsets_ms: List[float] = []  # 校准后偏移（ms）
-        self.median_offset = 0.0
-        self.mean_offset = 0.0
-        self.std_offset = 0.0
-        self.variance_offset = 0.0
-        self.min_offset = 0.0
-        self.max_offset = 0.0
-        self.range_offset = 0.0
-
-        # 匹配质量分布
-        self.excellent_count = 0
-        self.good_count = 0
-        self.fair_count = 0
-        self.poor_count = 0
-        self.severe_count = 0
 
     def add_match_result(self, match_result: MatchResult, corrected_offset_ms: float):
         """添加匹配结果"""
@@ -195,7 +142,6 @@ class KeyMatchStatistics:
     def calculate_statistics(self):
         """计算统计信息"""
         if self.offsets_ms:
-            import statistics
             self.median_offset = statistics.median(self.offsets_ms)
             self.mean_offset = statistics.mean(self.offsets_ms)
             self.min_offset = min(self.offsets_ms)
@@ -225,92 +171,32 @@ class MatchStatistics:
         self.severe_matches = 0       # 严重误差 (100-200ms)
         self.failed_matches = 0       # 失败匹配 (>200ms或无候选)
 
-        # 兼容性字段 - 保持向后兼容
-        self.precision_matches = 0    # 精确匹配总数 (≤50ms)
-        self.approximate_matches = 0  # 较差匹配总数 (50-100ms)
-        self.large_error_matches = 0  # 严重误差匹配总数 (100-200ms)
-
-        self.total_attempts = 0       # 总尝试数
-
-    def add_result(self, result: MatchResult):
-        """添加匹配结果到统计"""
-        self.total_attempts += 1
-
-        if result.match_type == MatchType.EXCELLENT:
-            self.excellent_matches += 1
-            self.precision_matches += 1
-        elif result.match_type == MatchType.GOOD:
-            self.good_matches += 1
-            self.precision_matches += 1
-        elif result.match_type == MatchType.FAIR:
-            self.fair_matches += 1
-            self.precision_matches += 1
-        elif result.match_type == MatchType.POOR:
-            self.poor_matches += 1
-            self.approximate_matches += 1
-        elif result.match_type == MatchType.SEVERE:
-            self.severe_matches += 1
-            self.large_error_matches += 1
-        elif result.match_type == MatchType.FAILED:
-            self.failed_matches += 1
-
     def __str__(self):
         return f"优秀:{self.excellent_matches}, 良好:{self.good_matches}, 一般:{self.fair_matches}, 较差:{self.poor_matches}, 严重:{self.severe_matches}, 失败:{self.failed_matches}"
 
 class NoteMatcher:
     """SPMID音符匹配器类"""
     
-    def __init__(self, global_time_offset: float = 0.0):
+    def __init__(self):
         """
-        初始化音符匹配器 - 五等级匹配系统
-
-        Args:
-            global_time_offset: 初始全局时间偏移量（可选，会在匹配过程中重新计算）
+        初始化音符匹配器
         """
-        self.global_time_offset = global_time_offset
+        # 匹配结果分类存储
+        # 精确匹配对：(record_note, replay_note, match_type, keyon_error_ms)
+        self.matched_pairs: List[Tuple[Note, Note, MatchType, float]] = []
+        self.drop_hammers: List[Note] = []                   # 丢锤音符
+        self.multi_hammers: List[Note] = []                  # 多锤音符
+        self.abnormal_matches: List[Tuple[Note, Note]] = []  # 异常匹配对 (record_note, replay_note)
+        self.duration_diff_pairs: List[Tuple[Note, Note, float]] = []  # 持续时间差异对 (rec_note, rep_note, ratio)
 
-        # 核心匹配结果存储
-        self.matched_pairs: List[Tuple[int, int, Note, Note]] = []  # 所有成功匹配对 (record_idx, replay_idx, record_note, replay_note)
-        self.match_results: List[MatchResult] = []  # 所有匹配结果详情 (包含匹配类型、误差等)
-
-        # 持续时间差异检测结果
-        # (record_idx, replay_idx, record_note, replay_note, 
-        #  record_duration, replay_duration, duration_ratio,
-        #  record_keyon, record_keyoff, replay_keyon, replay_keyoff)
-        self.duration_diff_pairs: List[Tuple[int, int, Note, Note, float, float, float, float, float, float, float]] = []
-
-        # 匹配失败信息
-        self.failure_reasons: Dict[Tuple[str, int], str] = {}  # key=(data_type, index)，value=str
-
-        # 分类存储 - 按搜索阶段分组（用于数据获取优化）
-        self.precision_matched_pairs: List[Tuple[int, int, Note, Note]] = []  # 精确搜索阶段匹配 (≤50ms)
-        self.approximate_matched_pairs: List[Tuple[int, int, Note, Note]] = []  # 近似搜索阶段匹配 (50-1000ms)
-        self.severe_matched_pairs: List[Tuple[int, int, Note, Note]] = []  # 严重误差搜索阶段匹配 (>1000ms)
-
-        # 按键分组统计信息 - 新增：预计算的按键级别统计数据
-        self.key_statistics: Dict[int, KeyMatchStatistics] = {}  # key=key_id, value=该按键的统计信息
-
-        # 统计信息
+        # 匹配统计
         self.match_statistics = MatchStatistics()
 
-        # 数据引用缓存
-        self._record_data: Optional[List[Note]] = None
-        self._replay_data: Optional[List[Note]] = None
-
-        # 计算缓存
-        self._mean_error_cached: Optional[float] = None
-        
         # 延时指标计算器（延迟初始化）
         self._delay_metrics: Optional[DelayMetrics] = None
     
-        # 拆分索引起始值（使用大数字避免与原始索引冲突）
-        self._split_index_offset = 1000000
-        self._split_counter = 0  # 全局拆分计数器，确保跨key_group的唯一索引
-        self._record_split_count = 0  # 录制数据拆分次数
-        self._replay_split_count = 0  # 播放数据拆分次数
     
-    
-    def find_all_matched_pairs(self, record_data: List[Note], replay_data: List[Note]) -> List[Tuple[int, int, Note, Note]]:
+    def find_all_matched_pairs(self, record_data: List[Note], replay_data: List[Note]) -> List[Tuple[Note, Note]]:
         """
         查找所有匹配对：基于最小堆的keyon优先匹配（支持双向拆分）
         
@@ -331,117 +217,82 @@ class NoteMatcher:
         Args:
             record_data: 录制数据
             replay_data: 播放数据
-            
+
         Returns:
-            List[Tuple[int, int, Note, Note]]: 匹配对列表 (record_index, replay_index, record_note, replay_note)
+            List[Tuple[Note, Note]]: 精确匹配对列表 (record_note, replay_note)
         """
-        matching_start_time = time.time()
-        
-        # 初始化状态
-        self._initialize_matching_state()
-        
-        # logger.info(f"🚀 开始新算法匹配（基于堆的keyon优先）: 录制{len(record_data)}个音符, 播放{len(replay_data)}个音符")
-        
-        # 保存原始数据引用
-        self._record_data = record_data
-        self._replay_data = replay_data
-        
-        # 1. 按key_id分组
+        # 按key_id分组
         record_by_key = self._group_notes_by_key(record_data)
         replay_by_key = self._group_notes_by_key(replay_data)
-        
-        # logger.info(f"按键分组完成: 录制{len(record_by_key)}个按键, 播放{len(replay_by_key)}个按键")
-        
-        # 2. 对每个按键分别进行堆匹配
+
+        # 对每个按键进行匹配
         all_matched_pairs = []
-        
         for key_id in sorted(record_by_key.keys()):
             key_record_notes = record_by_key[key_id]
             key_replay_notes = replay_by_key.get(key_id, [])
-            
-            # logger.info(f"📌 处理按键{key_id}: 录制{len(key_record_notes)}个, 播放{len(key_replay_notes)}个")
-            
-            # 对该按键进行堆匹配
+
             key_matched_pairs = self._match_single_key_with_heap(
                 key_id, key_record_notes, key_replay_notes
             )
-            
             all_matched_pairs.extend(key_matched_pairs)
-            
-            # logger.info(f"✅ 按键{key_id}匹配完成: 匹配{len(key_matched_pairs)}对")
-        
-        # 保存匹配对
-        self.matched_pairs = all_matched_pairs
-        
-        # 3. 计算统计信息
-        self._calculate_key_statistics_from_matches(record_by_key, replay_by_key)
-        
-        # 缓存平均误差
-        self._mean_error_cached = self._calculate_mean_error()
-        
-        # 性能统计
-        matching_end_time = time.time()
-        matching_duration = matching_end_time - matching_start_time
-        
-        # 输出统计信息
-        # logger.info(f"🎯 新算法匹配完成: 总匹配对{len(all_matched_pairs)}个, 耗时{matching_duration:.3f}秒")
-        # logger.info(f"质量分布: 优秀{self.match_statistics.precision_matches} | "
-        #            f"近似{self.match_statistics.approximate_matches} | "
-        #            f"大误差{self.match_statistics.large_error_matches} | "
-        #            f"失败{self.match_statistics.failed_matches}")
-        
-        duration_diff_count = len(self.duration_diff_pairs)
-        if duration_diff_count > 0:
-            # logger.info(f"持续时间差异: 检测到{duration_diff_count}个（拆分处理后）")
-            pass
 
+        # ❌ 不要覆盖 self.matched_pairs！
+        # self.matched_pairs 已在 _create_successful_match 中被正确填充（包含评级信息）
+        # all_matched_pairs 是空的或只包含2元组的兼容性返回值
+        
+        # 输出最终统计信息
+        logger.info(f"📊 匹配完成统计:")
+        logger.info(f"   ✅ 正常匹配对 (matched_pairs): {len(self.matched_pairs)}")
+        logger.debug(f"   [DEBUG] all_matched_pairs长度: {len(all_matched_pairs)}")
+        logger.info(f"   ⚠️ 异常匹配对 (abnormal_matches): {len(self.abnormal_matches)}")
+        logger.info(f"   ⚠️ 丢锤 (drop_hammers): {len(self.drop_hammers)}")
+        logger.info(f"   ⚠️ 多锤 (multi_hammers): {len(self.multi_hammers)}")
+        logger.info(f"   评级统计:")
+        logger.info(f"      - excellent (≤20ms): {self.match_statistics.excellent_matches}")
+        logger.info(f"      - good (20-30ms): {self.match_statistics.good_matches}")
+        logger.info(f"      - fair (30-50ms): {self.match_statistics.fair_matches}")
+        logger.info(f"      - poor (50-100ms): {self.match_statistics.poor_matches}")
+        logger.info(f"      - severe (100-200ms): {self.match_statistics.severe_matches}")
         
         return all_matched_pairs
     
-    def _match_single_key_with_heap(self, key_id: int, 
-                                     record_notes: List[Tuple[int, Note]], 
-                                     replay_notes: List[Tuple[int, Note]]) -> List[Tuple[int, int, Note, Note]]:
+    def _match_single_key_with_heap(self, key_id: int,
+                                     record_notes: List[Note],
+                                     replay_notes: List[Note]) -> List[Tuple[Note, Note]]:
         """
         使用最小堆对单个按键进行匹配（支持拆分）
-        
+
         Args:
             key_id: 按键ID
-            record_notes: 该按键的录制音符列表 [(原始索引, Note), ...]
-            replay_notes: 该按键的播放音符列表 [(原始索引, Note), ...]
-            
+            record_notes: 该按键的录制音符列表
+            replay_notes: 该按键的播放音符列表
+
         Returns:
-            List[Tuple[int, int, Note, Note]]: 该按键的匹配对列表
+            List[Tuple[Note, Note]]: 该按键的匹配对列表 (record_note, replay_note)
         """
-        # logger.debug(f"  🔧 初始化按键{key_id}的堆结构...")
         
         # 构建最小堆
         record_heap, replay_heap = self._build_matching_heaps(key_id, record_notes, replay_notes)
         
         # 初始化状态
         matched_pairs = []
-        used_replay_indices = set()
-        skipped_replay_indices = set()  # 跳过的播放数据索引（可疑的多锤）
+        used_replay_uuids = set()  # 已使用的播放音符UUID
+        skipped_replay_uuids = set()  # 跳过的播放音符UUID（可疑的多锤）
         
-        # logger.debug(f"  🔄 开始主循环匹配...")
         
         # 主循环：处理所有录制数据
         match_count, failed_count = self._process_record_notes(
-            key_id, record_heap, replay_heap, used_replay_indices, 
-            skipped_replay_indices, matched_pairs
+            key_id, record_heap, replay_heap, used_replay_uuids,
+            skipped_replay_uuids, matched_pairs
         )
         
-        # 处理跳过的播放数据（多锤）
-        extra_hammer_count = self._process_skipped_replays(
-            key_id, skipped_replay_indices, replay_notes
-        )
-        
-        # logger.debug(f"  ✅ 按键{key_id}匹配完成: 成功{match_count}个, 失败{failed_count}个, 多锤{extra_hammer_count}个")
+        logger.debug(f"按键{key_id}匹配完成: 成功{match_count}个, 失败{failed_count}个")
         
         return matched_pairs
     
-    def _build_matching_heaps(self, key_id: int, 
-                               record_notes: List[Tuple[int, Note]], 
-                               replay_notes: List[Tuple[int, Note]]) -> Tuple[List, List]:
+    def _build_matching_heaps(self, key_id: int,
+                              record_notes: List[Note],
+                              replay_notes: List[Note]) -> Tuple[List, List]:
         """
         构建录制和播放的最小堆
         
@@ -453,43 +304,37 @@ class NoteMatcher:
         Returns:
             Tuple[List, List]: (record_heap, replay_heap)
         """
-        # 堆元素格式: (keyon_time, parent_index, note_object, split_seq)
+        # 堆元素格式: (key_on_ms, note_object, split_seq)
+        # key_on_ms: 用于堆排序
         # split_seq: None=原始数据, 0/1/2...=拆分序号
-        
+
         # 录制堆
         record_heap = []
-        for orig_idx, note in record_notes:
-            if note.key_on_ms is not None:
-                heapq.heappush(record_heap, (note.key_on_ms, orig_idx, note, None))
-            else:
-                logger.warning(f"  ⚠️ 按键{key_id}的录制音符索引{orig_idx}没有key_on_ms，跳过")
-        
+        for note in record_notes:
+            heapq.heappush(record_heap, (note.key_on_ms, note, None))
+
         # 播放堆
         replay_heap = []
-        for orig_idx, note in replay_notes:
-            if note.key_on_ms is not None:
-                heapq.heappush(replay_heap, (note.key_on_ms, orig_idx, note, None))
-            else:
-                logger.warning(f"  ⚠️ 按键{key_id}的播放音符索引{orig_idx}没有key_on_ms，跳过")
-        
-        # logger.debug(f"  📊 堆构建完成: 录制堆{len(record_heap)}个, 播放堆{len(replay_heap)}个")
+        for note in replay_notes:
+            heapq.heappush(replay_heap, (note.key_on_ms, note, None))
+
         
         return record_heap, replay_heap
     
     def _process_record_notes(self, key_id: int, record_heap: List, replay_heap: List,
-                               used_replay_indices: set, skipped_replay_indices: set,
+                               used_replay_uuids: set, skipped_replay_uuids: set,
                                matched_pairs: List) -> Tuple[int, int]:
         """
         处理所有录制数据的主循环
-        
+
         Args:
             key_id: 按键ID
             record_heap: 录制堆
             replay_heap: 播放堆
-            used_replay_indices: 已使用的播放索引集合
-            skipped_replay_indices: 跳过的播放索引集合（可疑的多锤）
+            used_replay_uuids: 已使用的播放音符UUID集合
+            skipped_replay_uuids: 跳过的播放音符UUID集合（可疑的多锤）
             matched_pairs: 匹配对列表（输出）
-            
+
         Returns:
             Tuple[int, int]: (成功匹配数, 失败匹配数)
         """
@@ -498,36 +343,35 @@ class NoteMatcher:
         
         while record_heap:
             # 取出录制数据
-            rec_keyon, rec_idx, rec_note, rec_split_seq = heapq.heappop(record_heap)
-            self._log_processing_record(rec_idx, rec_note, rec_keyon)
+            rec_keyon, rec_note, rec_split_seq = heapq.heappop(record_heap)
+            
+            logger.debug(f"    处理录制Note: UUID={rec_note.uuid[:8]}..., key_on={rec_note.key_on_ms:.2f}ms, split_seq={rec_split_seq}")
             
             # 清理已使用的播放数据
-            self._clean_used_replay_notes(replay_heap, used_replay_indices)
+            self._clean_used_replay_notes(replay_heap, used_replay_uuids)
             
             # 查找播放候选（支持跳过可疑的多锤）
             replay_candidate = self._find_replay_candidate(
-                key_id, replay_heap, rec_note, rec_keyon, skipped_replay_indices
+                replay_heap, rec_note, skipped_replay_uuids
             )
             
             if replay_candidate is None:
                 # 无可用候选 → 失败
-                self._create_failed_match(rec_idx, None, "无可用播放数据")
                 failed_count += 1
                 continue
             
-            rep_keyon, rep_idx, rep_note, rep_split_seq, keyon_error_ms = replay_candidate
+            rep_note, keyon_error_ms = replay_candidate
             
             # 检查误差阈值
-            if not self._check_error_threshold(keyon_error_ms, rec_idx, rep_idx, rep_split_seq):
+            if not self._check_error_threshold(keyon_error_ms):
                 # 超出阈值 → 失败
                 failed_count += 1
                 continue
             
             # 创建成功匹配（支持拆分，在pop播放数据之前检查是否需要拆分）
             success, split_type = self._create_successful_match(
-                rec_idx, rec_note, rec_split_seq,
-                rep_idx, rep_note, rep_split_seq,
-                keyon_error_ms, matched_pairs, used_replay_indices,
+                rec_note, rep_note,
+                keyon_error_ms, matched_pairs, used_replay_uuids,
                 record_heap, replay_heap
             )
             
@@ -535,33 +379,25 @@ class NoteMatcher:
                 # 匹配成功：消费播放数据
                 heapq.heappop(replay_heap)
                 match_count += 1
+                logger.debug(f"    ✓ 匹配成功 (match_count={match_count})")
+            else:
+                logger.debug(f"    ✗ 匹配失败")
         
         return match_count, failed_count
     
-    def _log_processing_record(self, rec_idx: int, rec_note: Note, rec_keyon: float):
-        """记录当前处理的录制数据"""
-        if rec_note.is_split:
-            parent_idx = rec_note.split_parent_idx if rec_note.split_parent_idx is not None else rec_idx
-            split_seq = rec_note.split_seq if rec_note.split_seq is not None else 0
-            # logger.debug(f"    处理录制[{parent_idx}:拆分{split_seq}] keyon={rec_keyon:.1f}ms")
-        else:
-            pass
-            # logger.debug(f"    处理录制[{rec_idx}] keyon={rec_keyon:.1f}ms")
-    
-    def _clean_used_replay_notes(self, replay_heap: List, used_replay_indices: set):
+    def _clean_used_replay_notes(self, replay_heap: List, used_replay_uuids: set):
         """清理播放堆顶的已使用数据（惰性删除）"""
         while replay_heap:
-            rep_keyon, rep_idx, rep_note, rep_split_seq = replay_heap[0]
-            
-            if rep_idx in used_replay_indices:
+            _, rep_note, _ = replay_heap[0]  # 堆元素: (key_on_ms, note, split_seq)
+
+            if rep_note.uuid in used_replay_uuids:
                 heapq.heappop(replay_heap)
-                logger.debug(f"      清理已使用的播放[{rep_idx}]")
                 continue
             else:
                 break
     
-    def _find_replay_candidate(self, key_id: int, replay_heap: List, rec_note: Note,
-                                rec_keyon: float, skipped_replay_indices: set) -> Optional[Tuple]:
+    def _find_replay_candidate(self, replay_heap: List, rec_note: Note,
+                                skipped_replay_uuids: set) -> Optional[Tuple[Note, float]]:
         """
         使用Lookahead窗口查找最佳播放候选
         
@@ -572,58 +408,36 @@ class NoteMatcher:
         4. 跳过前面的次优候选
         
         Args:
-            key_id: 按键ID
-            replay_heap: 播放堆
+            replay_heap: 播放堆 (key_on_ms, note, split_seq)
             rec_note: 录制Note对象
-            rec_keyon: 录制keyon时间（ms）
-            skipped_replay_indices: 跳过的播放索引集合（输出）
+            skipped_replay_uuids: 跳过的播放音符UUID集合（输出）
             
         Returns:
-            Optional[Tuple]: (rep_keyon, rep_idx, rep_note, rep_split_seq, error_ms) 或 None
+            Optional[Tuple[Note, float]]: (rep_note, error_ms) 或 None
         """
         if not replay_heap:
             logger.debug(f"      ✗ 无可用播放数据 → 失败")
             return None
         
+        rec_keyon = rec_note.key_on_ms
+        
         # 【第一道防线】循环跳过"提前过多"的播放数据（>200ms，极端情况）+ 锤速异常检测
         while replay_heap:
-            rep_keyon, rep_idx, rep_note, rep_split_seq = replay_heap[0]
+            _, rep_note, _ = replay_heap[0]
+            rep_keyon = rep_note.key_on_ms
             
             # 检查条件1：播放是否"提前"过多？
             if rep_keyon < rec_keyon - ADVANCE_THRESHOLD:
                 # 播放明显提前录制，可能是多锤
-                advance_ms = rec_keyon - rep_keyon
-                
-                # 日志
-                if rep_note.is_split:
-                    parent_idx = rep_note.split_parent_idx if rep_note.split_parent_idx is not None else rep_idx
-                    split_seq = rep_note.split_seq if rep_note.split_seq is not None else 0
-                    logger.debug(f"      ⚠️ [防线1] 跳过极端多锤 播放[{parent_idx}:拆分{split_seq}] "
-                               f"keyon={rep_keyon:.1f}ms 提前录制{advance_ms:.1f}ms > 阈值{ADVANCE_THRESHOLD:.1f}ms")
-                else:
-                    logger.debug(f"      ⚠️ [防线1] 跳过极端多锤 播放[{rep_idx}] "
-                               f"keyon={rep_keyon:.1f}ms 提前录制{advance_ms:.1f}ms > 阈值{ADVANCE_THRESHOLD:.1f}ms")
-                
-                # 移除并记录
                 heapq.heappop(replay_heap)
-                skipped_replay_indices.add((rep_idx, rep_note.key_on_ms, rep_split_seq, rep_note.is_split))
+                skipped_replay_uuids.add(rep_note.uuid)
                 continue
-            
+
             # 检查条件2：锤速异常检测（录制无锤速但播放有锤速 = 多锤）
             if self._is_multi_hammer_by_velocity(rec_note, rep_note):
                 # 录制数据无锤速，播放数据有锤速，判定为多锤
-                if rep_note.is_split:
-                    parent_idx = rep_note.split_parent_idx if rep_note.split_parent_idx is not None else rep_idx
-                    split_seq = rep_note.split_seq if rep_note.split_seq is not None else 0
-                    logger.debug(f"      ⚠️ [防线1] 跳过多锤（锤速异常） 播放[{parent_idx}:拆分{split_seq}] "
-                               f"keyon={rep_keyon:.1f}ms（录制无锤速，播放有锤速）")
-                else:
-                    logger.debug(f"      ⚠️ [防线1] 跳过多锤（锤速异常） 播放[{rep_idx}] "
-                               f"keyon={rep_keyon:.1f}ms（录制无锤速，播放有锤速）")
-                
-                # 移除并记录
                 heapq.heappop(replay_heap)
-                skipped_replay_indices.add((rep_idx, rep_note.key_on_ms, rep_split_seq, rep_note.is_split))
+                skipped_replay_uuids.add(rep_note.uuid)
                 continue
             
             # 两个条件都不满足，跳出循环
@@ -636,7 +450,7 @@ class NoteMatcher:
         
         # 【第二道防线】Lookahead窗口评分，选择最佳候选
         best_candidate = self._select_best_candidate_with_lookahead(
-            replay_heap, rec_keyon, skipped_replay_indices
+            replay_heap, rec_keyon, skipped_replay_uuids
         )
         
         if best_candidate is None:
@@ -646,64 +460,52 @@ class NoteMatcher:
         return best_candidate
     
     def _select_best_candidate_with_lookahead(self, replay_heap: List, rec_keyon: float,
-                                               skipped_replay_indices: set) -> Optional[Tuple]:
+                                               skipped_replay_uuids: set) -> Optional[Tuple[Note, float]]:
         """
         使用Lookahead窗口评分并选择最佳候选
         
         Args:
-            replay_heap: 播放堆
+            replay_heap: 播放堆 (key_on_ms, note, split_seq)
             rec_keyon: 录制keyon时间（ms）
-            skipped_replay_indices: 跳过的播放索引集合（输出）
+            skipped_replay_uuids: 跳过的播放音符UUID集合（输出）
             
         Returns:
-            Optional[Tuple]: (rep_keyon, rep_idx, rep_note, rep_split_seq, error_ms) 或 None
+            Optional[Tuple[Note, float]]: (rep_note, error_ms) 或 None
         """
         # 1. Peek前N个候选
         window_size = min(LOOKAHEAD_WINDOW_SIZE, len(replay_heap))
         candidates = []
         
         for i in range(window_size):
-            rep_keyon, rep_idx, rep_note, rep_split_seq = replay_heap[i]
+            rep_keyon, rep_note, rep_split_seq = replay_heap[i]
             candidates.append({
                 'heap_index': i,
                 'keyon': rep_keyon,
-                'idx': rep_idx,
-                'note': rep_note,
-                'split_seq': rep_split_seq
+                'note': rep_note
             })
         
-        
+        # 2. 对候选进行评分
         scored_candidates = []
         for candidate in candidates:
             score_result = self._calculate_candidate_score(candidate, rec_keyon)
             scored_candidates.append(score_result)
-            
-            # 详细日志
-            c = score_result['candidate']
-            idx_str = self._format_note_index(c['idx'], c['note'], c['split_seq'])
         
         # 3. 选择得分最低的
         scored_candidates.sort(key=lambda x: x['score'])
         best = scored_candidates[0]
         best_index = best['candidate']['heap_index']
         
-        # 日志：选择结果
-        best_c = best['candidate']
-        best_idx_str = self._format_note_index(best_c['idx'], best_c['note'], best_c['split_seq'])
-        
         # 4. 跳过前面的次优候选
         if best_index > 0:
             for i in range(best_index):
-                rep_keyon, rep_idx, rep_note, rep_split_seq = heapq.heappop(replay_heap)
-                skipped_replay_indices.add((rep_idx, rep_keyon, rep_split_seq, rep_note.is_split))
-                
-                idx_str = self._format_note_index(rep_idx, rep_note, rep_split_seq)
+                _, rep_note, _ = heapq.heappop(replay_heap)
+                skipped_replay_uuids.add(rep_note.uuid)
 
         # 5. 返回最佳候选（现在在堆顶）
-        rep_keyon, rep_idx, rep_note, rep_split_seq = replay_heap[0]
+        _, rep_note, _ = replay_heap[0]
         keyon_error_ms = best['error']
-        
-        return (rep_keyon, rep_idx, rep_note, rep_split_seq, keyon_error_ms)
+
+        return (rep_note, keyon_error_ms)
     
     def _is_multi_hammer_by_velocity(self, rec_note: Note, rep_note: Note) -> bool:
         """
@@ -760,29 +562,14 @@ class NoteMatcher:
             'bias': bias,
             'penalty': penalty
         }
+
     
-    def _format_note_index(self, idx: int, note: Note, split_seq: Optional[int]) -> str:
-        """
-        格式化音符索引显示
-        
-        Args:
-            idx: 音符索引
-            note: Note对象
-            split_seq: 拆分序号
-            
-        Returns:
-            str: 格式化的索引字符串
-        """
-        if note.is_split and split_seq is not None:
-            parent_idx = note.split_parent_idx if note.split_parent_idx is not None else idx
-            return f"[{parent_idx}:拆分{split_seq}]"
-        else:
-            return f"[{idx}]"
-    
-    def _check_error_threshold(self, keyon_error_ms: float, rec_idx: int, 
-                                rep_idx: int, rep_split_seq: Optional[int]) -> bool:
+    def _check_error_threshold(self, keyon_error_ms: float) -> bool:
         """
         检查误差是否在阈值内（≤200ms）
+        
+        Args:
+            keyon_error_ms: keyon误差（毫秒）
         
         Returns:
             bool: True=在阈值内, False=超出阈值
@@ -790,83 +577,43 @@ class NoteMatcher:
         keyon_error_units = keyon_error_ms * 10.0
         
         if keyon_error_units > SEVERE_THRESHOLD:
-            self._create_failed_match(
-                rec_idx, keyon_error_ms,
-                f"所有候选误差超过阈值（{keyon_error_ms:.1f}ms > {SEVERE_THRESHOLD/10:.1f}ms）"
-            )
             return False
         
         return True
     
-    def _process_skipped_replays(self, key_id: int, skipped_replay_indices: set,
-                                  replay_notes: List[Tuple[int, Note]]) -> int:
-        """
-        处理跳过的播放数据，标记为多锤
-        
-        Args:
-            key_id: 按键ID
-            skipped_replay_indices: 跳过的播放数据集合 {(idx, keyon_ms, split_seq, is_split), ...}
-            replay_notes: 原始播放音符列表（用于统计）
-            
-        Returns:
-            int: 多锤数量
-        """
-        if not skipped_replay_indices:
-            return 0
-        
-        # 统计多锤
-        for rep_idx, keyon_ms, rep_split_seq, is_split in skipped_replay_indices:
-            # 日志
-            if is_split and rep_split_seq is not None:
-                logger.info(f"  🔨 确认多锤: 按键{key_id} 播放[{rep_idx}:拆分{rep_split_seq}] "
-                           f"keyon={keyon_ms:.1f}ms（提前过多，无对应录制数据）")
-            else:
-                logger.info(f"  🔨 确认多锤: 按键{key_id} 播放[{rep_idx}] "
-                           f"keyon={keyon_ms:.1f}ms（提前过多，无对应录制数据）")
-        
-        return len(skipped_replay_indices)
+
     
-    def _create_failed_match(self, rec_idx: int, error_ms: Optional[float], reason: str):
-        """创建失败匹配结果"""
-        match_result = MatchResult(
-            match_type=MatchType.FAILED,
-            record_index=rec_idx,
-            replay_index=None,
-            error_ms=error_ms,
-            pair=None,
-            reason=reason
-        )
-        self.match_results.append(match_result)
-        self.match_statistics.add_result(match_result)
-    
-    def _create_successful_match(self, rec_idx: int, rec_note: Note, rec_split_seq: Optional[int],
-                                  rep_idx: int, rep_note: Note, rep_split_seq: Optional[int],
+    def _create_successful_match(self, rec_note: Note, rep_note: Note,
                                   keyon_error_ms: float, matched_pairs: List,
-                                  used_replay_indices: set, record_heap: List, replay_heap: List) -> Tuple[bool, str]:
+                                  used_replay_uuids: set, record_heap: List, replay_heap: List) -> Tuple[bool, str]:
         """
         创建成功匹配（支持拆分）
+        
+        Args:
+            rec_note: 录制Note对象（包含split_seq属性）
+            rep_note: 播放Note对象（包含split_seq属性）
+            keyon_error_ms: keyon误差（毫秒）
+            matched_pairs: 匹配对列表
+            used_replay_uuids: 已使用的播放UUID集合
+            record_heap: 录制堆
+            replay_heap: 播放堆
         
         Returns:
             Tuple[bool, str]: (是否成功, 拆分类型: 'none'/'record'/'replay')
         """
-        # 评判质量
-        match_type = self._evaluate_match_quality(keyon_error_ms)
-        
-        # 检查持续时间差异并尝试拆分
-        rec_duration = rec_note.duration_ms if rec_note.duration_ms else 0
-        rep_duration = rep_note.duration_ms if rep_note.duration_ms else 0
+        # 步骤1: 先检查持续时间差异并尝试拆分
+        rec_duration = rec_note.duration_ms 
+        rep_duration = rep_note.duration_ms
         
         if rec_duration > 0 and rep_duration > 0:
             duration_ratio = max(rec_duration, rep_duration) / min(rec_duration, rep_duration)
             
             should_split = False
-            trigger_reason = ""
             force_record = False
             
             # 主要条件：持续时间差异显著（>= 2.0倍）
             if duration_ratio >= 2.0:
                 should_split = True
-                trigger_reason = "主要条件"
 
             # 次要条件：持续时间相差不大，但短数据keyoff之后还有hammer和after_touch
             elif rec_duration != rep_duration:  # 确保有长短之分
@@ -875,76 +622,85 @@ class NoteMatcher:
                 
                 if self._check_hammer_after_shorter_keyoff(long_note, short_note):
                     should_split = True
-                    trigger_reason = "次要条件"
                     force_record = True  # 次要条件触发时需要强制记录
 
             # 如果满足任一条件，进行拆分
             if should_split:
                 # 重要：在拆分之前先记录原始数据到持续时间差异列表
                 # 这样可以在UI中看到拆分前的原始曲线
-                self._check_duration_difference(rec_note, rep_note, rec_idx, rep_idx, force_record=force_record)
+                self._check_duration_difference(rec_note, rep_note, force_record=force_record)
 
                 # 尝试拆分并立即匹配第一部分
                 split_result = self._try_split_and_match_first(
-                    rec_idx, rec_note, rec_split_seq,
-                    rep_idx, rep_note, rep_split_seq,
-                    record_heap, replay_heap, used_replay_indices,
+                    rec_note,
+                    rep_note,
+                    record_heap, replay_heap, used_replay_uuids,
                     rec_duration, rep_duration
                 )
                 
                 if split_result is not None:
-                    # 拆分成功，返回用于匹配的Note（第一部分）
+                    # 拆分成功，更新为拆分后的Note对象（第一部分）
                     split_type, match_rec_note, match_rep_note = split_result
-                    
-                    # 更新rec_note和rep_note为拆分后的第一部分
                     rec_note = match_rec_note
                     rep_note = match_rep_note
-                    # 继续下面的匹配逻辑
                 else:
                     logger.warning(f"      ⚠️ 拆分失败，按原匹配处理")
         
-        # 创建匹配对（使用父索引）
-        final_rec_idx = rec_note.split_parent_idx if rec_note.is_split else rec_idx
-        final_rep_idx = rep_note.split_parent_idx if rep_note.is_split else rep_idx
-        matched_pairs.append((final_rec_idx, final_rep_idx, rec_note, rep_note))
+        # 步骤2: 用最终的Note对象（拆分后的或原始的）计算误差和评级
+        final_keyon_error_ms = abs(rep_note.key_on_ms - rec_note.key_on_ms)
+        match_type = self._evaluate_match_quality(final_keyon_error_ms)
         
-        # 创建匹配结果（使用父索引）
-        match_result = MatchResult(
-            match_type=match_type,
-            record_index=final_rec_idx,
-            replay_index=final_rep_idx,
-            error_ms=keyon_error_ms,
-            pair=(rec_note, rep_note),
-            reason=""
-        )
-        self.match_results.append(match_result)
-        self.match_statistics.add_result(match_result)
-        
-        # 记录到对应的分类列表（用于统计数据计算）
-        matched_tuple = (final_rec_idx, final_rep_idx, rec_note, rep_note)
-        if match_type in [MatchType.EXCELLENT, MatchType.GOOD, MatchType.FAIR]:
-            self.precision_matched_pairs.append(matched_tuple)
-        elif match_type == MatchType.POOR:
-            self.approximate_matched_pairs.append(matched_tuple)
-        elif match_type == MatchType.SEVERE:
-            self.severe_matched_pairs.append(matched_tuple)
+        # 步骤3: 根据hammer数据分类匹配对
+        rec_hammer = rec_note.get_first_hammer_velocity() or 0
+        rep_hammer = rep_note.get_first_hammer_velocity() or 0
+
+        # 分类逻辑（按优先级）
+        if rec_hammer <= 0 and rep_hammer <= 0:
+            # 情况1：双方都无hammer → 异常匹配对
+            self.abnormal_matches.append((rec_note, rep_note))
+        elif rec_hammer > 0 and rep_hammer <= 0:
+            # 情况2：录制有hammer，播放无hammer → 丢锤
+            self.drop_hammers.append(rec_note)
+        elif rep_hammer > 0 and rec_hammer <= 0:
+            # 情况3：播放有hammer，录制无hammer → 多锤
+            self.multi_hammers.append(rep_note)
+        else:
+            # 情况4：双方都有hammer → 精确匹配对
+            # 保存匹配对，包含评级信息和误差
+            self.matched_pairs.append((rec_note, rep_note, match_type, final_keyon_error_ms))
+
+            # 根据误差等级统计
+            if match_type == MatchType.EXCELLENT:
+                self.match_statistics.excellent_matches += 1
+            elif match_type == MatchType.GOOD:
+                self.match_statistics.good_matches += 1
+            elif match_type == MatchType.FAIR:
+                self.match_statistics.fair_matches += 1
+            elif match_type == MatchType.POOR:
+                self.match_statistics.poor_matches += 1
+            elif match_type == MatchType.SEVERE:
+                self.match_statistics.severe_matches += 1
         
         # 标记为已使用
-        used_replay_indices.add(rep_idx)
-        
-        # 日志
-        rec_display = f"[{rec_note.split_parent_idx}:拆分{rec_note.split_seq}]" if rec_note.is_split else f"[{rec_idx}]"
-        rep_display = f"[{rep_note.split_parent_idx}:拆分{rep_note.split_seq}]" if rep_note.is_split else f"[{rep_idx}]"
-        # logger.debug(f"      ✓ 匹配成功: 录制{rec_display} ↔ 播放{rep_display} ({match_type.value}, {keyon_error_ms:.1f}ms)")
+        used_replay_uuids.add(rep_note.uuid)
         
         return (True, 'none')  # 成功创建，无拆分
     
-    def _try_split_and_match_first(self, rec_idx: int, rec_note: Note, rec_split_seq: Optional[int],
-                                     rep_idx: int, rep_note: Note, rep_split_seq: Optional[int],
-                                     record_heap: List, replay_heap: List, used_replay_indices: set,
+    def _try_split_and_match_first(self, rec_note: Note,
+                                     rep_note: Note,
+                                     record_heap: List, replay_heap: List, used_replay_uuids: set,
                                      rec_duration: float, rep_duration: float) -> Optional[Tuple[str, Note, Note]]:
         """
         尝试拆分并返回第一部分用于立即匹配
+        
+        Args:
+            rec_note: 录制音符
+            rep_note: 播放音符
+            record_heap: 录制堆
+            replay_heap: 播放堆
+            used_replay_notes: 已使用的播放音符集合
+            rec_duration: 录制持续时间
+            rep_duration: 播放持续时间
         
         Returns:
             Optional[Tuple[str, Note, Note]]: (拆分类型, 匹配用的rec_note, 匹配用的rep_note) 或 None
@@ -956,46 +712,40 @@ class NoteMatcher:
             # 录制数据更长 → 拆分录制数据
             logger.debug(f"        拆分录制数据（录制{rec_duration:.1f}ms > 播放{rep_duration:.1f}ms）")
             result = self._split_record_note_and_return_first(
-                rec_idx, rec_note, rep_note, record_heap,
+                rec_note, rep_note, record_heap,
                 rec_duration, rep_duration
             )
             if result:
                 rec_note_a, rec_note_b = result
-                self._record_split_count += 1  # 统计录制数据拆分次数
                 # rec_note_a用于匹配，rec_note_b已加入堆
                 return ('record', rec_note_a, rep_note)
             return None
         else:
             # 播放数据更长 → 拆分播放数据
-            # logger.debug(f"        拆分播放数据（播放{rep_duration:.1f}ms > 录制{rec_duration:.1f}ms）")
             result = self._split_replay_note_and_return_first(
-                rep_idx, rep_note, rec_note, replay_heap, used_replay_indices,
+                rep_note, rec_note, replay_heap, used_replay_uuids,
                 rec_duration, rep_duration
             )
             if result:
                 rep_note_a, rep_note_b = result
-                self._replay_split_count += 1  # 统计播放数据拆分次数
                 # rep_note_a用于匹配，rep_note_b已加入堆
                 return ('replay', rec_note, rep_note_a)
             return None
     
-    def _split_note_and_return_first(self, long_note: Note, long_idx: int, short_note: Note,
+    def _split_note_and_return_first(self, long_note: Note, short_note: Note,
                                      target_heap: List,
                                      rec_duration: float, rep_duration: float,
-                                     data_type: str, used_indices: Optional[set] = None) -> Optional[Tuple[Note, Note]]:
+                                     data_type: str) -> Optional[Tuple[Note, Note]]:
         """
         拆分Note并返回两个Note对象（通用方法）
         
         Args:
             long_note: 长数据（要拆分的）
-            long_idx: 长数据的索引
             short_note: 短数据
             target_heap: 目标堆（将note_b加入）
-            split_counter: 拆分计数器
             rec_duration: 录制数据持续时间
             rep_duration: 播放数据持续时间
             data_type: 数据类型标识（"录制"或"播放"），用于日志
-            used_indices: 可选的已使用索引集合
         
         Returns:
             Optional[Tuple[Note, Note]]: (note_a用于匹配, note_b已加入堆) 或 None
@@ -1004,7 +754,7 @@ class NoteMatcher:
         hammer_times_ms = []
         for i in range(len(long_note.hammers)):
             if long_note.hammers.values[i] > 0:
-                time_ms = (long_note.hammers.index[i] + long_note.offset) / 10.0
+                time_ms = long_note.hammers.values[i]
                 hammer_times_ms.append(time_ms)
         
         hammer_times_ms.sort()
@@ -1029,58 +779,48 @@ class NoteMatcher:
         # 执行拆分
         note_a, note_b = self._split_note_at_time(
             long_note, split_time_ms,
-            parent_idx=long_idx,
             split_seq_a=0,  # 第一部分
             split_seq_b=1   # 第二部分
         )
         
-        # 生成拆分数据的唯一索引（使用大偏移量避免与原始索引冲突）
-        split_idx_b = self._split_index_offset + self._split_counter * 2 + 1
-        self._split_counter += 1
+        # 将note_b加入堆（note_a用于立即匹配）
+        heapq.heappush(target_heap, (note_b.key_on_ms, note_b, note_b.split_seq if note_b.split_seq is not None else 0))
         
-        # 设置拆分元数据（实际上_split_note_at_time已经设置了，这里是冗余的）
-        note_a.split_parent_idx = long_idx
-        note_a.split_seq = 0
-        note_a.is_split = True
+        # ⚠️ 重要：不要将 note_b 标记为 used_uuids！
+        # note_b 是拆分后的第二部分，需要在后续循环中重新匹配
+        # 如果标记为 used，它会在 _clean_used_replay_notes 中被删除
         
-        note_b.split_parent_idx = long_idx
-        note_b.split_seq = 1
-        note_b.is_split = True
+        logger.debug(f"        ✓ 拆分成功，note_b (UUID={note_b.uuid[:8]}...) 已加入堆，等待重新匹配")
         
-        # 标记原数据为已使用（如果提供了used_indices）
-        if used_indices is not None:
-            used_indices.add(long_idx)
-        
-        # 只将note_b（第二部分）加入堆，note_a用于立即匹配
-        if note_b.key_on_ms is not None:
-            heapq.heappush(target_heap, (note_b.key_on_ms, split_idx_b, note_b, 1))
-            logger.debug(f"        ↺ {data_type}数据拆分: note_a立即匹配, note_b({note_b.key_on_ms:.1f}ms)加入堆")
-        else:
-            logger.warning(f"        ⚠️ 拆分后的{data_type}数据B没有key_on_ms，跳过")
-        
-        # 返回两个Note对象
         return (note_a, note_b)
     
-    def _split_replay_note_and_return_first(self, rep_idx: int, rep_note: Note, rec_note: Note,
-                                              replay_heap: List, used_replay_indices: set,
+    def _split_replay_note_and_return_first(self, rep_note: Note, rec_note: Note,
+                                              replay_heap: List, used_replay_uuids: set,
                                               rec_duration: float, rep_duration: float) -> Optional[Tuple[Note, Note]]:
-        """拆分播放数据（简化wrapper）"""
+        """拆分播放数据（简化wrapper）
+        
+        注意：used_replay_uuids 参数保留是为了兼容调用接口，但不会在拆分时使用。
+        拆分后的 note_b 会被加入堆，在后续循环中重新匹配时才会被标记为 used。
+        """
         return self._split_note_and_return_first(
-            long_note=rep_note, long_idx=rep_idx, short_note=rec_note,
+            long_note=rep_note, short_note=rec_note,
             target_heap=replay_heap,
             rec_duration=rec_duration, rep_duration=rep_duration,
-            data_type="播放", used_indices=used_replay_indices
+            data_type="播放"
         )
     
-    def _split_record_note_and_return_first(self, rec_idx: int, rec_note: Note, rep_note: Note,
+    def _split_record_note_and_return_first(self, rec_note: Note, rep_note: Note,
                                               record_heap: List,
                                               rec_duration: float, rep_duration: float) -> Optional[Tuple[Note, Note]]:
-        """拆分录制数据（简化wrapper）"""
+        """拆分录制数据（简化wrapper）
+        
+        拆分后的 note_b 会被加入录制堆，在后续循环中重新匹配。
+        """
         return self._split_note_and_return_first(
-            long_note=rec_note, long_idx=rec_idx, short_note=rep_note,
+            long_note=rec_note, short_note=rep_note,
             target_heap=record_heap,
             rec_duration=rec_duration, rep_duration=rep_duration,
-            data_type="录制", used_indices=None
+            data_type="录制"
         )
     
     def _find_best_split_point(self, long_note: Note, short_note: Note, 
@@ -1109,16 +849,16 @@ class NoteMatcher:
             # 创建KeySplitter实例
             splitter = KeySplitter()
             
-            # # 调试信息：输出要拆分的数据
-            # logger.debug(f"        🔍 拆分点查找参数:")
-            # logger.debug(f"          短数据: keyon={short_note.key_on_ms:.1f}ms, keyoff={short_note.key_off_ms:.1f}ms")
-            # logger.debug(f"          长数据: keyon={long_note.key_on_ms:.1f}ms, keyoff={long_note.key_off_ms:.1f}ms")
+            # 调试信息：输出要拆分的数据
+            logger.debug(f"        🔍 拆分点查找参数:")
+            logger.debug(f"          短数据: keyon={short_note.key_on_ms:.1f}ms, keyoff={short_note.key_off_ms:.1f}ms")
+            logger.debug(f"          长数据: keyon={long_note.key_on_ms:.1f}ms, keyoff={long_note.key_off_ms:.1f}ms")
             
             # 提取长数据的hammers（检查是否足够）
             long_hammers = []
             for i in range(len(long_note.hammers)):
                 if long_note.hammers.values[i] > 0:
-                    time_ms = (long_note.hammers.index[i] + long_note.offset) / 10.0
+                    time_ms = long_note.hammers.values[i]
                     long_hammers.append(time_ms)
             long_hammers.sort()
             logger.debug(f"          长数据hammers(>0): {[f'{h:.1f}ms' for h in long_hammers]}")
@@ -1157,27 +897,24 @@ class NoteMatcher:
             return None
     
     def _split_note_at_time(self, note: Note, split_time_ms: float, 
-                           parent_idx: int, split_seq_a: int, split_seq_b: int) -> Tuple[Note, Note]:
+                           split_seq_a: int, split_seq_b: int) -> Tuple[Note, Note]:
         """
         在指定时间点拆分Note
         
         Args:
             note: 要拆分的Note对象
             split_time_ms: 拆分点的绝对时间（ms）
-            parent_idx: 父索引（原始数据的索引）
             split_seq_a: 前半段的拆分序号
             split_seq_b: 后半段的拆分序号
         
         Returns:
             Tuple[Note, Note]: (前半段, 后半段)
         """
-        import pandas as pd
-        from dataclasses import replace
-        
+
         # 将split_time_ms（绝对时间）转换为相对于offset的索引（0.1ms单位）
         # split_time_ms是绝对时间，after_touch.index是相对于offset的索引
         # 所以：relative_index = absolute_time * 10 - offset
-        split_time_units = int(split_time_ms * 10) - note.offset
+        split_time_units = split_time_ms * 10 - note.offset
         
         # logger.debug(f"        拆分参数: split_time={split_time_ms:.1f}ms (绝对时间), "
         #             f"offset={note.offset}, split_units={split_time_units} (相对索引)")
@@ -1233,28 +970,43 @@ class NoteMatcher:
                     logger.debug(f"        ℹ️ 在拆分点{split_time_units}插入hammer，确保key_on=拆分点")
         
         # 创建新的Note对象（设置split元数据）
+        # note_a（第一个note）保持原有UUID，note_b（第二个note）分配新UUID
+        # 
+        # UUID分配策略：
+        # - note_a: 保持原UUID（如果原note已经是拆分的，保持其原UUID）
+        # - note_b: 基于原UUID + 拆分序号生成新UUID
+        #   如果原note的UUID已经包含"_split_"，需要追加新的序号
+        
+        # 生成note_b的UUID
+        if "_split_" in note.uuid:
+            # 已经是拆分后的Note，追加新的拆分序号
+            note_b_uuid = f"{note.uuid}_{split_seq_b}"
+        else:
+            # 第一次拆分，使用标准格式
+            note_b_uuid = f"{note.uuid}_split_{split_seq_b}"
+        
         note_a = Note(
             offset=note.offset,
             id=note.id,
             finger=note.finger,
             hammers=hammers_a,
-            uuid=f"{note.uuid}_split_{split_seq_a}",
+            uuid=note.uuid,  # 第一个note保持原有UUID
             velocity=note.velocity,
             after_touch=after_touch_a,
-            split_parent_idx=parent_idx,
+            split_parent_idx=None,  # 不再需要索引
             split_seq=split_seq_a,
             is_split=True
         )
-        
+
         note_b = Note(
             offset=note.offset,  # offset保持不变
             id=note.id,
             finger=note.finger,
             hammers=hammers_b,
-            uuid=f"{note.uuid}_split_{split_seq_b}",
+            uuid=note_b_uuid,  # 使用生成的UUID，避免冲突
             velocity=note.velocity,
             after_touch=after_touch_b,
-            split_parent_idx=parent_idx,
+            split_parent_idx=None,  # 不再需要索引
             split_seq=split_seq_b,
             is_split=True
         )
@@ -1277,12 +1029,12 @@ class NoteMatcher:
         Returns:
             bool: 如果在短数据keyoff之后还有hammer（velocity>0）且after_touch不为空，返回True
         """
-        # 获取短数据的keyoff（绝对时间，0.1ms单位）
+
         short_keyoff_ms = short_note.key_off_ms
         if short_keyoff_ms is None:
             return False
         
-        short_keyoff_units = int(short_keyoff_ms * 10)
+        short_keyoff_units = short_keyoff_ms * 10
         
         # 检查长数据在此时间之后是否还有hammer（velocity > 0）
         has_hammer_after = False
@@ -1310,20 +1062,18 @@ class NoteMatcher:
         
         return has_hammer_after and has_aftertouch_after
     
-    def _check_duration_difference(self, record_note: Note, replay_note: Note, record_idx: int, replay_idx: int, force_record: bool = False):
+    def _check_duration_difference(self, record_note: Note, replay_note: Note, force_record: bool = False):
         """
         检查匹配对的持续时间差异，如果差异显著则记录
 
         Args:
             record_note: 录制音符
             replay_note: 播放音符
-            record_idx: 录制音符原始索引
-            replay_idx: 播放音符原始索引
             force_record: 是否强制记录（即使不满足主要条件）
         """
         # 获取持续时间
-        record_duration = getattr(record_note, 'duration_ms', None)
-        replay_duration = getattr(replay_note, 'duration_ms', None)
+        record_duration = record_note.duration_ms
+        replay_duration = replay_note.duration_ms
 
         # 检查是否有有效的持续时间数据
         if record_duration is None or replay_duration is None or record_duration <= 0 or replay_duration <= 0:
@@ -1334,340 +1084,21 @@ class NoteMatcher:
 
         # 如果持续时间差异显著（大约2倍以上）或强制记录，记录下来
         if duration_ratio >= 2.0 or force_record:
-            # 获取keyon和keyoff时间
-            record_keyon = getattr(record_note, 'key_on_ms', None)
-            record_keyoff = getattr(record_note, 'key_off_ms', None)
-            replay_keyon = getattr(replay_note, 'key_on_ms', None)
-            replay_keyoff = getattr(replay_note, 'key_off_ms', None)
-            
             # 记录差异匹配对（包含keyon和keyoff）
             self.duration_diff_pairs.append((
-                record_idx,
-                replay_idx,
                 record_note,
                 replay_note,
-                record_duration,
-                replay_duration,
                 duration_ratio,
-                record_keyon,
-                record_keyoff,
-                replay_keyon,
-                replay_keyoff
             ))
 
             # 输出日志
-            # logger.info(f"🔍 发现持续时间差异显著的匹配对: 按键{record_note.id} "
-            #            f"录制[{record_keyon:.1f}-{record_keyoff:.1f}ms, {record_duration:.1f}ms], "
-            #            f"播放[{replay_keyon:.1f}-{replay_keyoff:.1f}ms, {replay_duration:.1f}ms], "
-            #            f"比例={duration_ratio:.2f}")
+            logger.debug(f"🔍 发现持续时间差异显著的匹配对: 按键{record_note.uuid} "
+                       f"录制[{record_note.key_on_ms:.2f}-{record_note.key_off_ms:.2f}ms, {record_note.duration_ms:.2f}ms], "
+                       f"播放[{replay_note.key_on_ms:.2f}-{replay_note.key_off_ms:.2f}ms, {replay_note.duration_ms:.2f}ms], "
+                        f"比例={duration_ratio:.2f}")
 
-    def _match_notes_for_single_key_group(self, key_id: int,
-                                        record_notes_with_indices: List[Tuple[int, Note]],
-                                        replay_notes_with_indices: List[Tuple[int, Note]]) -> Tuple[List[Tuple[int, int, Note, Note]], int]:
-        """
-        对单个按键组进行贪心匹配
 
-        匹配策略：
-        1. 精确匹配 (≤50ms)
-        2. 较差匹配 (50ms-100ms)
-        3. 严重误差匹配 (100ms-200ms) - 理论上应该匹配所有剩余按键
-
-        匹配完成后统一分析：
-        - 录制中未匹配的：丢锤
-        - 播放中未使用的：多锤
-
-        Args:
-            key_id: 按键ID
-            record_notes_with_indices: 该按键的录制音符列表 [(original_index, note), ...]
-            replay_notes_with_indices: 该按键的播放音符列表 [(original_index, note), ...]
-
-        Returns:
-            List[Tuple[int, int, Note, Note]]: 该按键的匹配对列表
-        """
-        key_matched_pairs = []
-
-        # 初始化状态跟踪 - 使用原始索引作为键，确保唯一性
-        record_match_status = {record_idx: False for record_idx, _ in record_notes_with_indices}  # False=未匹配
-        replay_match_status = {replay_idx: False for replay_idx, _ in replay_notes_with_indices}  # False=未使用
-
-        logger.debug(f"🎹 开始按键{key_id}贪心匹配: 录制{len(record_notes_with_indices)}个, 播放{len(replay_notes_with_indices)}个")
-
-        # 分等级贪心匹配策略
-        match_strategies = [
-            ("precision", "精确匹配", [MatchType.EXCELLENT, MatchType.GOOD, MatchType.FAIR]),
-            ("approximate", "较差匹配", [MatchType.POOR]),
-            ("severe", "严重误差匹配", [MatchType.SEVERE])
-        ]
-
-        # 获取待匹配的录制音符列表（未匹配的）
-        unmatched_record_notes = [(idx, note) for idx, note in record_notes_with_indices]
-
-        # 按等级顺序进行匹配
-        for strategy_name, strategy_desc, allowed_types in match_strategies:
-            if not unmatched_record_notes:
-                break
-
-            # 本轮成功匹配的录制音符（从列表中移除）
-            matched_in_this_round = []
-
-            # 遍历所有未匹配的录制音符，让它们都尝试当前等级的匹配
-            for record_orig_idx, record_note in unmatched_record_notes:
-                # 获取当前可用的播放音符及其原始索引（未被使用的）
-                available_replay_notes_with_indices = []
-                for replay_orig_idx, replay_note in replay_notes_with_indices:
-                    if not replay_match_status[replay_orig_idx]:  # 未被使用
-                        available_replay_notes_with_indices.append((replay_orig_idx, replay_note))
-
-                # 在该按键的可用播放音符中进行指定等级的匹配
-                match_result = self._perform_single_note_matching_in_strategy(
-                    record_note, record_orig_idx, available_replay_notes_with_indices,
-                    strategy_name, len(replay_notes_with_indices) > 0
-                )
-
-                # 只有成功的匹配才记录到全局统计中
-                # 失败的匹配会在所有策略尝试完后，由 _analyze_key_group_hammer_status 统一处理
-
-                # 处理匹配结果
-                if match_result.is_success and match_result.match_type in allowed_types:
-                    # 更新全局统计信息（只记录成功的匹配）
-                    self.match_statistics.add_result(match_result)
-                    self.match_results.append(match_result)
-                    # 从MatchResult中直接获取播放音符索引
-                    matched_replay_orig_idx = match_result.replay_index
-                    matched_replay_note = match_result.pair[1]
-
-                    key_matched_pairs.append((
-                        record_orig_idx,
-                        matched_replay_orig_idx,
-                        record_note,
-                        matched_replay_note
-                    ))
-
-                    # 检查持续时间差异
-                    self._check_duration_difference(record_note, matched_replay_note, record_orig_idx, matched_replay_orig_idx)
-
-                    # 更新匹配状态
-                    record_match_status[record_orig_idx] = True
-                    replay_match_status[matched_replay_orig_idx] = True
-
-                    # 记录按键配对详情日志
-                    logger.debug(f"🔗 按键配对: 录制按键{key_id}(索引{record_orig_idx}) ↔ 播放按键{key_id}(索引{matched_replay_orig_idx}), "
-                               f"误差={match_result.error_ms:.2f}ms, 类型={match_result.match_type.value}")
-
-                    # 记录到对应的分类列表
-                    if match_result.match_type in [MatchType.EXCELLENT, MatchType.GOOD, MatchType.FAIR]:
-                        self.precision_matched_pairs.append(key_matched_pairs[-1])
-                    elif match_result.match_type == MatchType.POOR:
-                        self.approximate_matched_pairs.append(key_matched_pairs[-1])
-                    elif match_result.match_type == MatchType.SEVERE:
-                        self.severe_matched_pairs.append(key_matched_pairs[-1])
-
-                    # 标记本轮成功匹配
-                    matched_in_this_round.append((record_orig_idx, record_note))
-                # else: 匹配失败，继续留在未匹配列表中，等待下一轮
-
-            # 从未匹配列表中移除本轮成功匹配的音符
-            for matched_record in matched_in_this_round:
-                unmatched_record_notes.remove(matched_record)
-
-            logger.debug(f"🏁 按键{key_id}{strategy_desc}轮完成: 本轮匹配{matched_in_this_round.__len__()}个, 剩余{len(unmatched_record_notes)}个")
-
-        # 第二阶段：统一分析丢锤和多锤
-        extra_hammers = self._analyze_key_group_hammer_status(key_id, record_match_status, replay_match_status)
-
-        return key_matched_pairs, extra_hammers
-
-    def _analyze_key_group_hammer_status(self, key_id: int,
-                                        record_match_status: Dict[int, bool],
-                                        replay_match_status: Dict[int, bool]) -> int:
-        """
-        分析按键组的锤子状态（丢锤和多锤）
-
-        Args:
-            key_id: 按键ID
-            record_match_status: 录制音符匹配状态 {record_orig_idx: is_matched}
-            replay_match_status: 播放音符使用状态 {replay_orig_idx: is_used}
-
-        Returns:
-            int: 多锤数量
-        """
-        # 分析丢锤：录制了但未匹配
-        dropped_hammers = [idx for idx, matched in record_match_status.items() if not matched]
-
-        # 分析多锤：播放了但未被使用
-        extra_hammers = [idx for idx, matched in replay_match_status.items() if not matched]
-
-        # 为丢锤创建失败记录
-        for record_idx in dropped_hammers:
-            match_result = MatchResult(
-                MatchType.FAILED,
-                record_idx,
-                reason=f"按键{key_id}录制音符未匹配(丢锤)"
-            )
-            self.match_results.append(match_result)
-            self.match_statistics.add_result(match_result)
-
-        # 返回多锤数量，用于更新按键统计
-        return len(extra_hammers)
-
-    def _perform_single_note_matching_in_strategy(self, record_note: Note, record_index: int,
-                                                     replay_notes_with_indices: List[Tuple[int, Note]],
-                                                     strategy_name: str,
-                                                     has_any_replay_notes: bool = True) -> MatchResult:
-        """
-        在按键组内部进行单个音符的指定策略匹配
-
-        Args:
-            record_note: 录制音符
-            record_index: 录制音符的原始索引
-            replay_notes_with_indices: 该按键的播放音符列表（已过滤未使用的）[(orig_idx, note), ...]
-            strategy_name: 匹配策略名称 ("precision", "approximate", "severe")
-            has_any_replay_notes: 是否有播放音符
-
-        Returns:
-            MatchResult: 匹配结果
-        """
-        note_info = self._extract_note_info(record_note, record_index)
-
-        # 只在指定的策略中进行匹配
-        replay_notes_only = [note for _, note in replay_notes_with_indices]
-        candidates, reason = self._find_candidates_in_key_group(
-            replay_notes_only, note_info["keyon"], note_info["keyoff"],
-            note_info["key_id"], search_mode=strategy_name
-        )
-
-        if candidates:
-            # 从候选列表中选择最佳的（第一个，因为已经按误差排序）
-            chosen = candidates[0]  # 贪心选择：选择误差最小的一个
-
-            # 构建匹配对
-            replay_note = chosen.note
-            pair = (record_note, replay_note)
-
-            # 根据实际误差确定匹配类型
-            actual_match_type = self._evaluate_match_quality(chosen.error_ms)
-
-            # 从过滤列表中找到对应的原始索引
-            replay_orig_idx = replay_notes_with_indices[chosen.index][0]
-
-            return self._create_match_result(
-                actual_match_type, record_index, replay_orig_idx, chosen,
-                record_note, replay_note
-            )
-
-        # 当前策略匹配失败
-        return self._create_match_result(
-            MatchType.FAILED, record_index, reason=f"{strategy_name}策略无符合候选"
-        )
-
-    def _perform_single_note_matching_within_key_group(self, record_note: Note, record_index: int,
-                                                     replay_notes_with_indices: List[Tuple[int, Note]],
-                                                     has_any_replay_notes: bool = True) -> MatchResult:
-        """
-        在按键组内部进行单个音符匹配
-
-        Args:
-            record_note: 录制音符
-            record_index: 录制音符的原始索引
-            replay_notes_with_indices: 该按键的播放音符列表（已过滤未使用的）[(orig_idx, note), ...]
-
-        Returns:
-            MatchResult: 匹配结果
-        """
-        note_info = self._extract_note_info(record_note, record_index)
-
-        # 定义匹配策略：分层搜索，确保找到最佳匹配
-        match_strategies = [
-            ("precision", self.precision_matched_pairs),     # 第一优先级: 精确搜索 (≤50ms)
-            ("approximate", self.approximate_matched_pairs), # 第二优先级: 较差搜索 (50ms-100ms)
-            ("severe", self.severe_matched_pairs),          # 第三优先级: 严重误差搜索 (100ms-200ms)
-        ]
-
-        # 按顺序尝试每种匹配策略
-        for search_mode, record_list in match_strategies:
-            # 只传入音符列表给 _find_candidates_in_key_group
-            replay_notes_only = [note for _, note in replay_notes_with_indices]
-            candidates, reason = self._find_candidates_in_key_group(
-                replay_notes_only, note_info["keyon"], note_info["keyoff"],
-                note_info["key_id"], search_mode=search_mode
-            )
-
-            if candidates:
-                # 从候选列表中选择最佳的（第一个，因为已经按误差排序）
-                chosen = candidates[0]  # 贪心选择：选择误差最小的一个
-
-                # 构建匹配对
-                replay_note = chosen.note
-                pair = (record_note, replay_note)
-
-                # 根据实际误差确定匹配类型
-                actual_match_type = self._evaluate_match_quality(chosen.error_ms)
-
-                # 从过滤列表中找到对应的原始索引
-                replay_orig_idx = replay_notes_with_indices[chosen.index][0]
-
-                return self._create_match_result(
-                    actual_match_type, record_index, replay_orig_idx, chosen,
-                    record_note, replay_note
-                )
-
-        # 所有搜索都失败 - 由上级统一分析丢锤多锤
-        return self._create_match_result(
-            MatchType.FAILED, record_index, reason="无符合误差范围的候选"
-        )
-
-    def _find_candidates_in_key_group(self, replay_notes: List[Note], target_keyon: float, target_keyoff: float,
-                                    target_key_id: int, search_mode: str = "precision") -> Tuple[List[Candidate], str]:
-        """
-        在按键组内部寻找候选匹配
-
-        Args:
-            replay_notes: 该按键的播放音符列表
-            target_keyon: 目标按键开始时间
-            target_keyoff: 目标按键结束时间
-            target_key_id: 目标按键ID
-            search_mode: 搜索模式
-
-        Returns:
-            Tuple[List[Candidate], str]: (候选列表, 失败原因)
-        """
-        candidates = []
-
-        for idx, replay_note in enumerate(replay_notes):
-            # 验证按键ID匹配（虽然理论上应该都匹配）
-            if getattr(replay_note, 'id', None) != target_key_id:
-                continue
-
-            # 计算时间误差（只使用keyon_offset）
-            replay_keyon, _ = self._calculate_note_times(replay_note)
-            keyon_offset = replay_keyon - target_keyon
-            total_error = abs(keyon_offset)
-
-            candidates.append(Candidate(idx, total_error, replay_note))
-
-        # 按误差升序排序
-        candidates.sort(key=lambda x: x.total_error)
-
-        # 根据搜索模式应用阈值过滤
-        if search_mode == "precision":
-            filtered = [c for c in candidates if c.total_error <= FAIR_THRESHOLD]
-            if not filtered:
-                best_error = min(c.error_ms for c in candidates) if candidates else 0
-                return [], f"无精确候选(最佳误差:{best_error:.1f}ms, 阈值:{FAIR_THRESHOLD/10:.1f}ms)"
-        elif search_mode == "approximate":
-            filtered = [c for c in candidates if FAIR_THRESHOLD < c.total_error <= POOR_THRESHOLD]
-            if not filtered:
-                return [], f"无近似候选(阈值:{FAIR_THRESHOLD/10:.1f}-{POOR_THRESHOLD/10:.1f}ms)"
-        elif search_mode == "severe":
-            filtered = [c for c in candidates if c.total_error > POOR_THRESHOLD]
-            if not filtered:
-                return [], f"无严重误差候选(阈值:>{POOR_THRESHOLD/10:.1f}ms)"
-        else:
-            filtered = candidates
-
-        return filtered, ""
-
-    def _group_notes_by_key(self, notes: List[Note]) -> Dict[int, List[Tuple[int, Note]]]:
+    def _group_notes_by_key(self, notes: List[Note]) -> Dict[int, List[Note]]:
         """
         按按键ID分组音符数据
 
@@ -1675,103 +1106,12 @@ class NoteMatcher:
             notes: 音符列表
 
         Returns:
-            Dict[int, List[Tuple[int, Note]]]: key=按键ID, value=(原始索引, 音符)列表
+            Dict[int, List[Note]]: key=按键ID, value=音符对象列表
         """
         grouped = defaultdict(list)
-        for i, note in enumerate(notes):
-            grouped[note.id].append((i, note))
+        for note in notes:
+            grouped[note.id].append(note)
         return dict(grouped)
-
-    def _calculate_global_statistics(self):
-        """计算全局统计信息（兼容性方法）"""
-        # 这个方法主要用于保持向后兼容性
-        # 实际的统计信息已经在_match_notes_for_single_key中计算了
-        pass
-
-    def _calculate_key_statistics_from_matches(self, record_by_key: Dict[int, List[Tuple[int, Note]]],
-                                             replay_by_key: Dict[int, List[Tuple[int, Note]]]):
-        """基于匹配结果计算按键统计信息"""
-        logger.info("📊 开始计算按键统计信息...")
-
-        # 初始化所有按键的统计信息
-        for key_id in set(record_by_key.keys()) | set(replay_by_key.keys()):
-            key_stats = KeyMatchStatistics(key_id)
-            key_stats.total_record_notes = len(record_by_key.get(key_id, []))
-            key_stats.total_replay_notes = len(replay_by_key.get(key_id, []))
-            self.key_statistics[key_id] = key_stats
-
-        # 基于匹配结果更新统计信息
-        for match_result in self.match_results:
-            # 获取录制音符（从match_result.pair，支持拆分数据）
-            if match_result.pair is None:
-                # 失败匹配，从原始数据获取
-                # 检查是否是拆分索引（>= 1000000）或无效索引
-                if match_result.record_index >= 1000000 or \
-                   match_result.record_index < 0 or \
-                   match_result.record_index >= len(self._record_data):
-                    continue  # 拆分索引或无效索引，跳过
-                record_note = self._record_data[match_result.record_index]
-            else:
-                # 成功匹配，从pair获取（支持拆分）
-                record_note = match_result.pair[0]
-            
-            key_id = record_note.id
-
-            if key_id not in self.key_statistics:
-                continue
-
-            key_stats = self.key_statistics[key_id]
-
-            if match_result.is_success:
-                # 计算校准后偏移
-                record_keyon, _ = self._calculate_note_times(record_note)
-                replay_keyon, _ = self._calculate_note_times(match_result.pair[1])
-                raw_offset = replay_keyon - record_keyon
-                corrected_offset = raw_offset - self.global_time_offset
-                corrected_offset_ms = corrected_offset / 10.0
-
-                # 只统计误差≤50ms的匹配对用于条形图
-                if abs(corrected_offset_ms) <= 50.0:
-                    key_stats.add_match_result(match_result, corrected_offset_ms)
-            else:
-                # 记录失败匹配
-                key_stats.failed_count += 1
-
-        # 计算每个按键的统计值
-        for key_stats in self.key_statistics.values():
-            if key_stats.matched_count > 0:
-                key_stats.calculate_statistics()
-
-    def _log_key_matching_statistics(self):
-        """记录按键级别的匹配统计日志"""
-        logger.info("📊 按键匹配统计汇总:")
-
-        # 按按键ID排序输出
-        for key_id in sorted(self.key_statistics.keys()):
-            key_stats = self.key_statistics[key_id]
-            match_rate = (key_stats.matched_count / key_stats.total_record_notes * 100) if key_stats.total_record_notes > 0 else 0
-
-            if key_stats.matched_count > 0:
-                logger.info(f"🎹 按键{key_id}: 录制{key_stats.total_record_notes} → 匹配{key_stats.matched_count} → "
-                           f"失败{key_stats.failed_count} (匹配率: {match_rate:.1f}%, "
-                           f"均值: {key_stats.mean_offset:.2f}ms, 标准差: {key_stats.std_offset:.2f}ms)")
-            else:
-                logger.info(f"🎹 按键{key_id}: 录制{key_stats.total_record_notes} → 匹配{key_stats.matched_count} → "
-                           f"失败{key_stats.failed_count} (匹配率: {match_rate:.1f}%)")
-
-        # 总体统计
-        total_keys = len(self.key_statistics)
-        keys_with_matches = sum(1 for stats in self.key_statistics.values() if stats.matched_count > 0)
-        total_record_notes = sum(stats.total_record_notes for stats in self.key_statistics.values())
-        total_matched = sum(stats.matched_count for stats in self.key_statistics.values())
-        total_failed = sum(stats.failed_count for stats in self.key_statistics.values())
-
-        overall_match_rate = (total_matched / total_record_notes * 100) if total_record_notes > 0 else 0
-
-        logger.info(f"📈 总体统计: {total_keys}个按键, {keys_with_matches}个按键有匹配, "
-                   f"总录制音符: {total_record_notes}, 成功匹配: {total_matched}, 失败: {total_failed}, "
-                   f"整体匹配率: {overall_match_rate:.1f}%")
-
 
     def get_key_statistics_for_bar_chart(self) -> List[Dict[str, Union[int, float]]]:
         """
@@ -1812,77 +1152,6 @@ class NoteMatcher:
         logger.debug(f"📊 条形统计图数据: {len(result)}个按键有统计信息")
         return result
 
-    def _find_candidates(self, notes_list: List[Note], target_keyon: float, target_keyoff: float,
-                        target_key_id: int, time_offset: float = 0.0, search_mode: str = "precision") -> Tuple[List[Candidate], str]:
-        """
-        生成候选列表，支持不同的搜索模式。
-
-        参数单位：
-            - target_keyon/target_keyoff：0.1ms（绝对时间 = after_touch.index + offset）
-            - 误差：0.1ms（内部统一单位）
-
-        Args:
-            notes_list: 音符列表
-            target_keyon: 目标按键开始时间
-            target_keyoff: 目标按键结束时间
-            target_key_id: 目标按键ID
-            time_offset: 时间偏移
-            search_mode: 搜索模式 ("precision" 或 "approximate")
-
-        Returns:
-            (candidates, reason_if_empty)
-        """
-        # 1) 过滤同键ID的音符
-        matching_notes = []
-        for idx, note in enumerate(notes_list):
-            if getattr(note, 'id', None) == target_key_id:
-                matching_notes.append((idx, note))
-
-        if not matching_notes:
-            return [], f"没有找到键ID {target_key_id} 的音符"
-
-        # 2) 构建候选并计算误差
-        candidates: List[Candidate] = []
-        for idx, note in matching_notes:
-            # 计算按键开始时间（应用时间偏移）
-            try:
-                current_keyon = note.after_touch.index[0] + note.offset + time_offset
-            except (IndexError, AttributeError) as e:
-                raise ValueError(f"音符ID {note.id} 的after_touch数据无效: {e}") from e
-
-            # 只使用keyon_offset计算误差
-            keyon_offset = current_keyon - target_keyon
-            total_error = abs(keyon_offset)
-
-            candidates.append(Candidate(idx, total_error))
-
-        # 3) 根据搜索模式应用阈值过滤 - 分层搜索策略
-        if search_mode == "precision":
-            # 精确搜索：优先寻找高质量匹配 (≤ FAIR_THRESHOLD = 50ms)
-            # 这个阈值与评级中的fair阈值一致，确保不会影响评级分布
-            filtered = [c for c in candidates if c.total_error <= FAIR_THRESHOLD]
-            if not filtered:
-                # 没有精确候选，返回空列表和原因
-                best_error = min(c.error_ms for c in candidates) if candidates else 0
-                return [], f"无精确候选(最佳误差:{best_error:.1f}ms, 阈值:{FAIR_THRESHOLD/10:.1f}ms)"
-        elif search_mode == "approximate":
-            # 较差搜索：当精确搜索失败时，寻找可接受的匹配 (50ms-100ms)
-            # 避免与precision模式重叠，确保评级逻辑不受影响
-            filtered = [c for c in candidates if FAIR_THRESHOLD < c.total_error <= POOR_THRESHOLD]
-            if not filtered:
-                return [], f"无较差候选(阈值:{FAIR_THRESHOLD/10:.1f}-{POOR_THRESHOLD/10:.1f}ms)"
-        elif search_mode == "severe":
-            # 严重误差搜索：只接受误差很大的匹配 (100ms-200ms)
-            # 这些匹配会被评为SEVERE类型
-            filtered = [c for c in candidates if POOR_THRESHOLD < c.total_error <= SEVERE_THRESHOLD]
-            if not filtered:
-                return [], f"无严重误差候选(阈值:{POOR_THRESHOLD/10:.1f}-{SEVERE_THRESHOLD/10:.1f}ms)"
-        else:
-            filtered = candidates
-
-        # 按误差升序排序
-        filtered.sort(key=lambda x: x.total_error)
-        return filtered, ""
 
     def _evaluate_match_quality(self, error_ms: float) -> MatchType:
         """
@@ -1940,315 +1209,131 @@ class NoteMatcher:
             reason=reason
         )
 
-
-    def _initialize_matching_state(self) -> None:
-        """初始化匹配状态"""
-        self.failure_reasons.clear()
-        self._clear_mean_error_cache()
-        self._split_counter = 0  # 重置全局拆分计数器
-        self._record_split_count = 0  # 重置录制数据拆分计数器
-        self._replay_split_count = 0  # 重置播放数据拆分计数器
-
-    def _perform_single_note_matching(self, record_note: Note, record_index: int,
-                                     replay_data: List[Note], used_replay_indices: set) -> MatchResult:
+    
+    def get_matched_pairs(self) -> List[Tuple[Note, Note]]:
         """
-        执行单个音符的匹配过程
-
-        按优先级顺序尝试不同类型的匹配：
-        1. 精确匹配 (≤50ms)
-        2. 较差匹配 (50ms-100ms)
-        3. 严重误差匹配 (100ms-200ms)
-        4. 失败 (>200ms)
-
-        Args:
-            record_note: 录制音符
-            record_index: 录制音符索引
-            replay_data: 播放数据
-            used_replay_indices: 已使用的播放音符索引集合
+        获取精确匹配对列表（双方都有hammer）- 仅返回Note对
 
         Returns:
-            MatchResult: 匹配结果
+            List[Tuple[Note, Note]]: 精确匹配对列表
         """
-        note_info = self._extract_note_info(record_note, record_index)
-
-        # 定义匹配策略：分层搜索，确保找到最佳匹配
-        # 搜索策略与评级逻辑解耦，避免阈值影响评级分布
-        match_strategies = [
-            ("precision", self.precision_matched_pairs),     # 第一优先级: 精确搜索 (≤50ms)
-            ("approximate", self.approximate_matched_pairs), # 第二优先级: 较差搜索 (50ms-100ms)
-            ("severe", self.severe_matched_pairs),          # 第三优先级: 严重误差搜索 (100ms-200ms)
-        ]
-
-        # 按顺序尝试每种匹配策略
-        for search_mode, record_list in match_strategies:
-            candidates, reason = self._find_candidates(
-                replay_data, note_info["keyon"], note_info["keyoff"],
-                note_info["key_id"], time_offset=0, search_mode=search_mode
-            )
-
-            if candidates:
-                chosen = self._select_best_candidate_from_list(candidates, used_replay_indices)
-                if chosen:
-                    # 匹配成功
-                    replay_index = chosen.index
-                    replay_note = replay_data[replay_index]
-
-                    # 如果需要记录到特殊列表（如近似匹配或大误差匹配）
-                    if record_list is not None:
-                        match_pair = (record_index, replay_index, record_note, replay_note)
-                        record_list.append(match_pair)
-
-                    used_replay_indices.add(replay_index)
-
-                    # 根据实际误差确定匹配类型
-                    actual_match_type = self._evaluate_match_quality(chosen.error_ms)
-
-                    return self._create_match_result(
-                        actual_match_type, record_index, replay_index, chosen,
-                        record_note, replay_note
-                    )
-
-        # 所有搜索都失败
-        # 如果有候选但都被过滤掉了，说明误差都不在接受范围内
-        # 如果没有候选，说明按键没有可用的播放音符
-        if candidates:
-            # 有候选但都不满足任何搜索模式，说明误差范围不符合
-            failure_reason = reason if reason else f"按键{note_info['key_id']} 无符合误差范围的候选"
-        else:
-            # 没有候选，说明该按键没有可用的播放音符
-            failure_reason = f"按键{note_info['key_id']} 无可用播放音符"
-
-        return self._create_match_result(
-            MatchType.FAILED, record_index, reason=failure_reason
-        )
-
-    def _select_best_candidate_from_list(self, candidates: List[Candidate], used_indices: set) -> Optional[Candidate]:
+        return [(rec_note, rep_note) for rec_note, rep_note, _, _ in self.matched_pairs]
+    
+    def get_matched_pairs_with_grade(self) -> List[Tuple[Note, Note, MatchType, float]]:
         """
-        从候选列表中选择最佳的未使用候选
-
-        Args:
-            candidates: 候选列表（已按误差排序）
-            used_indices: 已使用的索引集合
+        获取精确匹配对列表（包含评级信息）
 
         Returns:
-            Optional[Candidate]: 最佳候选，如果没有则返回None
+            List[Tuple[Note, Note, MatchType, float]]:
+                (record_note, replay_note, match_type, keyon_error_ms)
         """
-        for candidate in candidates:
-            if candidate.index not in used_indices:
-                return candidate
+        return self.matched_pairs.copy()
+
+    def find_matched_pair_by_uuid(self, record_uuid: str, replay_uuid: str) -> Tuple[Note, Note, MatchType, float]:
+        """
+        通过UUID查找匹配对
+
+        Args:
+            record_uuid: 录制音符的UUID
+            replay_uuid: 播放音符的UUID
+
+        Returns:
+            Tuple[Note, Note, MatchType, float]: 匹配对信息，如果未找到返回None
+        """
+        for rec_note, rep_note, match_type, error_ms in self.matched_pairs:
+            if str(rec_note.uuid) == str(record_uuid) and str(rep_note.uuid) == str(replay_uuid):
+                return (rec_note, rep_note, match_type, error_ms)
         return None
 
+    def get_failed_matches_count(self) -> int:
+        """获取失败匹配数量"""
+        return self.match_statistics.failed_matches
 
+    def get_match_quality_counts(self) -> Dict[str, int]:
+        """获取各等级匹配质量统计"""
+        return {
+            'excellent': self.match_statistics.excellent_matches,
+            'good': self.match_statistics.good_matches,
+            'fair': self.match_statistics.fair_matches,
+            'poor': self.match_statistics.poor_matches,
+            'severe': self.match_statistics.severe_matches,
+            'failed': self.match_statistics.failed_matches
+        }
 
-    def _log_successful_match(self, match_pair: Tuple, expanded_candidates: bool) -> None:
+    def get_error_counts(self) -> Dict[str, int]:
+        """获取各种错误类型的统计"""
+        return {
+            'drop_hammers': len(self.drop_hammers),
+            'multi_hammers': len(self.multi_hammers),
+            'abnormal_matches': len(self.abnormal_matches)
+        }
+    
+    # ==================== 错误记录方法（原ErrorDetector职责） ====================
+    
+    def _analyze_unmatched_notes(self, record_data: List[Note], replay_data: List[Note]) -> None:
         """
-        记录成功的匹配
-
-        Args:
-            match_pair: 匹配对
-            expanded_candidates: 是否为扩展候选匹配
-        """
-        record_idx, replay_idx, record_note, replay_note = match_pair
-
-        status = "🔄 匹配成功（扩展候选）" if expanded_candidates else "✅ 匹配成功"
-
-        # 计算时间信息用于日志
-        record_keyon, record_keyoff = self._calculate_note_times(record_note)
-        replay_keyon, replay_keyoff = self._calculate_note_times(replay_note)
-
-        # logger.info(f"{status}: 键ID={record_note.id}, 录制索引={record_idx}, 回放索引={replay_idx}")
-
-    def _log_failed_match(self, record_index: int, record_note: Note, reason: str,
-                         candidates: List[Dict], replay_data: List[Note]) -> None:
-        """
-        记录失败的匹配
-
-        Args:
-            record_index: 录制音符索引
-            record_note: 录制音符
-            reason: 失败原因
-            candidates: 候选列表
-            replay_data: 播放数据
-        """
-        note_info = self._extract_note_info(record_note, record_index)
-
-        logger.info(f"❌ 匹配失败: 键ID={note_info['key_id']}, 录制索引={record_index}, "
-                   f"录制时间=({note_info['keyon']/10:.2f}ms, {note_info['keyoff']/10:.2f}ms), "
-                   f"原因: {reason}")
-
-        # 记录被占用的候选详细信息
-        for j, cand in enumerate(candidates[:3]):
-            cand_note = replay_data[cand['index']]
-            cand_keyon, cand_keyoff = self._calculate_note_times(cand_note)
-            logger.info(f"   候选{j+1}: 回放索引={cand['index']}, "
-                       f"回放时间=({cand_keyon/10:.2f}ms, {cand_keyoff/10:.2f}ms), "
-                       f"总误差={cand['total_error']/10:.2f}ms")
-
-    def _log_matching_statistics(self, record_data: List[Note], replay_data: List[Note],
-                                matched_pairs: List, used_replay_indices: set) -> None:
-        """
-        记录匹配统计信息
-
+        分析未匹配的音符，判断是否为丢锤/多锤
+        
+        使用UUID标识已匹配的音符，只有未匹配且有hammer（>0）的音符才判定为丢锤/多锤
+        
         Args:
             record_data: 录制数据
             replay_data: 播放数据
-            matched_pairs: 匹配对列表
-            used_replay_indices: 已使用的播放索引
         """
-        success_count = len(matched_pairs)
-        failure_count = len(record_data) - success_count
-
-        logger.info(f"📊 匹配完成: 成功{success_count}对, 失败{failure_count}对, "
-                   f"总计{len(record_data)}个录制音符, 使用{len(used_replay_indices)}/{len(replay_data)}个播放音符")
-
-    
-    def _extract_note_info(self, note: Note, index: int) -> Dict:
-        """
-        提取音符基本信息
+        # 1. 获取已匹配的UUID集合（包括：精确匹配、异常匹配、已判定为丢锤/多锤的音符）
+        matched_record_uuids = set()
+        matched_replay_uuids = set()
         
-        Args:
-            note: 音符对象
-            index: 音符索引
-            
-        Returns:
-            Dict: 音符信息字典，包含绝对时间戳
-        """
-        # 计算绝对时间戳（after_touch.index + offset）
-        # 这是音符在整个时间线上的实际发生时间
-        try:
-            absolute_keyon = note.after_touch.index[0] + note.offset
-            absolute_keyoff = note.after_touch.index[-1] + note.offset
-        except (IndexError, AttributeError) as e:
-            raise ValueError(f"音符ID {note.id} 的after_touch数据无效: {e}") from e
+        # 从精确匹配对中获取UUID
+        for rec_note, rep_note, _, _ in self.matched_pairs:
+            matched_record_uuids.add(rec_note.uuid)
+            matched_replay_uuids.add(rep_note.uuid)
         
-        return {
-            'keyon': absolute_keyon,      # 绝对时间戳：按键开始时间
-            'keyoff': absolute_keyoff,    # 绝对时间戳：按键结束时间
-            'key_id': note.id,            # 按键ID
-            'index': index                # 音符在列表中的索引
-        }
-    
-    def extract_normal_matched_pairs(self, matched_pairs: List[Tuple[int, int, Note, Note]], 
-                                   multi_hammers: List, drop_hammers: List) -> Tuple[List[Note], List[Note]]:
-        """
-        从匹配对中提取正常匹配的音符对
+        # 从已记录的异常匹配对、丢锤、多锤中获取UUID
+        for rec_note, rep_note in self.abnormal_matches:
+            matched_record_uuids.add(rec_note.uuid)
+            matched_replay_uuids.add(rep_note.uuid)
+
+        for note in self.drop_hammers:
+            matched_record_uuids.add(note.uuid)
+
+        for note in self.multi_hammers:
+            matched_replay_uuids.add(note.uuid)
         
-        Args:
-            matched_pairs: 匹配对列表
-            multi_hammers: 多锤列表
-            drop_hammers: 丢锤列表
-            
-        Returns:
-            Tuple[List[Note], List[Note]]: (matched_record_data, matched_replay_data)
-        """
-        matched_record_data = []
-        matched_replay_data = []
-        
-        for record_index, replay_index, record_note, replay_note in matched_pairs:
-            matched_record_data.append(record_note)
-            matched_replay_data.append(replay_note)
-        
-        return matched_record_data, matched_replay_data
-    
-    def get_matched_pairs(self) -> List[Tuple[int, int, Note, Note]]:
-        """
-        获取精确匹配对列表（≤50ms）
+        # 2. 分析未匹配的录制音符（丢锤）
+        for record_note in record_data:
+            if record_note.uuid not in matched_record_uuids:
+                hammer_velocity = record_note.get_first_hammer_velocity()
+                if hammer_velocity and hammer_velocity > 0:
+                    self.drop_hammers.append(record_note)
 
-        只返回精确匹配的配对，用于指标计算和图表显示
+        # 3. 分析未匹配的播放音符（多锤）
+        for replay_note in replay_data:
+            if replay_note.uuid not in matched_replay_uuids:
+                hammer_velocity = replay_note.get_first_hammer_velocity()
+                if hammer_velocity and hammer_velocity > 0:
+                    self.multi_hammers.append(replay_note)
 
-        Returns:
-            List[Tuple[int, int, Note, Note]]: 精确匹配对列表
-        """
-        return self.matched_pairs.copy()
-    
-    def get_split_statistics(self) -> Dict[str, int]:
-        """
-        获取拆分统计信息
-        
-        Returns:
-            Dict[str, int]: 拆分统计，包含：
-                - split_count: 拆分操作的总次数
-                - record_split_count: 录制数据拆分次数
-                - replay_split_count: 播放数据拆分次数
-                - additional_notes: 由于拆分而增加的按键数量（每次拆分产生1个额外的Note）
-                - additional_record_notes: 录制数据拆分产生的额外按键数
-                - additional_replay_notes: 播放数据拆分产生的额外按键数
-        """
-        return {
-            'split_count': self._split_counter,
-            'record_split_count': self._record_split_count,
-            'replay_split_count': self._replay_split_count,
-            'additional_notes': self._split_counter,  # 总拆分次数
-            'additional_record_notes': self._record_split_count,  # 录制拆分产生的额外按键
-            'additional_replay_notes': self._replay_split_count   # 播放拆分产生的额外按键
-        }
-    
-    # TODO
-    def get_offset_alignment_data(self) -> List[Dict[str, Union[int, float]]]:
-        """
-        获取偏移对齐数据 - 计算每个匹配对的时间偏移（包括超过阈值的匹配对）
-        
-        Returns:
-            List[Dict[str, Union[int, float]]]: 偏移对齐数据列表
-        """
-        offset_data: List[Dict[str, Union[int, float]]] = []
-        
-        # 所有匹配对都在 matched_pairs 中
-        all_matched_pairs = self.matched_pairs
-
-        for record_idx, replay_idx, record_note, replay_note in all_matched_pairs:
-            # 计算录制和播放音符的时间
-            record_keyon, record_keyoff = self._calculate_note_times(record_note)
-            replay_keyon, replay_keyoff = self._calculate_note_times(replay_note)
-
-            # 计算原始偏移量
-            keyon_offset = replay_keyon - record_keyon
-
-            # 计算校准后的偏移（去除全局固定延时）
-            # 这反映了音符相对于系统平均延时的"抖动"或"误差"
-            corrected_offset = keyon_offset - self.global_time_offset
-
-
-            record_duration = record_keyoff - record_keyon
-            replay_duration = replay_keyoff - replay_keyon
-            duration_diff = replay_duration - record_duration
-            duration_offset = duration_diff
-            # 使用校准后的绝对误差
-            avg_offset = abs(corrected_offset)
-
-
-            offset_data.append({
-                'record_index': record_idx,
-                'replay_index': replay_idx,
-                'key_id': record_note.id,
-                'record_keyon': record_keyon,
-                'replay_keyon': replay_keyon,
-                'keyon_offset': keyon_offset,       # 原始偏移
-                'corrected_offset': corrected_offset, # 校准后偏移（用于分析）
-                'record_keyoff': record_keyoff,
-                'replay_keyoff': replay_keyoff,
-                'duration_offset': duration_offset,
-                'average_offset': avg_offset,
-                'record_duration': record_duration,
-                'replay_duration': replay_duration,
-                'duration_diff': duration_diff
-            })
-
-        return offset_data
 
     def get_precision_offset_alignment_data(self) -> List[Dict[str, Union[int, float]]]:
         """
-        获取精确搜索阶段匹配对的偏移对齐数据 - 包含所有精确搜索阶段的匹配（误差 ≤ 50ms）
+        获取精确匹配对的偏移对齐数据 - 包含优秀/良好/一般匹配（误差 ≤ 50ms）
 
-        精确搜索阶段：尝试找到误差 ≤ 50ms 的匹配，最终匹配类型可能是优秀/良好/一般
+        精确匹配：EXCELLENT (≤20ms) + GOOD (20-30ms) + FAIR (30-50ms)
         用于计算延时误差统计指标，确保只使用相对高质量的匹配数据。
 
         Returns:
-            List[Dict[str, Union[int, float]]]: 精确搜索阶段匹配对的偏移对齐数据列表
+            List[Dict[str, Union[int, float]]]: 精确匹配对的偏移对齐数据列表
         """
-        # 直接处理precision_matched_pairs中的所有匹配（≤50ms）
+        # 从matched_pairs中筛选精确匹配（EXCELLENT, GOOD, FAIR）
         offset_data = []
-        for record_idx, replay_idx, record_note, replay_note in self.precision_matched_pairs:
+        for rec_note, rep_note, match_type, keyon_error_ms in self.matched_pairs:
+            # 只处理精确匹配（≤50ms）
+            if match_type not in [MatchType.EXCELLENT, MatchType.GOOD, MatchType.FAIR]:
+                continue
+            
+            record_note = rec_note
+            replay_note = rep_note
             # 计算录制和播放音符的时间
             record_keyon, record_keyoff = self._calculate_note_times(record_note)
             replay_keyon, replay_keyoff = self._calculate_note_times(replay_note)
@@ -2269,8 +1354,8 @@ class NoteMatcher:
             relative_delay = keyon_offset / 10.0
 
             offset_data.append({
-                'record_index': record_idx,
-                'replay_index': replay_idx,
+                'record_index': record_note.uuid,  # 使用UUID代替index
+                'replay_index': replay_note.uuid,  # 使用UUID代替index
                 'key_id': record_note.id,
                 'record_keyon': record_keyon,
                 'replay_keyon': replay_keyon,
@@ -2298,12 +1383,12 @@ class NoteMatcher:
                 return None
 
             # 只从hammers数据中获取锤速
-            if hasattr(note, 'hammers') and note.hammers is not None:
-                if hasattr(note.hammers, 'values') and len(note.hammers.values) > 0:
+            if note.hammers is not None:
+                if  len(note.hammers.values) > 0:
                     hammer_velocity = note.hammers.values[0]
                     if hammer_velocity is not None and not pd.isna(hammer_velocity):
                         return float(hammer_velocity)
-                elif hasattr(note.hammers, 'iloc') and len(note.hammers) > 0:
+                elif len(note.hammers) > 0:
                     hammer_velocity = note.hammers.iloc[0]
                     if hammer_velocity is not None and not pd.isna(hammer_velocity):
                         return float(hammer_velocity)
@@ -2314,126 +1399,50 @@ class NoteMatcher:
             logger.warning(f"[WARNING] 从音符提取锤速失败: {e}")
             return None
 
-    def get_normal_offset_alignment_data(self) -> List[Dict[str, Union[int, float]]]:
-        """
-        获取正常匹配对的偏移对齐数据 - 只计算在阈值内的匹配对的时间偏移
-
-        注意：这个方法只处理正常匹配对，不包括超过阈值的匹配对。
-        用于计算准确的延时指标，避免异常数据影响统计结果。
-
-        Returns:
-            List[Dict[str, Union[int, float]]]: 正常匹配对的偏移对齐数据列表
-        """
-        offset_data: List[Dict[str, Union[int, float]]] = []
-
-        # 只处理正常匹配对（在阈值内的匹配对）
-        for record_idx, replay_idx, record_note, replay_note in self.matched_pairs:
-            # 计算录制和播放音符的时间
-            record_keyon, record_keyoff = self._calculate_note_times(record_note)
-            replay_keyon, replay_keyoff = self._calculate_note_times(replay_note)
-
-            # 计算原始偏移量
-            keyon_offset = replay_keyon - record_keyon
-
-            # 计算校准后的偏移（去除全局固定延时）
-            # 由于DTW已禁用，全局偏移为0，所以corrected_offset = keyon_offset
-            corrected_offset = keyon_offset - self.global_time_offset
-
-            # 安全检查：正常匹配对的偏移应该在合理范围内
-            # 如果超过1000ms，说明数据或匹配逻辑有严重问题
-            max_reasonable_offset = 10000.0  # 1000ms
-            if abs(corrected_offset) > max_reasonable_offset:
-                logger.error(f"🚨 检测到异常大的校准偏移: {corrected_offset/10:.2f}ms, "
-                           f"键ID={record_note.id}, 录制索引={record_idx}, 播放索引={replay_idx}, "
-                           f"这表明匹配逻辑或数据有严重问题")
-                # 跳过这个异常匹配对，不将其包含在统计中
-                continue
-
-            record_duration = record_keyoff - record_keyon
-            replay_duration = replay_keyoff - replay_keyon
-            duration_diff = replay_duration - record_duration
-            duration_offset = duration_diff
-            # 使用校准后的绝对误差
-            avg_offset = abs(corrected_offset)
-    
-            
-            offset_data.append({
-                'record_index': record_idx,
-                'replay_index': replay_idx,
-                'key_id': record_note.id,
-                'record_keyon': record_keyon,
-                'replay_keyon': replay_keyon,
-                'keyon_offset': keyon_offset,       # 原始偏移
-                'corrected_offset': corrected_offset, # 校准后偏移（用于分析）
-                'record_keyoff': record_keyoff,
-                'replay_keyoff': replay_keyoff,
-                'duration_offset': duration_offset,
-                'average_offset': avg_offset,  
-                'record_duration': record_duration,
-                'replay_duration': replay_duration,
-                'duration_diff': duration_diff
-            })
-        
-        return offset_data
-
-
 
     def get_graded_error_stats(self) -> Dict[str, Dict[str, Union[int, float]]]:
         """
         获取分级误差统计 - 成功匹配质量评级
 
         只统计成功匹配对的质量分布（不包括失败匹配）：
-        - correct: 优秀 (误差 ≤ 20ms)
-        - minor: 良好 (20ms < 误差 ≤ 30ms)
-        - moderate: 一般 (30ms < 误差 ≤ 50ms)
-        - large: 较差 (50ms < 误差 ≤ 1000ms)
-        - severe: 严重 (误差 > 1000ms)
+        - correct: 优秀 (误差 ≤ 20ms) = EXCELLENT
+        - minor: 良好 (20ms < 误差 ≤ 30ms) = GOOD
+        - moderate: 一般 (30ms < 误差 ≤ 50ms) = FAIR
+        - large: 较差 (50ms < 误差 ≤ 100ms) = POOR
+        - severe: 严重 (100ms < 误差 ≤ 200ms) = SEVERE
 
         注意：只统计成功匹配的质量分布，失败匹配不参与评级统计
 
         Returns:
             Dict: 包含各级别的计数和百分比
         """
-        # 获取所有成功的匹配对数据用于评级
-        # 直接从match_results中获取所有成功匹配的数据
-        all_matched_data = []
-        for result in self.match_results:
-            if result.is_success:
-                # 为评级统计创建数据项
-                item = self._create_offset_data_item(result)
-                all_matched_data.append(item)
-
-        # 总配对数 = 成功的匹配对数
-        total_successful_matches = len(all_matched_data)
-
-        # 初始化统计 - 只统计成功匹配的评级分布
+        # 直接从 match_statistics 获取统计数据
         stats = {
-            'correct': 0,      # 优秀 (≤20ms)
-            'minor': 0,        # 良好 (20-30ms)
-            'moderate': 0,     # 一般 (30-50ms)
-            'large': 0,        # 较差 (50-1000ms)
-            'severe': 0,       # 严重 (>1000ms)
-            # 注意：不再统计失败匹配，因为失败匹配不参与质量评级
+            'correct': self.match_statistics.excellent_matches,    # 优秀 (≤20ms)
+            'minor': self.match_statistics.good_matches,           # 良好 (20-30ms)
+            'moderate': self.match_statistics.fair_matches,        # 一般 (30-50ms)
+            'large': self.match_statistics.poor_matches,           # 较差 (50-100ms)
+            'severe': self.match_statistics.severe_matches,        # 严重 (100-200ms)
         }
 
-        # 基于误差范围对所有成功匹配进行评级
-        for item in all_matched_data:
-            error_abs = abs(item['corrected_offset'])
-            error_ms = error_abs / 10.0
-
-            if error_ms <= 20:
-                stats['correct'] += 1      # 优秀
-            elif error_ms > 20 and error_ms <= 30:
-                stats['minor'] += 1        # 良好
-            elif error_ms > 30 and error_ms <= 50:
-                stats['moderate'] += 1     # 一般
-            elif error_ms > 50 and error_ms <= 1000:
-                stats['large'] += 1        # 较差
-            else:  # error_ms > 1000
-                stats['severe'] += 1       # 严重
+        # 成功匹配总数（精确匹配对数量）
+        total_successful_matches = len(self.matched_pairs)
+        
+        # 调试：验证统计数据一致性
+        stats_sum = sum(stats.values())
+        logger.debug(f"📊 [NoteMatcher] 评级统计详情:")
+        logger.debug(f"   - excellent_matches (correct): {self.match_statistics.excellent_matches}")
+        logger.debug(f"   - good_matches (minor): {self.match_statistics.good_matches}")
+        logger.debug(f"   - fair_matches (moderate): {self.match_statistics.fair_matches}")
+        logger.debug(f"   - poor_matches (large): {self.match_statistics.poor_matches}")
+        logger.debug(f"   - severe_matches (severe): {self.match_statistics.severe_matches}")
+        logger.debug(f"   - 统计总和: {stats_sum}")
+        logger.debug(f"   - matched_pairs 数量: {total_successful_matches}")
+        
+        if stats_sum != total_successful_matches:
+            logger.warning(f"⚠️ [NoteMatcher] 统计不一致！stats_sum={stats_sum} != matched_pairs={total_successful_matches}")
 
         # 计算百分比（基于成功的匹配对总数）
-        # 评级统计只反映成功匹配的质量分布，不包括失败匹配
         result = {}
         for key, count in stats.items():
             result[key] = {
@@ -2441,124 +1450,12 @@ class NoteMatcher:
                 'percent': (count / total_successful_matches * 100) if total_successful_matches > 0 else 0.0
             }
 
-        result['total_successful_matches'] = total_successful_matches  # 成功匹配总数
-        result['global_offset_ms'] = self.global_time_offset / 10.0
+        result['total_successful_matches'] = total_successful_matches
 
-        logger.info(f"📊 [后端] 匹配质量评级统计: 成功配对数={total_successful_matches} (只统计成功匹配的质量分布)")
+        logger.debug(f"📊 [后端] 匹配质量评级统计: 成功配对数={total_successful_matches} (只统计成功匹配的质量分布)")
 
         return result
 
-    def _get_precision_matches_data(self) -> List[Dict[str, Union[int, float]]]:
-        """
-        获取精确匹配对的偏移数据
-
-        Returns:
-            List[Dict]: 精确匹配对的偏移数据
-        """
-        return self._get_matches_data_by_type(MatchType.PRECISION)
-
-    def _get_approximate_matches_data(self) -> List[Dict[str, Union[int, float]]]:
-        """
-        获取较差匹配对的偏移数据 (50-100ms)
-
-        Returns:
-            List[Dict]: 较差匹配对的偏移数据
-        """
-        return self._get_matches_data_by_type(MatchType.POOR)
-
-    def _get_large_error_matches_data(self) -> List[Dict[str, Union[int, float]]]:
-        """
-        获取大误差匹配对的偏移数据 (>1000ms)
-
-        Returns:
-            List[Dict]: 大误差匹配对的偏移数据
-        """
-        return self._get_matches_data_by_type(MatchType.FAILED)
-
-    def _get_matches_data_by_type(self, match_type: MatchType) -> List[Dict[str, Union[int, float]]]:
-        """
-        根据匹配类型获取对应的偏移数据
-
-        Args:
-            match_type: 匹配类型
-
-        Returns:
-            List[Dict]: 该类型匹配对的偏移数据
-        """
-        offset_data = []
-
-        # 确定数据源和筛选条件 - 基于新的匹配类型
-        pairs_source = []
-        error_filter = None
-
-        if match_type == MatchType.EXCELLENT:
-            # 优秀匹配：从precision_matched_pairs中筛选 ≤20ms 的
-            pairs_source = self.precision_matched_pairs
-            error_filter = lambda error_ms: error_ms <= 20
-        elif match_type == MatchType.GOOD:
-            # 良好匹配：从precision_matched_pairs中筛选 20-30ms 的
-            pairs_source = self.precision_matched_pairs
-            error_filter = lambda error_ms: 20 < error_ms <= 30
-        elif match_type == MatchType.FAIR:
-            # 一般匹配：从precision_matched_pairs中筛选 30-50ms 的
-            pairs_source = self.precision_matched_pairs
-            error_filter = lambda error_ms: 30 < error_ms <= 50
-        elif match_type == MatchType.POOR:
-            # 较差匹配：所有来自approximate_matched_pairs的匹配
-            pairs_source = self.approximate_matched_pairs
-            error_filter = lambda error_ms: True  # 不需要额外筛选
-        elif match_type == MatchType.SEVERE:
-            # 严重误差：所有来自severe_matched_pairs的匹配
-            pairs_source = self.severe_matched_pairs
-            error_filter = lambda error_ms: True  # 不需要额外筛选
-        elif match_type == MatchType.FAILED:
-            # 失败匹配：无匹配的情况，不在此处理
-            return []
-        else:
-            return []
-
-        for record_idx, replay_idx, record_note, replay_note in pairs_source:
-            # 计算录制和播放音符的时间
-            record_keyon, record_keyoff = self._calculate_note_times(record_note)
-            replay_keyon, replay_keyoff = self._calculate_note_times(replay_note)
-
-            # 计算原始偏移量
-            keyon_offset = replay_keyon - record_keyon
-
-            # 计算校准后的偏移（去除全局固定延时）
-            corrected_offset = keyon_offset - self.global_time_offset
-
-            # 计算误差（毫秒）
-            error_ms = abs(corrected_offset) / 10.0
-
-            # 根据匹配类型筛选
-            if not error_filter(error_ms):
-                continue
-
-            record_duration = record_keyoff - record_keyon
-            replay_duration = replay_keyoff - replay_keyon
-            duration_diff = replay_duration - record_duration
-            duration_offset = duration_diff
-
-            offset_data.append({
-                'record_index': record_idx,
-                'replay_index': replay_idx,
-                'key_id': record_note.id,
-                'record_keyon': record_keyon,
-                'replay_keyon': replay_keyon,
-                'keyon_offset': keyon_offset,       # 原始偏移
-                'corrected_offset': corrected_offset, # 校准后偏移（用于分析）
-                'record_keyoff': record_keyoff,
-                'replay_keyoff': replay_keyoff,
-                'duration_offset': duration_offset,
-                'average_offset': abs(corrected_offset),
-                'record_duration': record_duration,
-                'replay_duration': replay_duration,
-                'duration_diff': duration_diff
-            })
-
-        return offset_data
-    
     def get_invalid_notes_offset_analysis(self, record_data: List[Note], replay_data: List[Note]) -> List[Dict[str, Union[int, float, str]]]:
         """
         获取无效音符的偏移对齐分析
@@ -2707,7 +1604,15 @@ class NoteMatcher:
             DelayMetrics: 延时指标计算器实例
         """
         if self._delay_metrics is None:
-            self._delay_metrics = DelayMetrics(self.precision_matched_pairs)
+            # 从matched_pairs中提取精确匹配对（EXCELLENT + GOOD + FAIR）
+            # DelayMetrics需要的格式：[(record_idx, replay_idx, record_note, replay_note), ...]
+            precision_pairs = []
+            for rec_note, rep_note, match_type, _ in self.matched_pairs:
+                if match_type in [MatchType.EXCELLENT, MatchType.GOOD, MatchType.FAIR]:
+                    # DelayMetrics实际上不使用index，只使用Note对象
+                    precision_pairs.append((0, 0, rec_note, rep_note))
+            
+            self._delay_metrics = DelayMetrics(precision_pairs)
         return self._delay_metrics
     
     def _calculate_note_times(self, note: Note) -> Tuple[float, float]:
@@ -2725,7 +1630,7 @@ class NoteMatcher:
             keyon_time = note.key_on_ms * 10.0
             keyoff_time = note.key_off_ms * 10.0
         else:
-            raise ValueError(f"音符ID {note.id} 的时间属性未初始化")
+            logger.waring(f"音符ID {note.id} 的时间属性未初始化")
         
         return keyon_time, keyoff_time
     
@@ -2744,7 +1649,7 @@ class NoteMatcher:
     
     def get_variance(self) -> float:
         """
-        获取总体方差（已废弃）
+        获取总体方差
         
         注意：此方法已废弃，UI 不需要显示方差。
         如需波动程度，请使用 get_standard_deviation()。
@@ -2813,122 +1718,3 @@ class NoteMatcher:
         """
         return self._get_delay_metrics().get_mean_error()
 
-    def _calculate_mean_error(self) -> float:
-        """
-        计算已匹配按键对的平均误差（内部方法，已废弃）
-        
-        Returns:
-            float: 平均误差ME（单位：0.1ms）
-        """
-        return self.get_mean_error()
-
-    def _clear_mean_error_cache(self) -> None:
-        """
-        清除平均误差缓存
-        当匹配对发生变化时调用此方法
-        """
-        self._mean_error_cached = None
-    
-    def get_offset_statistics(self) -> Dict[str, Union[int, Dict[str, float]]]:
-        """
-        获取偏移统计信息
-        
-        Returns:
-            Dict[str, Union[int, Dict[str, float]]]: 偏移统计信息
-        """
-        if not self.matched_pairs:
-            return {
-                'total_pairs': 0,
-                'keyon_offset_stats': {'average': 0.0, 'max': 0.0, 'min': 0.0, 'std': 0.0},
-                'duration_offset_stats': {'average': 0.0, 'max': 0.0, 'min': 0.0, 'std': 0.0},
-                'overall_offset_stats': {'average': 0.0, 'max': 0.0, 'min': 0.0, 'std': 0.0}
-            }
-        
-        # 获取偏移数据（只使用精确匹配对，误差 ≤ 50ms）
-        offset_data = self.get_precision_offset_alignment_data()
-        
-        # 提取偏移值（使用校准后的keyon_offset）
-        corrected_offsets = [item['corrected_offset'] for item in offset_data]
-        duration_offsets = [item.get('duration_offset', 0.0) for item in offset_data]
-        # 整体统计只使用校准后偏移的绝对值
-        overall_offsets = [abs(item.get('corrected_offset', 0)) for item in offset_data if item.get('corrected_offset') is not None]
-        
-        return {
-            'total_pairs': len(self.matched_pairs),
-            'keyon_offset_stats': self._calculate_offset_stats(corrected_offsets),
-            'duration_offset_stats': self._calculate_offset_stats(duration_offsets),
-            'overall_offset_stats': self._calculate_offset_stats(overall_offsets)  # 使用校准后的偏移
-        }
-    
-    def _calculate_offset_stats(self, offsets: List[float]) -> Dict[str, float]:
-        """
-        计算偏移统计信息
-        
-        Args:
-            offsets: 偏移值列表
-            
-        Returns:
-            Dict[str, float]: 统计信息
-        """
-        if not offsets:
-            return {'average': 0.0, 'max': 0.0, 'min': 0.0, 'std': 0.0}
-        
-        average = sum(offsets) / len(offsets)
-        max_val = max(offsets)
-        min_val = min(offsets)
-        
-        # 计算标准差
-        if len(offsets) <= 1:
-            std = 0.0
-        else:
-            variance = sum((x - average) ** 2 for x in offsets) / (len(offsets) - 1)
-            std = variance ** 0.5
-        
-        return {
-            'average': average,
-            'max': max_val,
-            'min': min_val,
-            'std': std
-        }
-
-    def _create_offset_data_item(self, match_result: MatchResult) -> Dict[str, Union[int, float]]:
-        """
-        为评级统计创建偏移数据项
-
-        Args:
-            match_result: 匹配结果
-
-        Returns:
-            Dict: 包含偏移数据的字典
-        """
-        record_note, replay_note = match_result.pair
-        record_keyon, record_keyoff = self._calculate_note_times(record_note)
-        replay_keyon, replay_keyoff = self._calculate_note_times(replay_note)
-
-        # 计算原始偏移量
-        keyon_offset = replay_keyon - record_keyon
-
-        # 计算校准后的偏移（去除全局固定延时）
-        corrected_offset = keyon_offset - self.global_time_offset
-
-        record_duration = record_keyoff - record_keyon
-        replay_duration = replay_keyoff - replay_keyon
-        duration_diff = replay_duration - record_duration
-        duration_offset = duration_diff
-
-        return {
-            'record_index': match_result.record_index,
-            'replay_index': match_result.replay_index,
-            'key_id': record_note.id,
-            'record_keyon': record_keyon,
-            'replay_keyon': replay_keyon,
-            'keyon_offset': keyon_offset,       # 原始偏移
-            'corrected_offset': corrected_offset, # 校准后偏移（用于分析）
-            'record_keyoff': record_keyoff,
-            'replay_keyoff': replay_keyoff,
-            'duration_offset': duration_offset,
-            'average_offset': abs(corrected_offset),
-            'record_duration': record_duration,
-            'replay_duration': replay_duration,
-            'duration_diff': duration_diff
-        }

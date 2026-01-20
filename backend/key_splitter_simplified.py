@@ -239,7 +239,7 @@ class KeySplitter:
     def _extract_hammer_times(self, note) -> Optional[List[float]]:
         """提取锤击时间点（只提取锤速>0的点）"""
         try:
-            if not hasattr(note, 'hammers') or note.hammers is None or len(note.hammers) == 0:
+            if note.hammers is None or len(note.hammers) == 0:
                 return None
             
             hammer_times = []

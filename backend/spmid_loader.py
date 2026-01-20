@@ -113,23 +113,47 @@ class SPMIDLoader:
             if not optimized_record_data or not optimized_replay_data:
                 return False, "音轨数据为空"
 
-            # 过滤录制音轨中的异常数据（在转换为Note之前）
-            perf_filter_start = time.time()
+            # 第一步：过滤按键ID，只保留1-88的有效按键数据
+            perf_filter_key_start = time.time()
             original_record_count = len(optimized_record_data)
+            original_replay_count = len(optimized_replay_data)
+
+            # 过滤录制数据，只保留有效按键ID
+            filtered_record_data = [note for note in optimized_record_data if 1 <= note.id <= 88]
+            optimized_record_data = filtered_record_data
+
+            # 过滤播放数据，只保留有效按键ID
+            filtered_replay_data = [note for note in optimized_replay_data if 1 <= note.id <= 88]
+            optimized_replay_data = filtered_replay_data
+
+            filtered_record_count = original_record_count - len(optimized_record_data)
+            filtered_replay_count = original_replay_count - len(optimized_replay_data)
+
+            perf_filter_key_end = time.time()
+            self.logger.info(f"        ⏱️  [性能] 按键ID过滤: {(perf_filter_key_end - perf_filter_key_start)*1000:.2f}ms")
+            if filtered_record_count > 0:
+                self.logger.info(f"        🎹 录制数据过滤掉 {filtered_record_count} 个无效按键ID（保留1-88，共 {len(optimized_record_data)} 个）")
+            if filtered_replay_count > 0:
+                self.logger.info(f"        🎹 播放数据过滤掉 {filtered_replay_count} 个无效按键ID（保留1-88，共 {len(optimized_replay_data)} 个）")
+
+
+            # 第二步：过滤录制音轨中的异常数据（在转换为Note之前）
+            perf_filter_start = time.time()
+            original_record_count_after_key_filter = len(optimized_record_data)
             self.filter_collector.set_data_type('record')
             optimized_record_data = self._filter_abnormal_record_notes(optimized_record_data, 'record')
-            filtered_record_count = original_record_count - len(optimized_record_data)
+            filtered_record_count = original_record_count_after_key_filter - len(optimized_record_data)
             perf_filter_end = time.time()
             self.logger.info(f"        ⏱️  [性能] 录制数据过滤: {(perf_filter_end - perf_filter_start)*1000:.2f}ms")
             if filtered_record_count > 0:
-                self.logger.info(f"        🧹 录制轨道过滤掉 {filtered_record_count} 个异常Note（共 {original_record_count} 个）")
+                self.logger.info(f"        🧹 录制轨道过滤掉 {filtered_record_count} 个异常Note（按键ID过滤后共 {original_record_count_after_key_filter} 个）")
 
-            # 过滤播放音轨中的异常数据（在转换为Note之前）
+            # 第二步：过滤播放音轨中的异常数据（在转换为Note之前）
             perf_filter_replay_start = time.time()
-            original_replay_count = len(optimized_replay_data)
+            original_replay_count_after_key_filter = len(optimized_replay_data)
             self.filter_collector.set_data_type('replay')
             optimized_replay_data = self._filter_abnormal_record_notes(optimized_replay_data, 'replay')
-            filtered_replay_count = original_replay_count - len(optimized_replay_data)
+            filtered_replay_count = original_replay_count_after_key_filter - len(optimized_replay_data)
             perf_filter_replay_end = time.time()
             self.logger.info(f"        ⏱️  [性能] 播放数据过滤: {(perf_filter_replay_end - perf_filter_replay_start)*1000:.2f}ms")
             if filtered_replay_count > 0:
@@ -139,6 +163,8 @@ class SPMIDLoader:
             perf_convert_start = time.time()
             self.record_data = self._convert_track_to_legacy(optimized_record_data)
             self.replay_data = self._convert_track_to_legacy(optimized_replay_data)
+
+
             perf_convert_end = time.time()
             self.logger.info(f"        ⏱️  [性能] 数据转换为兼容格式: {(perf_convert_end - perf_convert_start)*1000:.2f}ms")
             

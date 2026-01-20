@@ -984,29 +984,33 @@ class PianoAnalysisBackend:
         """获取无效音符详细列表数据（委托给TableDataGenerator）"""
         return self.table_data_generator.get_invalid_notes_detail_table_data(data_type)
 
-    def get_drop_hammers_detail_table_data(self, algorithm_name: str) -> List[Dict[str, Any]]:
-        """获取指定算法的丢锤详细列表数据"""
-        all_drop_data = self.table_data_generator.get_error_table_data('丢锤')
+    def _filter_error_data_by_algorithm(self, error_type: str, algorithm_name: str) -> List[Dict[str, Any]]:
+        """根据算法名称过滤错误数据（内部辅助函数）
+        
+        Args:
+            error_type: 错误类型 ('丢锤' 或 '多锤')
+            algorithm_name: 算法名称
+        
+        Returns:
+            List[Dict[str, Any]]: 过滤后的错误数据
+        """
+        all_error_data = self.table_data_generator.get_error_table_data(error_type)
 
         # 过滤出指定算法的数据
-        algorithm_drop_data = []
-        for item in all_drop_data:
+        filtered_data = []
+        for item in all_error_data:
             if item.get('algorithm_name') == algorithm_name:
-                algorithm_drop_data.append(item)
+                filtered_data.append(item)
 
-        return algorithm_drop_data
+        return filtered_data
+
+    def get_drop_hammers_detail_table_data(self, algorithm_name: str) -> List[Dict[str, Any]]:
+        """获取指定算法的丢锤详细列表数据"""
+        return self._filter_error_data_by_algorithm('丢锤', algorithm_name)
 
     def get_multi_hammers_detail_table_data(self, algorithm_name: str) -> List[Dict[str, Any]]:
         """获取指定算法的多锤详细列表数据"""
-        all_multi_data = self.table_data_generator.get_error_table_data('多锤')
-
-        # 过滤出指定算法的数据
-        algorithm_multi_data = []
-        for item in all_multi_data:
-            if item.get('algorithm_name') == algorithm_name:
-                algorithm_multi_data.append(item)
-
-        return algorithm_multi_data
+        return self._filter_error_data_by_algorithm('多锤', algorithm_name)
 
     # TODO
     def get_error_table_data(self, error_type: str) -> List[Dict[str, Any]]:

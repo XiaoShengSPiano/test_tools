@@ -164,10 +164,14 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
     from ui.session_callbacks import register_session_callbacks
     from ui.file_upload_callbacks import register_file_upload_callbacks
     from ui.algorithm_callbacks import register_algorithm_callbacks
+    from ui.track_comparison_callbacks import register_callbacks as register_track_comparison_callbacks
     # from ui.scatter_callbacks import register_scatter_callbacks  # 暂时禁用，将在散点图页面重新实现
 
     # 注册会话和初始化管理回调
     register_session_callbacks(app, session_manager, history_manager)
+    
+    # 注册音轨对比回调
+    register_track_comparison_callbacks(app, session_manager)
 
     # 注册文件上传回调
     register_file_upload_callbacks(app, session_manager)
@@ -177,9 +181,6 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
 
     # 注册散点图回调 - 暂时禁用
     # register_scatter_callbacks(app, session_manager)
-    
-    logger.info("[多页面架构] 核心回调注册完成（文件上传、会话管理、算法管理）")
-    logger.info("[多页面架构] 旧UI的内联回调已全部禁用，将在各页面中重新实现")
     
     # 多页面架构：禁用所有依赖旧UI的内联回调
     # 这些回调都引用了 main-plot, report-content 等旧组件

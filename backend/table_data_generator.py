@@ -166,23 +166,40 @@ class TableDataGenerator:
             else:
                 continue
 
-            # 确定错误原因描述
-            analysis_reason = '丢锤（录制有，播放无）' if error_type == '丢锤' else '多锤（播放有，录制无）'
+            # 确定错误原因描述和数据类型
+            if error_type == '丢锤':
+                analysis_reason = '丢锤（录制有，播放无）'
+                data_type = 'record'  # 丢锤显示录制轨道数据
+            else:  # 多锤
+                analysis_reason = '多锤（播放有，录制无）'
+                data_type = 'play'  # 多锤显示播放轨道数据
 
             # 转换为表格数据格式
             for error_note in error_notes:
-                if not error_note.notes:
+                if not error_note:
                     continue
 
-                note = error_note.notes[0]
+                note = error_note
+                # 获取锤速数据
+                hammer_velocity = note.get_first_hammer_velocity()
+
+                # 显示锤速：有值显示值，无值显示N/A
+                if hammer_velocity is not None and hammer_velocity != 0:
+                    velocity_display = hammer_velocity
+                elif hammer_velocity == 0:
+                    velocity_display = 0
+                else:
+                    # hammer_velocity is None，表示没有hammer数据
+                    velocity_display = 'N/A'
+
                 row = {
-                    'data_type': 'record',
+                    'data_type': data_type,
                     'keyId': note.id,
                     'keyOn': f"{note.key_on_ms:.2f}" if note.key_on_ms is not None else 'N/A',
                     'keyOff': f"{note.key_off_ms:.2f}" if note.key_off_ms is not None else 'N/A',
                     'duration': f"{note.duration_ms:.2f}" if note.duration_ms is not None else 'N/A',
-                    'velocity': note.get_first_hammer_velocity() if note.get_first_hammer_velocity() is not None else 0,
-                    'index': error_note.global_index,
+                    'velocity': velocity_display,
+                    'index': error_note.uuid,
                     'analysis_reason': analysis_reason
                 }
 

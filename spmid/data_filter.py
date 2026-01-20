@@ -139,15 +139,15 @@ class DataFilter:
             # 1. 检查数据完整性
             if len(note.after_touch) == 0 or len(note.hammers) == 0:
                 return False, 'empty_data'
-            
+
             # 2. 检查锤速（第一个锤击的速度）
             # 获取时间上最早的锤速值
             min_timestamp = note.hammers.index.min()
             first_hammer_velocity = note.hammers.loc[min_timestamp]
-            
+
             if first_hammer_velocity == 0:
                 return False, 'silent_notes'
-            
+
             # 3. 检查持续时间
             try:
                 duration_ms = note.key_off_ms - note.key_on_ms

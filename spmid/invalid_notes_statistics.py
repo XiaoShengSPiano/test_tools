@@ -268,6 +268,7 @@ class InvalidNotesStatistics:
                         'key_off_ms': '2345.67ms',
                         'duration_ms': '1111.11ms',
                         'first_hammer_time_ms': '100.50ms',
+                        'first_hammer_velocity': '280.50',
                         'invalid_reason': '持续时间过短'
                     },
                     ...
@@ -288,15 +289,16 @@ class InvalidNotesStatistics:
         for info in invalid_list:
             note = info.note
             
-            # 直接使用 Note 对象中已经计算好的时间属性
-            # Note 在 __post_init__ 中已经自动计算了这些属性
             
-            # 获取第一个锤击时间（如果有 hammers 数据）
+            # 获取第一个锤击时间和锤速（如果有 hammers 数据）
             first_hammer_time_ms = None
-            if  note.hammers is not None and len(note.hammers) > 0:
-                # hammers.index 是时间戳数组（单位是0.1ms）
-                first_hammer_time_ms = note.hammers.index[0] / 10.0
-            
+            first_hammer_velocity = None
+            # hammers.index 是时间戳数组（单位是0.1ms）
+            first_hammer_time_ms = note.get_first_hammer_time()
+            # hammers.values 是速度数组
+            first_hammer_velocity = note.get_first_hammer_velocity()
+
+
             row = {
                 'data_type': f'{data_type}数据',
                 'key_id': note.id,
@@ -304,6 +306,7 @@ class InvalidNotesStatistics:
                 'key_off_ms': f"{note.key_off_ms:.2f}ms" if note.key_off_ms is not None else 'N/A',
                 'duration_ms': f"{note.duration_ms:.2f}ms" if note.duration_ms is not None else 'N/A',
                 'first_hammer_time_ms': f"{first_hammer_time_ms:.2f}ms" if first_hammer_time_ms is not None else 'N/A',
+                'first_hammer_velocity': f"{int(first_hammer_velocity)}" if first_hammer_velocity is not None else 'N/A',
                 'invalid_reason': reason_map.get(info.reason, info.reason)
             }
             

@@ -8,16 +8,17 @@ import json
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from dash import Input, Output, State, html, no_update, dash_table, dcc
-from dash.exceptions import PreventUpdate
 from typing import Dict, List, Optional, Tuple, Any, Union
 from backend.session_manager import SessionManager
+from spmid.spmid_reader import Note
+from spmid.note_matcher import MatchType
 
 # 获取logger
 logger = logging.getLogger(__name__)
 
 
 # 导入统一的评级配置
-from utils.constants import GRADE_RANGE_CONFIG, GRADE_LEVELS, GRADE_LEVELS_WITH_FAILED
+from utils.constants import GRADE_RANGE_CONFIG
 
 
 def get_note_matcher_from_backend(backend, algorithm_name: Optional[str] = None) -> Optional[Any]:
@@ -35,33 +36,30 @@ def get_note_matcher_from_backend(backend, algorithm_name: Optional[str] = None)
         # 多算法模式
         active_algorithms = backend.get_active_algorithms()
         target_algorithm = next((alg for alg in active_algorithms if alg.metadata.algorithm_name == algorithm_name), None)
-        if not target_algorithm or not target_algorithm.analyzer or not hasattr(target_algorithm.analyzer, 'note_matcher'):
+        if not target_algorithm or not target_algorithm.analyzer:
             return None
         return target_algorithm.analyzer.note_matcher
     else:
         # 单算法模式
-        if not backend.analyzer or not hasattr(backend.analyzer, 'note_matcher'):
+        if not backend.analyzer:
             return None
         return backend.analyzer.note_matcher
 
 
-def format_hammer_time(note) -> str:
+def format_hammer_time(note : Note) -> str:
     """格式化锤击时间（只显示第一个，加offset）"""
-    if hasattr(note, 'hammers') and not note.hammers.empty:
-        first_time = note.hammers.index[0]
-        # 加上offset，与keyOn/keyOff保持一致的时间基准
-        if hasattr(note, 'offset'):
-            first_time += note.offset
-        return f"{first_time/10.0:.2f}"
-    return "无"
+    if not note.hammers.empty:
+        first_time = note.get_first_hammer_time()
+        return f"{first_time:.2f}"
+    return "N/A"
 
 
 def format_hammer_velocity(note) -> str:
     """格式化锤速（只显示第一个）"""
-    if hasattr(note, 'hammers') and not note.hammers.empty:
-        first_velocity = note.hammers.values[0]
+    if not note.hammers.empty:
+        first_velocity = note.get_first_hammer_velocity()
         return f"{first_velocity:.2f}"
-    return "无"
+    return "N/A"
 
 
 def create_table_row(item: Dict, note, data_type: str, grade_key: str) -> Dict[str, Any]:
@@ -596,6 +594,7 @@ def register_grade_detail_callbacks(app, session_manager: SessionManager):
             return current_style, [], no_update
 
         trigger_id = ctx.triggered[0]['prop_id']
+        logger.info(f"[DEBUG] trigger_id={trigger_id}")
 
         # 处理关闭按钮
         if trigger_id == 'close-grade-detail-curves-modal.n_clicks':
@@ -654,7 +653,6 @@ def register_grade_detail_callbacks(app, session_manager: SessionManager):
     # 统一的回调处理所有评级按钮点击，避免重叠
     @app.callback(
         Output({'type': 'grade-detail-table', 'index': dash.ALL}, 'style'),
-        Output({'type': 'grade-detail-table', 'index': dash.ALL}, 'children'),
         Output({'type': 'grade-detail-datatable', 'index': dash.ALL}, 'columns'),
         Output({'type': 'grade-detail-datatable', 'index': dash.ALL}, 'data'),
         Input({'type': 'grade-detail-btn', 'index': dash.ALL}, 'n_clicks'),
@@ -665,7 +663,7 @@ def register_grade_detail_callbacks(app, session_manager: SessionManager):
         """统一处理所有评级统计详情显示"""
         ctx = dash.callback_context
         if not ctx.triggered:
-            return [no_update], [no_update], [no_update], [no_update]
+            return [no_update], [no_update], [no_update]
 
         # 解析触发的按钮ID
         triggered_id = ctx.triggered[0]['prop_id']
@@ -674,12 +672,12 @@ def register_grade_detail_callbacks(app, session_manager: SessionManager):
             button_props = json.loads(id_part)
             button_index = button_props['index']
         except (json.JSONDecodeError, KeyError):
-            return [no_update], [no_update], [no_update], [no_update]
+            return [no_update], [no_update], [no_update]
 
         # 获取后端实例，确定有多少个表格需要更新
         backend = session_manager.get_backend(session_id)
         if not backend:
-            return [no_update], [no_update], [no_update], [no_update]
+            return [no_update], [no_update], [no_update]
 
         # 确定输出值的数量和类型
         active_algorithms = backend.get_active_algorithms()
@@ -691,14 +689,13 @@ def register_grade_detail_callbacks(app, session_manager: SessionManager):
         elif has_single_mode:
             num_outputs = 1
         else:
-            return [no_update], [no_update], [no_update], [no_update]
+            return [no_update], [no_update], [no_update]
 
         # 获取显示数据
         result = show_single_grade_detail(button_index, session_id, session_manager)
 
         # 初始化输出值 - 全部设置为no_update
         styles = [no_update] * num_outputs
-        children_list = [no_update] * num_outputs
         columns = [no_update] * num_outputs
         data = [no_update] * num_outputs
 
@@ -715,119 +712,118 @@ def register_grade_detail_callbacks(app, session_manager: SessionManager):
 
             if target_index is not None:
                 styles[target_index] = result[0]
-                children_list[target_index] = result[1]
                 columns[target_index] = result[2]
                 data[target_index] = result[3]
         else:
             # 单算法模式: "评级键" -> 更新single表格（索引0）
             if has_single_mode and not active_algorithms:
                 styles[0] = result[0]
-                children_list[0] = result[1]
                 columns[0] = result[2]
                 data[0] = result[3]
 
-        return styles, children_list, columns, data
-
-    # 多算法模式 - 动态处理不同算法的按钮
-    # 由于算法名称是动态的，我们需要使用更灵活的方法
-    # 这里暂时只处理已知的算法，实际应用中可能需要更复杂的逻辑
+        return styles, columns, data
 
 
 def get_grade_detail_data(backend, grade_key: str, algorithm_name: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     获取评级统计的详细数据
-
+    
     Args:
         backend: 后端实例
-        grade_key: 评级键 ('correct', 'minor', 'moderate', 'large', 'major')
+        grade_key: 评级键 ('correct', 'minor', 'moderate', 'large', 'severe')
         algorithm_name: 算法名称（None表示单算法模式）
-
+    
     Returns:
         表格行数据列表
     """
     try:
         # 验证评级键
         if grade_key not in GRADE_RANGE_CONFIG:
+            logger.warning(f"[WARNING] 无效的评级键: {grade_key}, 有效键: {list(GRADE_RANGE_CONFIG.keys())}")
             return []
-
+        
         # 获取note_matcher实例
         note_matcher = get_note_matcher_from_backend(backend, algorithm_name)
         if not note_matcher:
+            logger.warning(f"[WARNING] 获取note_matcher失败: algorithm_name={algorithm_name}")
             return []
-
-        # 特殊处理：匹配失败（major评级）
-        if grade_key == 'major':
-            return get_failed_matches_detail_data(note_matcher, algorithm_name)
-
-        # 获取所有成功匹配对的偏移对齐数据（用于评级统计）
-        # 与 get_graded_error_stats 保持完全相同的数据源
-        all_matched_data = []
-        # 直接从match_results中获取所有成功匹配的数据，与评级统计完全一致
-        for result in note_matcher.match_results:
-            if result.is_success:
-                # 为详情筛选创建数据项，使用与评级统计相同的方法
-                item = note_matcher._create_offset_data_item(result)
-                all_matched_data.append(item)
-
-        offset_data = all_matched_data
-        if not offset_data:
+        
+        # 获取所有精确匹配对（包含评级信息）
+        matched_pairs_with_grade = note_matcher.get_matched_pairs_with_grade()  # List[Tuple[Note, Note, MatchType, float]]
+        if not matched_pairs_with_grade:
+            logger.warning(f"[WARNING] 没有匹配对数据")
             return []
-
-        # 构建匹配对字典以快速查找Note对象
-        # 从match_results中构建，包含所有成功的匹配
-        pair_dict = {}
-        for result in note_matcher.match_results:
-            if result.is_success:
-                pair_dict[(result.record_index, result.replay_index)] = (result.pair[0], result.pair[1])
-
+        
         detail_data: List[Dict[str, Any]] = []
-        filtered_count = 0
+        
+        
+        
+        # 处理每个匹配对
+        for rec_note, rep_note, match_type, keyon_error_ms in matched_pairs_with_grade:
+            # 根据match_type判断是否属于当前评级（不再重复计算）
+            should_include = False
+            if grade_key == 'correct' and match_type == MatchType.EXCELLENT:
+                should_include = True
+            elif grade_key == 'minor' and match_type == MatchType.GOOD:
+                should_include = True
+            elif grade_key == 'moderate' and match_type == MatchType.FAIR:
+                should_include = True
+            elif grade_key == 'large' and match_type == MatchType.POOR:
+                should_include = True
+            elif grade_key == 'severe' and match_type == MatchType.SEVERE:
+                should_include = True
+            
+            if should_include:
+                # 获取锤击时间和锤速用于计算差值
+                rec_hammer_time = rec_note.get_first_hammer_time() if rec_note.get_first_hammer_time() is not None else None
+                rep_hammer_time = rep_note.get_first_hammer_time() if rep_note.get_first_hammer_time() is not None else None
+                rec_hammer_velocity = rec_note.get_first_hammer_velocity() if rec_note.get_first_hammer_velocity() is not None else None
+                rep_hammer_velocity = rep_note.get_first_hammer_velocity() if rep_note.get_first_hammer_velocity() is not None else None
 
-        # 处理每个偏移数据项
-        for item in offset_data:
-            error_abs = abs(item['corrected_offset'])
-            error_ms = error_abs / 10.0
-
-            # 使用与 get_graded_error_stats 完全一致的评级范围判断逻辑
-            in_range = False
-            if grade_key == 'correct' and error_ms <= 20:
-                in_range = True
-            elif grade_key == 'minor' and error_ms > 20 and error_ms <= 30:
-                in_range = True
-            elif grade_key == 'moderate' and error_ms > 30 and error_ms <= 50:
-                in_range = True
-            elif grade_key == 'large' and error_ms > 50 and error_ms <= 1000:
-                in_range = True
-            elif grade_key == 'severe' and error_ms > 1000:
-                in_range = True
-            # major 评级在其他地方处理 (匹配失败)
-
-            if in_range:
-                filtered_count += 1
-
-                # 获取对应的Note对象
-                record_idx = item['record_index']
-                replay_idx = item['replay_index']
-                record_note, replay_note = pair_dict.get((record_idx, replay_idx), (None, None))
-
-                if record_note is None or replay_note is None:
-                    continue
+                # 计算差值
+                hammer_time_diff = (rep_hammer_time - rec_hammer_time) / 10.0 if rec_hammer_time is not None and rep_hammer_time is not None else None
+                hammer_velocity_diff = rep_hammer_velocity - rec_hammer_velocity if rec_hammer_velocity is not None and rep_hammer_velocity is not None else None
 
                 # 创建录制和播放行
-                record_row = create_table_row(item, record_note, '录制', grade_key)
-                replay_row = create_table_row(item, replay_note, '播放', grade_key)
+                record_row = {
+                    'data_type': '录制',
+                    'global_index': rec_note.uuid,  # 使用 UUID 作为唯一标识
+                    'keyId': rec_note.id,
+                    'keyOn': f"{rec_note.key_on_ms:.2f}" if rec_note.key_on_ms else 'N/A',
+                    'keyOff': f"{rec_note.key_off_ms:.2f}" if rec_note.key_off_ms else 'N/A',
+                    'hammer_times': format_hammer_time(rec_note),
+                    'hammer_velocities': format_hammer_velocity(rec_note),
+                    'duration': f"{rec_note.duration_ms:.2f}" if rec_note.duration_ms else 'N/A',
+                    'hammer_time_diff': '',  # 录制行没有差值
+                    'hammer_velocity_diff': '',  # 录制行没有差值
+                    'match_status': f"延时误差: {keyon_error_ms:.2f}ms",  # 直接使用保存的误差
+                }
 
+                replay_row = {
+                    'data_type': '播放',
+                    'global_index': rep_note.uuid,  # 使用 UUID 作为唯一标识
+                    'keyId': rep_note.id,
+                    'keyOn': f"{rep_note.key_on_ms:.2f}" if rep_note.key_on_ms else 'N/A',
+                    'keyOff': f"{rep_note.key_off_ms:.2f}" if rep_note.key_off_ms else 'N/A',
+                    'hammer_times': format_hammer_time(rep_note),
+                    'hammer_velocities': format_hammer_velocity(rep_note),
+                    'duration': f"{rep_note.duration_ms:.2f}" if rep_note.duration_ms else 'N/A',
+                    'hammer_time_diff': f"{hammer_time_diff:+.2f}ms" if hammer_time_diff is not None else 'N/A',
+                    'hammer_velocity_diff': f"{hammer_velocity_diff:+.2f}" if hammer_velocity_diff is not None else 'N/A',
+                    'match_status': f"延时误差: {keyon_error_ms:.2f}ms",  # 直接使用保存的误差
+                }
+                
                 # 添加算法名称（如果适用）
                 if algorithm_name:
                     record_row['algorithm_name'] = algorithm_name
                     replay_row['algorithm_name'] = algorithm_name
-
+                
                 detail_data.extend([record_row, replay_row])
-
+        
         return detail_data
-
+    
     except Exception as e:
-        print(f"获取评级统计详细数据失败: {e}")
+        logger.warning(f"获取评级统计详细数据失败: {e}")
         traceback.print_exc()
         return []
 
@@ -873,7 +869,7 @@ def get_failed_matches_detail_data(note_matcher, algorithm_name: Optional[str] =
         return detail_data
 
     except Exception as e:
-        print(f"获取匹配失败详细数据失败: {e}")
+        logger.warning(f"[WARNING] 获取匹配失败详细数据失败: {e}")
         traceback.print_exc()
         return []
 
@@ -902,7 +898,7 @@ def create_failed_match_row(note, index: int, data_type: str, reason: str, algor
         }
 
         # 时间信息
-        if hasattr(note, 'after_touch') and note.after_touch is not None and not note.after_touch.empty:
+        if note.after_touch is not None and not note.after_touch.empty:
             try:
                 keyon_time = note.after_touch.index[0]
                 keyoff_time = note.after_touch.index[-1] if len(note.after_touch.index) > 1 else keyon_time
@@ -989,7 +985,7 @@ def show_single_grade_detail(button_index, session_id, session_manager):
             # 普通匹配的列定义 - 分行显示录制和播放信息，包含锤击时间和锤速
             columns = [
                 {"name": "类型", "id": "data_type"},
-                {"name": "全局索引", "id": "global_index"},
+                {"name": "UUID", "id": "global_index"},
                 {"name": "键位ID", "id": "keyId"},
                 {"name": "按键时间(ms)", "id": "keyOn"},
                 {"name": "释放时间(ms)", "id": "keyOff"},
@@ -1030,7 +1026,8 @@ def show_single_grade_detail(button_index, session_id, session_manager):
                     'fontSize': '14px',
                     'fontFamily': 'Arial, sans-serif',
                     'padding': '8px',
-                    'minWidth': '80px'
+                    'minWidth': '80px',
+                    'cursor': 'pointer'  # 添加指针样式，提示可点击
                 },
                 style_header={
                     'backgroundColor': '#f8f9fa',

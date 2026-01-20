@@ -114,6 +114,60 @@ class ApplicationManager:
                 ]
             ),
             
+            # 评级统计曲线对比模态框
+            html.Div([
+                html.Div([
+                    html.Div([
+                        html.Div([
+                            html.H4("评级统计曲线对比", style={'margin': '0', 'padding': '10px 20px', 'borderBottom': '1px solid #dee2e6'}),
+                            html.Button("×", id="close-grade-detail-curves-modal", className="close", style={
+                                'position': 'absolute',
+                                'right': '15px',
+                                'top': '10px',
+                                'fontSize': '28px',
+                                'fontWeight': 'bold',
+                                'lineHeight': '1',
+                                'color': '#000',
+                                'textShadow': '0 1px 0 #fff',
+                                'opacity': '0.5',
+                                'background': 'none',
+                                'border': 'none',
+                                'cursor': 'pointer'
+                            }),
+                        ], style={'position': 'relative', 'borderBottom': '1px solid #dee2e6'}),
+                        html.Div([
+                            html.Div(id='grade-detail-curves-comparison-container', children=[])
+                        ], id='grade-detail-curves-modal-content', className="modal-body", style={
+                            'padding': '10px 20px 20px 20px',
+                            'maxHeight': '90vh',
+                            'overflowY': 'auto'
+                        }),
+                    ], style={
+                        'position': 'relative',
+                        'backgroundColor': 'white',
+                        'borderRadius': '8px',
+                        'boxShadow': '0 4px 20px rgba(0,0,0,0.3)',
+                        'width': '90%',
+                        'maxWidth': '1200px',
+                        'maxHeight': '90vh',
+                        'display': 'flex',
+                        'flexDirection': 'column'
+                    })
+                ], id="grade-detail-curves-modal", className="modal", style={
+                    'display': 'none',  # 初始隐藏，回调中设置为'flex'显示
+                    'position': 'fixed',
+                    'zIndex': '9999',
+                    'left': '0',
+                    'top': '0',
+                    'width': '100%',
+                    'height': '100%',
+                    'backgroundColor': 'rgba(0,0,0,0.6)',
+                    'backdropFilter': 'blur(5px)',
+                    'alignItems': 'center',  # 垂直居中
+                    'justifyContent': 'center'  # 水平居中
+                })
+            ]),
+            
         ], fluid=True)
         
         # 注册页面路由回调（在注册其他回调之前）
@@ -238,6 +292,10 @@ class ApplicationManager:
             # 散点图分析页
             from pages.scatter_analysis import layout
             return layout()
+        elif pathname == '/track-comparison':
+            # 音轨对比页
+            from pages.track_comparison import layout
+            return layout()
         else:
             # 404页面
             return dbc.Alert([
@@ -259,6 +317,14 @@ class ApplicationManager:
     def run(self) -> None:
         """运行应用"""
         logger = Logger.get_logger()
+        
+        # 检查日志级别环境变量
+        log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
+        # 检查是否精确匹配模式（只显示指定级别）
+        exact_match = os.environ.get('LOG_EXACT_MATCH', 'false').lower() == 'true'
+        
+        if log_level in ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']:
+            Logger.set_level(log_level, exact_match=exact_match)
 
         # 只在主进程中记录启动信息，避免Flask debug模式下的重复日志
         if os.environ.get("WERKZEUG_RUN_MAIN") == "true":

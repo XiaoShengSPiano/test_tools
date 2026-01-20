@@ -16,7 +16,7 @@ from .spmid_reader import Note
 from .types import ErrorNote
 from .data_filter import DataFilter
 from .invalid_notes_statistics import InvalidNotesStatistics
-from .note_matcher import NoteMatcher
+from .note_matcher import NoteMatcher, MatchType
 from .error_detector import ErrorDetector
 from .filter_collector import FilterCollector
 from .filter_integrator import FilterIntegrator
@@ -43,15 +43,16 @@ class SPMIDAnalyzer:
         # 初始化各个组件
         self.data_filter: DataFilter()
         self.note_matcher: NoteMatcher()
-        self.error_detector: ErrorDetector()
+        # ErrorDetector已移除，功能已集成到NoteMatcher中
         
-        # 分析结果
+        # 分析结果（现在直接从NoteMatcher获取）
         self.multi_hammers: List[ErrorNote] = []
         self.drop_hammers: List[ErrorNote] = []
+        self.abnormal_matches: List[ErrorNote] = []  # 异常匹配对
         self.valid_record_data: List[Note] = []
         self.valid_replay_data: List[Note] = []
         self.invalid_statistics: InvalidNotesStatistics()  # 使用统计对象
-        self.matched_pairs: List[Tuple[int, int, Note, Note]] = []
+        self.matched_pairs: List[Tuple[Note, Note, MatchType, float]] = []  # (record_note, replay_note, match_type, keyon_error_ms)
         
         # 统计信息
         self.analysis_stats: Dict[str, Any] = {}
@@ -105,32 +106,32 @@ class SPMIDAnalyzer:
             self.invalid_statistics.replay_total = len(replay_data)
             self.invalid_statistics.replay_valid = len(replay_data)
         
-        # 步骤3：执行按键匹配
+        # 步骤3：执行按键匹配（现在包含错误检测）
         matching_start_time = time.time()
-    
-
-        self.matched_pairs = self.note_matcher.find_all_matched_pairs(record_data, replay_data)
+        
+        # NoteMatcher现在在匹配过程中直接进行错误检测和分类
+        # 执行匹配（会直接设置note_matcher.matched_pairs，包含评级信息）
+        self.note_matcher.find_all_matched_pairs(record_data, replay_data)
+        # matched_pairs 已在匹配过程中被正确填充，直接引用即可
+        self.matched_pairs = self.note_matcher.matched_pairs
 
         matching_end_time = time.time()
         matching_duration = matching_end_time - matching_start_time
-        # logger.info(f"按键匹配完成: 耗时{matching_duration:.3f}秒, 匹配对{len(self.matched_pairs)}个")
         
         # 保存匹配统计信息
         self.match_statistics = self.note_matcher.match_statistics
         
-        # 步骤3：分析异常（使用原始数据和匹配结果）
-        # 基于匹配结果分析多锤和丢锤，使用原始数据确保所有音符都被考虑
-        error_analysis_start_time = time.time()
-        # logger.info(f"开始异常检测: 匹配对{len(self.matched_pairs)}个")
+        # 步骤4：从NoteMatcher获取错误检测结果
 
-        self.drop_hammers, self.multi_hammers = self.error_detector.analyze_hammer_issues(
-            record_data, replay_data, self.matched_pairs,
-            note_matcher=self.note_matcher
-        )
-
-        error_analysis_end_time = time.time()
-        error_analysis_duration = error_analysis_end_time - error_analysis_start_time
-        # logger.info(f"异常检测完成: 耗时{error_analysis_duration:.3f}秒, 丢锤{len(self.drop_hammers)}个, 多锤{len(self.multi_hammers)}个")
+        self.drop_hammers = self.note_matcher.drop_hammers
+        self.multi_hammers = self.note_matcher.multi_hammers
+        self.abnormal_matches = self.note_matcher.abnormal_matches
+        
+        logger.info(f"    ✅ 匹配与错误检测完成: 耗时{matching_duration:.3f}秒")
+        logger.info(f"       - 精确匹配对: {len(self.matched_pairs)}个")
+        logger.info(f"       - 丢锤: {len(self.drop_hammers)}个")
+        logger.info(f"       - 多锤: {len(self.multi_hammers)}个")
+        logger.info(f"       - 异常匹配对: {len(self.abnormal_matches)}个")
         
         # # 步骤4：数据过滤（用于统计无效音符信息）
         # filter_start_time = time.time()
@@ -144,14 +145,14 @@ class SPMIDAnalyzer:
         self.initial_valid_record_data = record_data
         self.initial_valid_replay_data = replay_data
         
-        # 步骤5：提取正常匹配的音符对
-        matched_record_data, matched_replay_data = self.note_matcher.extract_normal_matched_pairs(
-            self.matched_pairs, self.multi_hammers, self.drop_hammers
-        )
-        
-        # 保存匹配后的数据
-        self.valid_record_data = matched_record_data
-        self.valid_replay_data = matched_replay_data
+        # 步骤5：从精确匹配对中提取音符数据（用于后续分析）
+        # matched_pairs 是 List[Tuple[Note, Note, MatchType, float]]，提取前两个元素即可
+        if self.matched_pairs:
+            self.valid_record_data = [rec_note for rec_note, _, _, _ in self.matched_pairs]
+            self.valid_replay_data = [rep_note for _, rep_note, _, _ in self.matched_pairs]
+        else:
+            self.valid_record_data = []
+            self.valid_replay_data = []
 
         # 步骤6：记录统计信息
         self._log_invalid_notes_statistics(record_data, replay_data)
@@ -175,7 +176,6 @@ class SPMIDAnalyzer:
         # 初始化各个组件
         self.data_filter = DataFilter()
         self.note_matcher = NoteMatcher()
-        self.error_detector = ErrorDetector()
         
         logger.info("所有分析组件初始化完成")
     
@@ -204,15 +204,19 @@ class SPMIDAnalyzer:
         record_invalid = self.invalid_statistics.record_invalid_count if self.invalid_statistics else 0
         replay_invalid = self.invalid_statistics.replay_invalid_count if self.invalid_statistics else 0
         
+        # 使用初始有效数据的长度，而不是匹配后的数据长度
+        # initial_valid_xxx_data 包含所有通过过滤的有效音符（1-88号按键）
+        total_record_valid = len(self.initial_valid_record_data) if self.initial_valid_record_data else 0
+        total_replay_valid = len(self.initial_valid_replay_data) if self.initial_valid_replay_data else 0
+        
         self.analysis_stats = {
-            'total_record_notes': len(self.valid_record_data),
-            'total_replay_notes': len(self.valid_replay_data),
+            'total_record_notes': total_record_valid,  # 录制有效音符总数（不仅仅是匹配的）
+            'total_replay_notes': total_replay_valid,  # 播放有效音符总数（不仅仅是匹配的）
             'matched_pairs': len(self.matched_pairs),
             'drop_hammers': len(self.drop_hammers),
             'multi_hammers': len(self.multi_hammers),
             'record_invalid_notes': record_invalid,
             'replay_invalid_notes': replay_invalid,
-            'global_time_offset': 0.0  # 已删除时序对齐功能，固定为0
         }
     
     def get_analysis_stats(self) -> Dict[str, Any]:

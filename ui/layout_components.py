@@ -40,7 +40,6 @@ def create_grade_statistics_rows(graded_stats, algorithm_name=None):
     # 计算总匹配对数（只统计成功匹配的评级）
     total_count = sum(graded_stats.get(level, {}).get('count', 0)
                      for level in GRADE_LEVELS)
-    print(f"最终总匹配对数 total_count: {total_count}")
 
     if total_count > 0:
         # 总体统计行
@@ -1441,12 +1440,12 @@ def create_report_layout(backend):
                 graded_stats = backend.get_graded_error_stats()
                 if graded_stats and 'error' not in graded_stats:
                     # 构建评级统计内容
-
                     # 使用统一函数创建评级统计UI
                     graded_rows.extend(create_grade_statistics_rows(graded_stats, algorithm_name=None))
 
             except Exception as e:
                 logger.warning(f"创建单算法评级统计卡片失败: {e}")
+                traceback.print_exc()
                 graded_rows = []
 
         # 单算法模式：直接返回包含评级统计的布局

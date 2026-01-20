@@ -5,6 +5,28 @@ from datetime import datetime
 import sys
 
 
+class LevelFilter(logging.Filter):
+    """日志级别过滤器 - 只显示指定级别的日志"""
+    
+    def __init__(self, level=None, exact_match=False):
+        """
+        初始化过滤器
+        :param level: 日志级别 (例如 logging.DEBUG)
+        :param exact_match: 是否精确匹配（True=仅显示该级别，False=显示该级别及以上）
+        """
+        super().__init__()
+        self.level = level
+        self.exact_match = exact_match
+    
+    def filter(self, record):
+        if self.level is None:
+            return True
+        if self.exact_match:
+            return record.levelno == self.level
+        else:
+            return record.levelno >= self.level
+
+
 class ColoredFormatter(logging.Formatter):
     """彩色日志格式化器"""
     
@@ -191,6 +213,50 @@ class Logger:
         cls._reconfigure_handlers()
         if cls._logger:
             cls._logger.info(f"💾 文件输出已{'启用' if enable else '禁用'}")
+
+    @classmethod
+    def set_level(cls, level: str, exact_match: bool = False):
+        """
+        设置日志级别
+        :param level: 日志级别 ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL')
+        :param exact_match: 是否精确匹配（True=仅显示该级别，False=显示该级别及以上）
+        """
+        level_map = {
+            'DEBUG': logging.DEBUG,
+            'INFO': logging.INFO,
+            'WARNING': logging.WARNING,
+            'ERROR': logging.ERROR,
+            'CRITICAL': logging.CRITICAL
+        }
+        
+        if level.upper() not in level_map:
+            if cls._logger:
+                cls._logger.error(f"❌ 无效的日志级别: {level}")
+            return
+        
+        log_level = level_map[level.upper()]
+        
+        # 设置logger的级别为DEBUG（最低级别），由filter来控制显示
+        if cls._logger:
+            cls._logger.setLevel(logging.DEBUG)
+        
+        # 为所有handlers添加过滤器
+        level_filter = LevelFilter(level=log_level, exact_match=exact_match)
+        
+        if cls._console_handler:
+            # 移除旧的过滤器
+            cls._console_handler.filters.clear()
+            cls._console_handler.addFilter(level_filter)
+            cls._console_handler.setLevel(logging.DEBUG)  # handler接收所有级别，由filter控制
+        
+        if cls._normal_file_handler:
+            cls._normal_file_handler.filters.clear()
+            cls._normal_file_handler.addFilter(level_filter)
+            cls._normal_file_handler.setLevel(logging.DEBUG)
+        
+        if cls._logger:
+            match_type = "仅显示" if exact_match else "显示及以上"
+            cls._logger.info(f"📊 日志级别已设置为: {level.upper()} ({match_type})")
 
     @classmethod
     def get_log_files(cls):

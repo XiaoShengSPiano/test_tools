@@ -62,7 +62,7 @@ class SessionManager:
             # 如果会话不存在，创建新的backend实例
             if session_id not in self.backends:
                 self.backends[session_id] = PianoAnalysisBackend(session_id, self.history_manager)
-                logger.info(f"✅ 为会话 {session_id} 创建backend实例")
+                logger.debug(f"✅ 为会话 {session_id} 创建backend实例")
             
             # 更新活动时间
             self.session_activity[session_id] = time.time()

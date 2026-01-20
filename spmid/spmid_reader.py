@@ -28,6 +28,8 @@ class Note:
     key_on_ms: float = None     # 按键开始时间（毫秒）
     key_off_ms: float = None    # 按键结束时间（毫秒）
     duration_ms: float = None   # 持续时间（毫秒）
+    first_hammer_velocity: int = None   # 第一个锤速值
+    first_hammer_time: float = None    # 第一个锤击时间
 
     # 拆分元数据 - 用于标识拆分后的音符
     split_parent_idx: int = None   # 父索引（原始数据的索引）
@@ -53,12 +55,21 @@ class Note:
             self.key_off_ms = None
             self.duration_ms = None
 
-    def get_first_hammer_velocity(self) -> int:
+    def get_first_hammer_velocity(self):
         """获取第一个锤速值"""
         if self.hammers is not None and not self.hammers.empty:
-           return self.hammers.iloc[0]
+            # 返回第一个hammer的velocity值，确保为有符号整数以避免溢出
+            return int(self.hammers.values[0])
         else:
-           return None
+            return None
+    
+    def get_first_hammer_time(self):
+        """获取第一个锤击时间（包含offset）"""
+        if self.hammers is not None and not self.hammers.empty:
+            # 返回第一个hammer的时间（index + offset）/ 10.0 转换为ms
+            return (self.hammers.index[0] + self.offset) / 10.0
+        else:
+            return None
 
 
 # =============================================================================

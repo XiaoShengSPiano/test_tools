@@ -717,15 +717,25 @@ class PlotGenerator:
             row=row, col=1
         )
     
-    def _add_hammer_trace(self, fig, note, color, name, legend_name, legendgroup, 
+    def _add_hammer_trace(self, fig, note, color, name, legend_name, legendgroup,
                          row, symbol='circle', size=8, algorithm_name=None):
         """添加锤子数据点轨迹"""
         if not self._has_valid_data(note, 'hammers'):
             return
-        
+
         time_actual, _, values = self._calculate_time_data(note, 'hammers')
-        first_hammer_time = time_actual[0] if len(time_actual) > 0 else 0.0
-        
+
+        # 过滤掉锤速为0的锤击时间点
+        valid_indices = [i for i, velocity in enumerate(values) if velocity != 0]
+        if not valid_indices:
+            # 如果没有有效的锤击点，直接返回
+            return
+
+        filtered_time = [time_actual[i] for i in valid_indices]
+        filtered_values = [values[i] for i in valid_indices]
+
+        first_hammer_time = filtered_time[0] if len(filtered_time) > 0 else 0.0
+
         # 构建hover模板
         if algorithm_name:
             hovertemplate = f'算法: {algorithm_name}<br>锤子时间: %{{customdata:.2f}} ms<br>锤子速度: %{{y}}<extra></extra>'
@@ -734,13 +744,13 @@ class PlotGenerator:
             if '录制' in name:
                 hover_parts.append(f'第一个锤子时间: {first_hammer_time:.2f} ms')
             hovertemplate = '<br>'.join(hover_parts) + '<extra></extra>'
-        
+
         fig.add_trace(
             go.Scatter(
-                x=time_actual, y=values, mode='markers', name=name,
+                x=filtered_time, y=filtered_values, mode='markers', name=name,
                 marker=dict(color=color, size=size, symbol=symbol),
                 showlegend=True, legend=legend_name, legendgroup=legendgroup,
-                customdata=time_actual, hovertemplate=hovertemplate
+                customdata=filtered_time, hovertemplate=hovertemplate
             ),
             row=row, col=1
         )
