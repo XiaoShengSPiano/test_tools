@@ -2042,17 +2042,25 @@ class MultiAlgorithmPlotGenerator:
     
     def _get_matched_pairs(self, algorithm: AlgorithmDataset):
         """
-        获取算法的匹配对数据
-        
+        获取算法的匹配对数据，转换为散点图所需的格式
+
         Args:
             algorithm: 算法数据集
-            
+
         Returns:
-            匹配对列表，如果获取失败返回空列表
+            匹配对列表 [(record_idx, replay_idx, record_note, replay_note), ...]
         """
         try:
-            if algorithm.analyzer:
-                return algorithm.analyzer.matched_pairs or []
+            if algorithm.analyzer and algorithm.analyzer.matched_pairs:
+                # 将当前格式 (record_note, replay_note, match_type, error_ms)
+                # 转换为散点图所需的格式 (record_idx, replay_idx, record_note, replay_note)
+                result = []
+                for idx, (rec_note, rep_note, match_type, error_ms) in enumerate(algorithm.analyzer.matched_pairs):
+                    # 使用UUID作为索引，因为UUID是全局唯一的标识符
+                    record_idx = getattr(rec_note, 'uuid', f"rec_{idx}")
+                    replay_idx = getattr(rep_note, 'uuid', f"rep_{idx}")
+                    result.append((record_idx, replay_idx, rec_note, rep_note))
+                return result
         except Exception as e:
             logger.warning(f"获取匹配对失败: {e}")
         return []

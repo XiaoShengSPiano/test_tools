@@ -1435,6 +1435,36 @@ class PianoAnalysisBackend:
         """生成同种算法不同曲子的相对延时分布图（委托给PlotService）"""
         return self.plot_service.generate_relative_delay_distribution_plot()
 
+    def get_delay_metrics(self, algorithm=None) -> Dict[str, Any]:
+        """
+        获取延时误差统计指标
+
+        Args:
+            algorithm: 指定算法（用于多算法模式下的单算法查询）
+
+        Returns:
+            Dict[str, Any]: 包含延时误差统计指标的数据
+        """
+        try:
+            # 如果指定了算法，使用该算法的数据
+            if algorithm:
+                if algorithm.analyzer and algorithm.analyzer.note_matcher:
+                    delay_metrics = algorithm.analyzer.note_matcher._get_delay_metrics()
+                    return delay_metrics.get_all_metrics()
+                else:
+                    return {'error': f'算法 {algorithm} 没有有效的分析器'}
+
+            # 单算法模式
+            if self.analyzer and self.analyzer.note_matcher:
+                delay_metrics = self.analyzer.note_matcher._get_delay_metrics()
+                return delay_metrics.get_all_metrics()
+            else:
+                return {'error': '没有有效的分析器'}
+
+        except Exception as e:
+            logger.error(f"获取延时误差统计指标失败: {e}")
+            return {'error': str(e)}
+
     def get_graded_error_stats(self, algorithm=None) -> Dict[str, Any]:
         """
         获取分级误差统计数据

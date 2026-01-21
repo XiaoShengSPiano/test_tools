@@ -106,13 +106,12 @@ def load_report_content(session_id, session_manager):
     
     try:
         # 导入必要的模块
-        from ui.components.grade_statistics import create_grade_statistics_card, create_grade_detail_table_placeholder
+        from ui.components.grade_statistics import create_grade_statistics_card, create_grade_detail_table_placeholder, create_delay_metrics_card
         from ui.components.data_overview import create_data_overview_card
         from ui.components.error_tables import create_error_statistics_section
         
         # 获取后端实例（不创建新的，避免多实例问题）
-        logger.info(f"[DEBUG] pages/report.py - session_manager地址: {id(session_manager)}")
-        logger.info(f"[DEBUG] pages/report.py - session_manager.backends: {list(session_manager.backends.keys())}")
+
         backend = session_manager.get_backend(session_id)
         logger.info(f"[DEBUG] pages/report.py - backend: {backend}")
         
@@ -128,12 +127,7 @@ def load_report_content(session_id, session_manager):
         
         # 检查是否有活跃算法
         active_algorithms = backend.get_active_algorithms()
-        
-        logger.info(f"[DEBUG] active_algorithms: {active_algorithms} (count={len(active_algorithms) if active_algorithms else 0})")
-        
-        # 添加更详细的调试信息
-        logger.info(f"[DEBUG] backend对象: {backend}")
-        logger.info(f"[DEBUG] backend.multi_algorithm_manager对象: {backend.multi_algorithm_manager}")
+
         
         if backend.multi_algorithm_manager:
             all_algorithms = backend.multi_algorithm_manager.get_all_algorithms()
@@ -171,8 +165,19 @@ def load_report_content(session_id, session_manager):
             # 2. 错误统计
             error_sections = create_error_statistics_section(backend, [algorithm])
             report_components.extend(error_sections)
-            
-            # 3. 评级统计
+
+            # 3. 延时误差统计指标
+            try:
+                delay_metrics = backend.get_delay_metrics(algorithm)
+                if delay_metrics:
+                    report_components.append(
+                        create_delay_metrics_card(delay_metrics, algorithm_name)
+                    )
+            except Exception as e:
+                logger.warning(f"获取延时误差统计指标失败: {e}")
+                traceback.print_exc()
+
+            # 4. 评级统计
             try:
                 graded_stats = backend.get_graded_error_stats(algorithm)
                 if graded_stats and 'error' not in graded_stats:

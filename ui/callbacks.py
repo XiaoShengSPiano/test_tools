@@ -181,12 +181,12 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
 
     # 注册散点图回调 - 暂时禁用
     # register_scatter_callbacks(app, session_manager)
-    
+
     # 多页面架构：禁用所有依赖旧UI的内联回调
     # 这些回调都引用了 main-plot, report-content 等旧组件
     # 新架构中，功能将在各自的页面中重新实现
     return
-    
+
     # ==================== 以下是旧架构的内联回调（已禁用） ====================
 
     # 创建瀑布图跳转处理器实例

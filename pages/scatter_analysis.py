@@ -280,8 +280,6 @@ def register_callbacks(app, session_manager):
                 logger.warning(f"[WARN] Backend尚未初始化 (session={session_id})")
                 return _create_no_backend_alert()
             
-            logger.info(f'馃搳 寮€濮嬬敓鎴愭暎鐐瑰浘: session={session_id}, 绫诲瀷={analysis_type}')
-            
             
             if analysis_type == 'key-delay':
                 figure = backend.generate_key_delay_scatter_plot()

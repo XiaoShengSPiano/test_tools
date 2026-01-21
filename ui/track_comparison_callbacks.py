@@ -5,12 +5,12 @@
 播放音轨对比页面的回调函数
 """
 
-
+import json
 import traceback
 import time
 import dash
 import dash_bootstrap_components as dbc
-from dash import Input, Output, State, html, no_update, ctx, dash_table
+from dash import dcc, Input, Output, State, html, no_update, ctx, dash_table
 from dash.exceptions import PreventUpdate
 from typing import List, Dict, Any
 
@@ -204,14 +204,41 @@ def perform_comparison_handler(n_clicks, checkbox_values, checkbox_ids, baseline
             
             for comp in comparison_results['comparisons']:
                 # 只保留可序列化的数据，移除 Note 对象
+                # 处理未匹配数据，使其可序列化
+                serializable_baseline_unmatched = []
+                for note in comp['unmatched_baseline']:
+                    serializable_baseline_unmatched.append({
+                        'id': note.id,
+                        'uuid': getattr(note, 'uuid', None),
+                        'key_on_ms': getattr(note, 'key_on_ms', None),
+                        'key_off_ms': getattr(note, 'key_off_ms', None),
+                        'duration_ms': getattr(note, 'duration_ms', None),
+                        'first_hammer_time': note.get_first_hammer_time(),
+                        'first_hammer_velocity': note.get_first_hammer_velocity()
+                    })
+
+                serializable_compare_unmatched = []
+                for note in comp['unmatched_compare']:
+                    serializable_compare_unmatched.append({
+                        'id': note.id,
+                        'uuid': getattr(note, 'uuid', None),
+                        'key_on_ms': getattr(note, 'key_on_ms', None),
+                        'key_off_ms': getattr(note, 'key_off_ms', None),
+                        'duration_ms': getattr(note, 'duration_ms', None),
+                        'first_hammer_time': note.get_first_hammer_time(),
+                        'first_hammer_velocity': note.get_first_hammer_velocity()
+                    })
+
                 serializable_comp = {
                     'compare_name': comp['compare_name'],
                     'baseline_name': comp['baseline_name'],
                     'total_matches': comp['total_matches'],
                     'matched_pairs': comp['matched_pairs'],  # 已经是字典列表，可序列化
+                    'unmatched_baseline': serializable_baseline_unmatched,  # 保存可序列化的未匹配数据
+                    'unmatched_compare': serializable_compare_unmatched,    # 保存可序列化的未匹配数据
                     'grade_counts': comp['grade_counts'],
                     'grade_percentages': comp['grade_percentages'],
-                    # 保存未匹配的数量
+                    # 保存未匹配的数量（向后兼容）
                     'unmatched_baseline_count': len(comp['unmatched_baseline']),
                     'unmatched_compare_count': len(comp['unmatched_compare'])
                 }
@@ -234,121 +261,535 @@ def perform_comparison_handler(n_clicks, checkbox_values, checkbox_ids, baseline
             )
 
 
-def toggle_comparison_detail_table_handler(grade_btn_clicks, hide_btn_clicks, store_data):
-    """
-    显示或隐藏音轨对比详细表格
+def _get_unmatched_table_columns():
+    """获取未匹配数据表格的列定义"""
+    return [
+        {'name': '序号', 'id': '序号', 'type': 'numeric'},
+        {'name': 'UUID', 'id': 'uuid', 'type': 'text'},
+        {'name': '按键ID', 'id': 'key_id', 'type': 'numeric'},
+        {'name': '按键开始时间', 'id': 'key_on_ms', 'type': 'text'},
+        {'name': '按键结束时间', 'id': 'key_off_ms', 'type': 'text'},
+        {'name': '持续时间', 'id': 'duration_ms', 'type': 'text'},
+        {'name': '锤击时间', 'id': 'hammer_time', 'type': 'text'},
+        {'name': '锤速', 'id': 'hammer_velocity', 'type': 'text'}
+    ]
 
-    Args:
-        grade_btn_clicks: 评级按钮点击次数列表
-        hide_btn_clicks: 隐藏按钮点击次数
-        store_data: 存储的对比结果数据
 
-    Returns:
-        (表格区域样式, 表格数据, 表格列)
-    """
-    ctx = dash.callback_context
-    if not ctx.triggered:
-        return {'display': 'none'}, [], []
+def _process_unmatched_notes(notes_list):
+    """处理未匹配音符列表，返回表格数据（按按键ID分组并分配序号）"""
+    from collections import defaultdict
 
-    # 获取触发源
-    trigger_id = ctx.triggered[0]['prop_id']
-    
-    # 如果是隐藏按钮触发，直接返回隐藏状态
-    if 'hide-track-comparison-detail-table' in trigger_id:
-        return {'display': 'none'}, [], []
+    # 按按键ID分组
+    notes_by_key = defaultdict(list)
+    for note in notes_list:
+        key_id = note['id']
+        notes_by_key[key_id].append(note)
 
-    # 否则是评级按钮触发，显示对应等级的数据
-    button_index = eval(trigger_id.split('.')[0])['index']  # "音轨A_EXCELLENT"
+    result = []
 
-    # 解析按钮索引
-    compare_name, grade_key = button_index.rsplit('_', 1)
+    # 对每个按键ID的音符按时间排序并分配序号
+    for key_id in sorted(notes_by_key.keys()):
+        key_notes = notes_by_key[key_id]
+        # 按时间排序
+        key_notes.sort(key=lambda n: n.get('key_on_ms', 0) or 0)
 
-    logger.info(f"显示详细表格: {compare_name}, 等级: {grade_key}")
+        # 为每个音符分配按键内部序号
+        for seq_idx, note in enumerate(key_notes):
+            result.append({
+                'uuid': note.get('uuid', 'N/A'),
+                'key_id': note['id'],
+                '序号': seq_idx + 1,  # 按键内部序号，从1开始
+                'key_on_ms': f"{note.get('key_on_ms', 'N/A'):.2f}ms" if note.get('key_on_ms') is not None else 'N/A',
+                'key_off_ms': f"{note.get('key_off_ms', 'N/A'):.2f}ms" if note.get('key_off_ms') is not None else 'N/A',
+                'duration_ms': f"{note.get('duration_ms', 'N/A'):.2f}ms" if note.get('duration_ms') is not None else 'N/A',
+                'hammer_time': f"{note.get('first_hammer_time', 'N/A'):.2f}ms" if note.get('first_hammer_time') is not None else 'N/A',
+                'hammer_velocity': f"{note.get('first_hammer_velocity', 'N/A')}" if note.get('first_hammer_velocity') is not None else 'N/A'
+            })
 
-    # 从存储中获取数据
-    if not store_data or 'results' not in store_data:
-        return {'display': 'none'}, [], []
+    return result
 
-    results = store_data['results']
-    baseline_track = results.get('baseline_track', '未知')
-    comparisons = results.get('comparisons', [])
 
-    # 找到对应的对比数据
-    target_comparison = None
-    for comp in comparisons:
-        if comp['compare_name'] == compare_name:
-            target_comparison = comp
-            break
+def _get_unmatched_data(target_comparison):
+    """获取未匹配数据的完整表格数据"""
+    baseline_unmatched_data = []
+    compare_unmatched_data = []
 
-    if not target_comparison:
-        return {'display': 'none'}, [], []
+    if 'unmatched_baseline' in target_comparison:
+        baseline_raw = target_comparison['unmatched_baseline']
+        baseline_unmatched_data = _process_unmatched_notes(baseline_raw)
 
-    # 过滤指定等级的匹配对
-    matched_pairs = target_comparison['matched_pairs']
-    filtered_pairs = [pair for pair in matched_pairs if pair['grade'] == grade_key]
+    if 'unmatched_compare' in target_comparison:
+        compare_raw = target_comparison['unmatched_compare']
+        compare_unmatched_data = _process_unmatched_notes(compare_raw)
 
-    if not filtered_pairs:
-        return {'display': 'none'}, [], []
+    return baseline_unmatched_data, compare_unmatched_data
 
-    # 创建表格数据 - 交替显示标准音轨和对比音轨的数据
+
+def _generate_anomaly_table_data(anomaly_pairs, compare_name, baseline_track, grade_key):
+    """生成异常匹配数据表格（分行显示，与详细对比表格保持一致的风格）"""
     table_data = []
-    for pair in filtered_pairs:
-        # 第一行：标准音轨的数据
+
+    for pair in anomaly_pairs:
+        baseline_key_id = pair.get('key_id')  # 数据中存储的是 key_id
+        compare_key_id = pair.get('key_id')   # 两个音轨的key_id应该相同
+        baseline_key_on = pair.get('baseline_keyon', 0)  # 数据中的字段名
+        compare_key_on = pair.get('compare_keyon', 0)
+        baseline_duration = pair.get('baseline_duration', 0)
+        compare_duration = pair.get('compare_duration', 0)
+        baseline_hammer_time = pair.get('baseline_hammer_time', 0)
+        compare_hammer_time = pair.get('compare_hammer_time', 0)
+        baseline_velocity = pair.get('baseline_hammer_velocity', 0)
+        compare_velocity = pair.get('compare_hammer_velocity', 0)  # 修正字段名
+        hammer_time_diff = pair.get('hammer_time_diff_ms', 0)  # 数据中的字段名
+
+        # 计算锤速还原百分比：(对比锤速 / 标准锤速) * 100%
+        velocity_percentage = 0.0
+        if baseline_velocity and baseline_velocity != 0:
+            velocity_percentage = (compare_velocity / baseline_velocity) * 100
+
+        # 计算差值：对比数据 - 标准数据
+        keyon_diff = compare_key_on - baseline_key_on
+        hammer_time_diff = compare_hammer_time - baseline_hammer_time
+        duration_diff = compare_duration - baseline_duration
+        velocity_diff = compare_velocity - baseline_velocity
+
+        # 第一行：标准音轨的数据（差值列为空）
         table_data.append({
-            'row_type': baseline_track,  # 标准音轨文件名
+            'SPMID文件': baseline_track,
             '数据类型': '标准',
-            '琴键编号': pair['key_id'],
-            '序号': pair['sequence'],
-            '时间': f"{pair['baseline_keyon']:.2f}ms",
-            '锤击时间': f"{pair['baseline_hammer_time']:.2f}ms",
-            '锤速': f"{int(pair['baseline_hammer_velocity'])}",
-            '持续时间': f"{pair['baseline_duration']:.2f}ms",
-            'keyon时间差': '',  # 标准行不需要显示差异
+            '琴键编号': baseline_key_id,
+            '序号': pair.get('sequence', 0),
+            '时间': f"{baseline_key_on:.2f}ms" if baseline_key_on else 'N/A',
+            '锤击时间': f"{baseline_hammer_time:.2f}ms" if baseline_hammer_time else 'N/A',
+            '锤速': int(baseline_velocity),
+            '持续时间': f"{baseline_duration:.2f}ms" if baseline_duration else 'N/A',
+            'keyon时间差': '',
             '锤击时间差': '',
             '持续时间差': '',
             '锤速差': '',
+            '锤速还原百分比': '',
             '评级': grade_key
         })
 
-        # 第二行：对比音轨的数据
+        # 第二行：对比音轨的数据（差值列显示差值）
         table_data.append({
-            'row_type': compare_name,  # 对比音轨文件名
+            'SPMID文件': compare_name,
             '数据类型': '对比',
-            '琴键编号': pair['key_id'],
-            '序号': pair['sequence'],
-            '时间': f"{pair['compare_keyon']:.2f}ms",
-            '锤击时间': f"{pair['compare_hammer_time']:.2f}ms",
-            '锤速': f"{int(pair['compare_hammer_velocity'])}",
-            '持续时间': f"{pair['compare_duration']:.2f}ms",
-            'keyon时间差': f"{pair['keyon_diff_ms']:+.2f}ms",
-            '锤击时间差': f"{pair['hammer_time_diff_ms']:+.2f}ms",
-            '持续时间差': f"{pair['duration_diff_ms']:+.2f}ms",
-            '锤速差': f"{pair['hammer_velocity_diff']}" if isinstance(pair['hammer_velocity_diff'], str) else f"{int(pair['hammer_velocity_diff'])}",
+            '琴键编号': compare_key_id,
+            '序号': pair.get('sequence', 0),
+            '时间': f"{compare_key_on:.2f}ms" if compare_key_on else 'N/A',
+            '锤击时间': f"{compare_hammer_time:.2f}ms" if compare_hammer_time else 'N/A',
+            '锤速': int(compare_velocity),
+            '持续时间': f"{compare_duration:.2f}ms" if compare_duration else 'N/A',
+            'keyon时间差': f"{keyon_diff:+.2f}ms",
+            '锤击时间差': f"{hammer_time_diff:+.2f}ms",
+            '持续时间差': f"{duration_diff:+.2f}ms",
+            '锤速差': f"{velocity_diff:+d}",
+            '锤速还原百分比': f"{velocity_percentage:.1f}%" if velocity_percentage else 'N/A',
             '评级': grade_key
         })
 
-    # 定义表格列
+    # 使用与详细对比表格相同的列定义
     columns = [
-        {'name': 'SPMID文件', 'id': 'row_type'},  # SPMID文件名
-        {'name': '数据类型', 'id': '数据类型'},  # 标准/对比
+        {'name': 'SPMID文件', 'id': 'SPMID文件'},
+        {'name': '数据类型', 'id': '数据类型'},
         {'name': '琴键编号', 'id': '琴键编号', 'type': 'numeric'},
         {'name': '序号', 'id': '序号', 'type': 'numeric'},
         {'name': '时间', 'id': '时间', 'type': 'text'},
         {'name': '锤击时间', 'id': '锤击时间', 'type': 'text'},
-        {'name': '锤速', 'id': '锤速', 'type': 'text'},
+        {'name': '锤速', 'id': '锤速', 'type': 'numeric'},
         {'name': '持续时间', 'id': '持续时间', 'type': 'text'},
         {'name': 'keyon时间差', 'id': 'keyon时间差', 'type': 'text'},
         {'name': '锤击时间差', 'id': '锤击时间差', 'type': 'text'},
         {'name': '持续时间差', 'id': '持续时间差', 'type': 'text'},
         {'name': '锤速差', 'id': '锤速差', 'type': 'text'},
+        {'name': '锤速还原百分比', 'id': '锤速还原百分比', 'type': 'text'},
         {'name': '评级', 'id': '评级', 'type': 'text'}
     ]
 
-    logger.info(f"更新表格: {len(table_data)} 行数据")
-    return {'display': 'block'}, table_data, columns
-
+    return table_data, columns
 
 # ==================== Callback Registration ====================
+
+def update_table_visibility_handler(grade_btn_clicks, hide_btn_clicks):
+    """
+    处理表格显示/隐藏的回调逻辑
+
+    Args:
+        grade_btn_clicks: 评级按钮点击次数列表
+        hide_btn_clicks: 隐藏按钮点击次数
+
+    Returns:
+        (表格区域样式, 筛选器区域样式, 状态JSON)
+    """
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return {'display': 'none'}, {'display': 'none'}, json.dumps({'compare_name': None, 'grade_key': None})
+
+    trigger_id = ctx.triggered[0]['prop_id']
+
+    # 如果是隐藏按钮触发，隐藏所有区域
+    if 'hide-track-comparison-detail-table' in trigger_id:
+        return {'display': 'none'}, {'display': 'none'}, json.dumps({'compare_name': None, 'grade_key': None})
+
+    # 如果是评级按钮触发，显示区域并设置状态
+    if 'track-comparison-grade-btn' in trigger_id:
+        try:
+            id_part = trigger_id.split('.')[0]
+            id_dict = json.loads(id_part)
+            button_index = id_dict['index']
+            compare_name, grade_key = button_index.rsplit('_', 1)
+            updated_state = json.dumps({'compare_name': compare_name, 'grade_key': grade_key})
+            return {'display': 'block', 'marginTop': '20px'}, {'display': 'block'}, updated_state
+        except Exception as e:
+            logger.error(f"解析评级按钮失败: {e}")
+            return {'display': 'none'}, {'display': 'none'}, json.dumps({'compare_name': None, 'grade_key': None})
+
+    return {'display': 'none'}, {'display': 'none'}, json.dumps({'compare_name': None, 'grade_key': None})
+
+
+def update_key_filter_options_handler(current_state_json, store_data):
+    """
+    处理按键筛选器选项更新的回调逻辑
+
+    Args:
+        current_state_json: 当前表格状态JSON
+        store_data: 存储的对比结果数据
+
+    Returns:
+        (筛选器选项, 筛选器值)
+    """
+    try:
+        current_state = json.loads(current_state_json) if current_state_json else {}
+        compare_name = current_state.get('compare_name')
+        grade_key = current_state.get('grade_key')
+    except json.JSONDecodeError:
+        return [], None
+
+    if not compare_name or not grade_key or not store_data:
+        return [], None
+
+    # 从存储中获取数据
+    results = store_data.get('results', {})
+    comparisons = results.get('comparisons', [])
+
+    # 找到对应的对比数据
+    target_comparison = None
+    for comparison in comparisons:
+        if comparison['compare_name'] == compare_name:
+            target_comparison = comparison
+            break
+
+    if not target_comparison:
+        return [], None
+
+    # 获取当前评级的匹配对
+    matched_pairs = target_comparison.get('matched_pairs', [])
+    grade_pairs = [pair for pair in matched_pairs if pair.get('grade') == grade_key]
+
+    if not grade_pairs:
+        return [], None
+
+    # 提取当前评级的所有按键ID
+    key_ids = set()
+    for pair in grade_pairs:
+        key_id = pair.get('key_id')
+        if key_id is not None:
+            key_ids.add(key_id)
+
+    # 生成筛选器选项
+    key_filter_options = [
+        {'label': '请选择按键...', 'value': ''},
+        {'label': '全部按键', 'value': 'all'}
+    ]
+
+    # 为每个按键ID添加选项
+    for key_id in sorted(key_ids):
+        key_filter_options.append({
+            'label': f'按键 {key_id}',
+            'value': str(key_id)
+        })
+
+    return key_filter_options, ''
+
+
+def update_unmatched_area_visibility_handler(current_state_json, key_filter_value, store_data):
+    """
+    处理未匹配区域显示的回调逻辑
+
+    Args:
+        current_state_json: 当前表格状态JSON
+        key_filter_value: 按键筛选器值
+        store_data: 存储的对比结果数据
+
+    Returns:
+        未匹配区域样式
+    """
+    try:
+        current_state = json.loads(current_state_json) if current_state_json else {}
+        compare_name = current_state.get('compare_name')
+        grade_key = current_state.get('grade_key')
+    except json.JSONDecodeError:
+        return {'display': 'none'}
+
+    if not compare_name or not grade_key:
+        return {'display': 'none'}
+
+    # 检查是否有有效的筛选值
+    if key_filter_value:
+        return {'display': 'block', 'marginTop': '30px', 'marginBottom': '30px'}
+
+    return {'display': 'none'}
+
+
+def update_detail_table_handler(current_state_json, key_filter_value, store_data):
+    """
+    处理详细对比表格更新的回调逻辑
+
+    Args:
+        current_state_json: 当前表格状态JSON
+        key_filter_value: 按键筛选器值
+        store_data: 存储的对比结果数据
+
+    Returns:
+        (表格数据, 表格列)
+    """
+    try:
+        current_state = json.loads(current_state_json) if current_state_json else {}
+        compare_name = current_state.get('compare_name')
+        grade_key = current_state.get('grade_key')
+    except json.JSONDecodeError:
+        return [], []
+
+    if not compare_name or not grade_key or not store_data:
+        return [], []
+
+    # 从存储中获取数据
+    results = store_data.get('results', {})
+    baseline_track = results.get('baseline_track', '标准音轨')
+    comparisons = results.get('comparisons', [])
+
+    # 找到对应的对比数据
+    target_comparison = None
+    for comparison in comparisons:
+        if comparison['compare_name'] == compare_name:
+            target_comparison = comparison
+            break
+
+    if not target_comparison:
+        return [], []
+
+    # 获取当前评级的匹配对
+    matched_pairs = target_comparison['matched_pairs']
+    grade_pairs = [pair for pair in matched_pairs if pair['grade'] == grade_key]
+
+    # 根据按键筛选器进一步过滤
+    if key_filter_value == 'all' or not key_filter_value:
+        filtered_pairs = grade_pairs  # 显示当前评级的所有数据
+    else:
+        # 只显示选定按键的数据
+        selected_key_id = int(key_filter_value)
+        filtered_pairs = [pair for pair in grade_pairs if pair['key_id'] == selected_key_id]
+
+    if not filtered_pairs:
+        return [], []
+
+    # 创建表格数据 - 标准与对比数据分行显示
+    table_data = []
+    for pair in filtered_pairs:
+        # 计算差值：对比数据 - 标准数据
+        keyon_diff = pair['compare_keyon'] - pair['baseline_keyon']
+        hammer_time_diff = pair['compare_hammer_time'] - pair['baseline_hammer_time']
+        duration_diff = pair['compare_duration'] - pair['baseline_duration']
+        velocity_diff = pair['compare_hammer_velocity'] - pair['baseline_hammer_velocity']
+
+        # 计算锤速还原百分比：(对比锤速 / 标准锤速) * 100%
+        velocity_percentage = 0.0
+        if pair['baseline_hammer_velocity'] and pair['baseline_hammer_velocity'] != 0:
+            velocity_percentage = (pair['compare_hammer_velocity'] / pair['baseline_hammer_velocity']) * 100
+
+        # 第一行：标准音轨的数据（差值列为空）
+        table_data.append({
+            'SPMID文件': baseline_track,
+            '数据类型': '标准',
+            '琴键编号': pair['key_id'],
+            '序号': pair['sequence'],
+            '时间': f"{pair['baseline_keyon']:.2f}ms",
+            '锤击时间': f"{pair['baseline_hammer_time']:.2f}ms",
+            '锤速': int(pair['baseline_hammer_velocity']),
+            '持续时间': f"{pair['baseline_duration']:.2f}ms",
+            'keyon时间差': '',
+            '锤击时间差': '',
+            '持续时间差': '',
+            '锤速差': '',
+            '锤速还原百分比': '',
+            '评级': grade_key
+        })
+
+        # 第二行：对比音轨的数据（差值列显示差值）
+        table_data.append({
+            'SPMID文件': compare_name,
+            '数据类型': '对比',
+            '琴键编号': pair['key_id'],
+            '序号': pair['sequence'],
+            '时间': f"{pair['compare_keyon']:.2f}ms",
+            '锤击时间': f"{pair['compare_hammer_time']:.2f}ms",
+            '锤速': int(pair['compare_hammer_velocity']),
+            '持续时间': f"{pair['compare_duration']:.2f}ms",
+            'keyon时间差': f"{keyon_diff:+.2f}ms",
+            '锤击时间差': f"{hammer_time_diff:+.2f}ms",
+            '持续时间差': f"{duration_diff:+.2f}ms",
+            '锤速差': f"{velocity_diff:+d}",
+            '锤速还原百分比': f"{velocity_percentage:.1f}%" if velocity_percentage else 'N/A',
+            '评级': grade_key
+        })
+
+    # 定义表格列
+    columns = [
+        {'name': 'SPMID文件', 'id': 'SPMID文件'},
+        {'name': '数据类型', 'id': '数据类型'},
+        {'name': '琴键编号', 'id': '琴键编号', 'type': 'numeric'},
+        {'name': '序号', 'id': '序号', 'type': 'numeric'},
+        {'name': '时间', 'id': '时间', 'type': 'text'},
+        {'name': '锤击时间', 'id': '锤击时间', 'type': 'text'},
+        {'name': '锤速', 'id': '锤速', 'type': 'numeric'},
+        {'name': '持续时间', 'id': '持续时间', 'type': 'text'},
+        {'name': 'keyon时间差', 'id': 'keyon时间差', 'type': 'text'},
+        {'name': '锤击时间差', 'id': '锤击时间差', 'type': 'text'},
+        {'name': '持续时间差', 'id': '持续时间差', 'type': 'text'},
+        {'name': '锤速差', 'id': '锤速差', 'type': 'text'},
+        {'name': '锤速还原百分比', 'id': '锤速还原百分比', 'type': 'text'},
+        {'name': '评级', 'id': '评级', 'type': 'text'}
+    ]
+
+    return table_data, columns
+
+
+def update_anomaly_table_handler(current_state_json, key_filter_value, store_data):
+    """
+    处理异常匹配表格更新的回调逻辑
+
+    Args:
+        current_state_json: 当前表格状态JSON
+        key_filter_value: 按键筛选器值
+        store_data: 存储的对比结果数据
+
+    Returns:
+        (异常区域样式, 异常空消息样式, 异常表格样式, 异常表格数据, 异常表格列)
+    """
+    try:
+        current_state = json.loads(current_state_json) if current_state_json else {}
+        compare_name = current_state.get('compare_name')
+        grade_key = current_state.get('grade_key')
+    except json.JSONDecodeError:
+        return {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, [], []
+
+    if not compare_name or not grade_key or not store_data:
+        return {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, [], []
+
+    # 从存储中获取数据
+    results = store_data.get('results', {})
+    baseline_track = results.get('baseline_track', '标准音轨')
+    comparisons = results.get('comparisons', [])
+
+    # 找到对应的对比数据
+    target_comparison = None
+    for comparison in comparisons:
+        if comparison['compare_name'] == compare_name:
+            target_comparison = comparison
+            break
+
+    if not target_comparison:
+        return {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, [], []
+
+    # 获取当前评级的匹配对
+    matched_pairs = target_comparison['matched_pairs']
+    grade_pairs = [pair for pair in matched_pairs if pair['grade'] == grade_key]
+
+    # 生成异常匹配数据
+    anomaly_pairs = []
+    for pair in grade_pairs:
+        baseline_velocity = pair.get('baseline_hammer_velocity', 0)
+        compare_velocity = pair.get('compare_hammer_velocity', 0)
+        if (baseline_velocity == 0 and compare_velocity != 0) or (baseline_velocity != 0 and compare_velocity == 0):
+            anomaly_pairs.append(pair)
+
+    if anomaly_pairs:
+        # 有异常数据，显示表格
+        anomaly_table_data, anomaly_columns = _generate_anomaly_table_data(anomaly_pairs, compare_name, baseline_track, grade_key)
+        return ({'display': 'block', 'marginTop': '20px', 'marginBottom': '20px'},
+                {'display': 'none'},
+                {'display': 'block'},
+                anomaly_table_data,
+                anomaly_columns)
+    else:
+        # 没有异常数据，显示空消息
+        return ({'display': 'block', 'marginTop': '20px', 'marginBottom': '20px'},
+                {'display': 'block'},
+                {'display': 'none'},
+                [],
+                [])
+
+
+def update_unmatched_tables_handler(current_state_json, store_data):
+    """
+    处理未匹配数据表格更新的回调逻辑
+
+    Args:
+        current_state_json: 当前表格状态JSON
+        store_data: 存储的对比结果数据
+
+    Returns:
+        (空状态样式, 标准区域样式, 对比区域样式, 标准数据, 标准列, 对比数据, 对比列)
+    """
+    try:
+        current_state = json.loads(current_state_json) if current_state_json else {}
+        compare_name = current_state.get('compare_name')
+    except json.JSONDecodeError:
+        return ({'display': 'block'}, {'display': 'none'}, {'display': 'none'},
+                [], [], [], [])
+
+    if not compare_name or not store_data:
+        return ({'display': 'block'}, {'display': 'none'}, {'display': 'none'},
+                [], [], [], [])
+
+    # 从存储中获取数据
+    results = store_data.get('results', {})
+    comparisons = results.get('comparisons', [])
+
+    # 找到对应的对比数据
+    target_comparison = None
+    for comparison in comparisons:
+        if comparison['compare_name'] == compare_name:
+            target_comparison = comparison
+            break
+
+    if not target_comparison:
+        return ({'display': 'block'}, {'display': 'none'}, {'display': 'none'},
+                [], [], [], [])
+
+    # 获取未匹配数据
+    unmatched_columns = _get_unmatched_table_columns()
+    baseline_unmatched_data, compare_unmatched_data = _get_unmatched_data(target_comparison)
+
+    # 检查是否有数据
+    has_baseline_data = len(baseline_unmatched_data) > 0
+    has_compare_data = len(compare_unmatched_data) > 0
+    has_any_data = has_baseline_data or has_compare_data
+
+    if not has_any_data:
+        # 没有数据，显示空状态
+        return ({'display': 'block'}, {'display': 'none'}, {'display': 'none'},
+                [], [], [], [])
+    else:
+        # 有数据，显示相应的表格
+        baseline_area_style = {'display': 'block', 'marginBottom': '30px'} if has_baseline_data else {'display': 'none'}
+        compare_area_style = {'display': 'block'} if has_compare_data else {'display': 'none'}
+
+        return ({'display': 'none'}, baseline_area_style, compare_area_style,
+                baseline_unmatched_data, unmatched_columns,
+                compare_unmatched_data, unmatched_columns)
+
 
 def register_callbacks(app, session_manager):
     """
@@ -395,15 +836,338 @@ def register_callbacks(app, session_manager):
 
     @app.callback(
         Output('track-comparison-detail-table-area', 'style'),
-        Output('track-comparison-detail-datatable', 'data'),
-        Output('track-comparison-detail-datatable', 'columns'),
+        Output('track-comparison-key-filter-area', 'style'),
+        Output('current-table-state', 'children'),
         Input({'type': 'track-comparison-grade-btn', 'index': dash.ALL}, 'n_clicks'),
         Input('hide-track-comparison-detail-table', 'n_clicks'),
+        prevent_initial_call=True
+    )
+    def update_table_visibility(grade_btn_clicks, hide_btn_clicks):
+        ctx = dash.callback_context
+        if not ctx.triggered:
+            return {'display': 'none'}, {'display': 'none'}, json.dumps({'compare_name': None, 'grade_key': None})
+
+        trigger_id = ctx.triggered[0]['prop_id']
+
+        # 如果是隐藏按钮触发，隐藏所有区域
+        if 'hide-track-comparison-detail-table' in trigger_id:
+            return {'display': 'none'}, {'display': 'none'}, json.dumps({'compare_name': None, 'grade_key': None})
+
+        # 如果是评级按钮触发，显示区域并设置状态
+        if 'track-comparison-grade-btn' in trigger_id:
+            try:
+                id_part = trigger_id.split('.')[0]
+                id_dict = json.loads(id_part)
+                button_index = id_dict['index']
+                compare_name, grade_key = button_index.rsplit('_', 1)
+                updated_state = json.dumps({'compare_name': compare_name, 'grade_key': grade_key})
+                return {'display': 'block', 'marginTop': '20px'}, {'display': 'block'}, updated_state
+            except Exception as e:
+                logger.error(f"解析评级按钮失败: {e}")
+                return {'display': 'none'}, {'display': 'none'}, json.dumps({'compare_name': None, 'grade_key': None})
+
+        return {'display': 'none'}, {'display': 'none'}, json.dumps({'compare_name': None, 'grade_key': None})
+
+    @app.callback(
+        Output('track-comparison-key-filter', 'options'),
+        Output('track-comparison-key-filter', 'value'),
+        Input('current-table-state', 'children'),
         State('track-comparison-store', 'data'),
         prevent_initial_call=True
     )
-    def toggle_comparison_detail_table(grade_btn_clicks, hide_btn_clicks, store_data):
-        return toggle_comparison_detail_table_handler(grade_btn_clicks, hide_btn_clicks, store_data)
+    def update_key_filter_options(current_state_json, store_data):
+        try:
+            current_state = json.loads(current_state_json) if current_state_json else {}
+            compare_name = current_state.get('compare_name')
+            grade_key = current_state.get('grade_key')
+        except json.JSONDecodeError:
+            return [], None
+
+        if not compare_name or not grade_key or not store_data:
+            return [], None
+
+        # 从存储中获取数据
+        results = store_data.get('results', {})
+        comparisons = results.get('comparisons', [])
+
+        # 找到对应的对比数据
+        target_comparison = None
+        for comparison in comparisons:
+            if comparison['compare_name'] == compare_name:
+                target_comparison = comparison
+                break
+
+        if not target_comparison:
+            return [], None
+
+        # 获取当前评级的匹配对
+        matched_pairs = target_comparison.get('matched_pairs', [])
+        grade_pairs = [pair for pair in matched_pairs if pair.get('grade') == grade_key]
+
+        if not grade_pairs:
+            return [], None
+
+        # 提取当前评级的所有按键ID
+        key_ids = set()
+        for pair in grade_pairs:
+            key_id = pair.get('key_id')
+            if key_id is not None:
+                key_ids.add(key_id)
+
+        # 生成筛选器选项
+        key_filter_options = [
+            {'label': '请选择按键...', 'value': ''},
+            {'label': '全部按键', 'value': 'all'}
+        ]
+
+        # 为每个按键ID添加选项
+        for key_id in sorted(key_ids):
+            key_filter_options.append({
+                'label': f'按键 {key_id}',
+                'value': str(key_id)
+            })
+
+        return key_filter_options, ''
+
+    @app.callback(
+        Output('track-comparison-unmatched-area', 'style'),
+        Input('track-comparison-key-filter', 'value'),
+        Input('current-table-state', 'children'),
+        State('track-comparison-store', 'data'),
+        prevent_initial_call=True
+    )
+    def update_unmatched_area_visibility(key_filter_value, current_state_json, store_data):
+        try:
+            current_state = json.loads(current_state_json) if current_state_json else {}
+            compare_name = current_state.get('compare_name')
+            grade_key = current_state.get('grade_key')
+        except json.JSONDecodeError:
+            return {'display': 'none'}
+
+        if not compare_name or not grade_key:
+            return {'display': 'none'}
+
+        # 检查是否有有效的筛选值
+        if key_filter_value:
+            return {'display': 'block', 'marginTop': '30px', 'marginBottom': '30px'}
+
+        return {'display': 'none'}
+
+    @app.callback(
+        Output('track-comparison-detail-datatable', 'data'),
+        Output('track-comparison-detail-datatable', 'columns'),
+        Input('current-table-state', 'children'),
+        Input('track-comparison-key-filter', 'value'),
+        State('track-comparison-store', 'data'),
+        prevent_initial_call=True
+    )
+    def update_unmatched_area_visibility(current_state_json, key_filter_value, store_data):
+        try:
+            current_state = json.loads(current_state_json) if current_state_json else {}
+            compare_name = current_state.get('compare_name')
+            grade_key = current_state.get('grade_key')
+        except json.JSONDecodeError:
+            return [], []
+
+        if not compare_name or not grade_key or not store_data:
+            return [], []
+
+        # 从存储中获取数据
+        results = store_data.get('results', {})
+        baseline_track = results.get('baseline_track', '标准音轨')
+        comparisons = results.get('comparisons', [])
+
+        # 找到对应的对比数据
+        target_comparison = None
+        for comparison in comparisons:
+            if comparison['compare_name'] == compare_name:
+                target_comparison = comparison
+                break
+
+        if not target_comparison:
+            return [], []
+
+        # 获取当前评级的匹配对
+        matched_pairs = target_comparison['matched_pairs']
+        grade_pairs = [pair for pair in matched_pairs if pair['grade'] == grade_key]
+
+        # 根据按键筛选器进一步过滤
+        if key_filter_value == 'all' or not key_filter_value:
+            filtered_pairs = grade_pairs  # 显示当前评级的所有数据
+        else:
+            # 只显示选定按键的数据
+            selected_key_id = int(key_filter_value)
+            filtered_pairs = [pair for pair in grade_pairs if pair['key_id'] == selected_key_id]
+
+        if not filtered_pairs:
+            return [], []
+
+        # 创建表格数据 - 标准与对比数据分行显示
+        table_data = []
+        for pair in filtered_pairs:
+            # 计算差值：对比数据 - 标准数据
+            keyon_diff = pair['compare_keyon'] - pair['baseline_keyon']
+            hammer_time_diff = pair['compare_hammer_time'] - pair['baseline_hammer_time']
+            duration_diff = pair['compare_duration'] - pair['baseline_duration']
+            velocity_diff = pair['compare_hammer_velocity'] - pair['baseline_hammer_velocity']
+
+            # 第一行：标准音轨的数据（差值列为空）
+            table_data.append({
+                'SPMID文件': baseline_track,
+                '数据类型': '标准',
+                '琴键编号': pair['key_id'],
+                '序号': pair['sequence'],
+                '时间': f"{pair['baseline_keyon']:.2f}ms",
+                '锤击时间': f"{pair['baseline_hammer_time']:.2f}ms",
+                '锤速': int(pair['baseline_hammer_velocity']),
+                '持续时间': f"{pair['baseline_duration']:.2f}ms",
+                'keyon时间差': '',
+                '锤击时间差': '',
+                '持续时间差': '',
+                '锤速差': '',
+                '评级': grade_key
+            })
+
+            # 第二行：对比音轨的数据（差值列显示差值）
+            table_data.append({
+                'SPMID文件': compare_name,
+                '数据类型': '对比',
+                '琴键编号': pair['key_id'],
+                '序号': pair['sequence'],
+                '时间': f"{pair['compare_keyon']:.2f}ms",
+                '锤击时间': f"{pair['compare_hammer_time']:.2f}ms",
+                '锤速': int(pair['compare_hammer_velocity']),
+                '持续时间': f"{pair['compare_duration']:.2f}ms",
+                'keyon时间差': f"{keyon_diff:+.2f}ms",
+                '锤击时间差': f"{hammer_time_diff:+.2f}ms",
+                '持续时间差': f"{duration_diff:+.2f}ms",
+                '锤速差': f"{velocity_diff:+d}",
+                '评级': grade_key
+            })
+
+        # 定义表格列
+        columns = [
+            {'name': 'SPMID文件', 'id': 'SPMID文件'},
+            {'name': '数据类型', 'id': '数据类型'},
+            {'name': '琴键编号', 'id': '琴键编号', 'type': 'numeric'},
+            {'name': '序号', 'id': '序号', 'type': 'numeric'},
+            {'name': '时间', 'id': '时间', 'type': 'text'},
+            {'name': '锤击时间', 'id': '锤击时间', 'type': 'text'},
+            {'name': '锤速', 'id': '锤速', 'type': 'numeric'},
+            {'name': '持续时间', 'id': '持续时间', 'type': 'text'},
+            {'name': 'keyon时间差', 'id': 'keyon时间差', 'type': 'text'},
+            {'name': '锤击时间差', 'id': '锤击时间差', 'type': 'text'},
+            {'name': '持续时间差', 'id': '持续时间差', 'type': 'text'},
+            {'name': '锤速差', 'id': '锤速差', 'type': 'text'},
+            {'name': '评级', 'id': '评级', 'type': 'text'}
+        ]
+
+        return table_data, columns
+
+    @app.callback(
+        Output('track-comparison-anomaly-area', 'style'),
+        Output('track-comparison-anomaly-empty', 'style'),
+        Output('track-comparison-anomaly-table', 'style'),
+        Output('track-comparison-anomaly-table', 'data'),
+        Output('track-comparison-anomaly-table', 'columns'),
+        Input('current-table-state', 'children'),
+        Input('track-comparison-key-filter', 'value'),
+        State('track-comparison-store', 'data'),
+        prevent_initial_call=True
+    )
+    def update_anomaly_table(current_state_json, key_filter_value, store_data):
+        try:
+            current_state = json.loads(current_state_json) if current_state_json else {}
+            compare_name = current_state.get('compare_name')
+            grade_key = current_state.get('grade_key')
+        except json.JSONDecodeError:
+            return {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, [], []
+
+        if not compare_name or not grade_key or not store_data:
+            return {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, [], []
+
+        # 从存储中获取数据
+        results = store_data.get('results', {})
+        baseline_track = results.get('baseline_track', '标准音轨')
+        comparisons = results.get('comparisons', [])
+
+        # 找到对应的对比数据
+        target_comparison = None
+        for comparison in comparisons:
+            if comparison['compare_name'] == compare_name:
+                target_comparison = comparison
+                break
+
+        if not target_comparison:
+            return {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, [], []
+
+        # 获取当前评级的匹配对
+        matched_pairs = target_comparison['matched_pairs']
+        grade_pairs = [pair for pair in matched_pairs if pair['grade'] == grade_key]
+
+        # 生成异常匹配数据
+        anomaly_pairs = []
+        for pair in grade_pairs:
+            baseline_velocity = pair.get('baseline_hammer_velocity', 0)
+            compare_velocity = pair.get('compare_hammer_velocity', 0)
+            if (baseline_velocity == 0 and compare_velocity != 0) or (baseline_velocity != 0 and compare_velocity == 0):
+                anomaly_pairs.append(pair)
+
+        if anomaly_pairs:
+            # 有异常数据，显示表格
+            anomaly_table_data, anomaly_columns = _generate_anomaly_table_data(anomaly_pairs, compare_name, baseline_track, grade_key)
+            return ({'display': 'block', 'marginTop': '20px', 'marginBottom': '20px'},
+                    {'display': 'none'},
+                    {'display': 'block'},
+                    anomaly_table_data,
+                    anomaly_columns)
+        else:
+            # 没有异常数据，显示空消息
+            return ({'display': 'block', 'marginTop': '20px', 'marginBottom': '20px'},
+                    {'display': 'block'},
+                    {'display': 'none'},
+                    [],
+                    [])
+
+    @app.callback(
+        Output('track-comparison-unmatched-baseline-table', 'data'),
+        Output('track-comparison-unmatched-baseline-table', 'columns'),
+        Output('track-comparison-unmatched-compare-table', 'data'),
+        Output('track-comparison-unmatched-compare-table', 'columns'),
+        Input('current-table-state', 'children'),
+        State('track-comparison-store', 'data'),
+        prevent_initial_call=True
+    )
+    def update_unmatched_tables(current_state_json, store_data):
+        try:
+            current_state = json.loads(current_state_json) if current_state_json else {}
+            compare_name = current_state.get('compare_name')
+        except json.JSONDecodeError:
+            return [], [], [], []
+
+        if not compare_name or not store_data:
+            return [], [], [], []
+
+        # 从存储中获取数据
+        results = store_data.get('results', {})
+        comparisons = results.get('comparisons', [])
+
+        # 找到对应的对比数据
+        target_comparison = None
+        for comparison in comparisons:
+            if comparison['compare_name'] == compare_name:
+                target_comparison = comparison
+                break
+
+        if not target_comparison:
+            return [], [], [], []
+
+        # 获取未匹配数据
+        unmatched_columns = _get_unmatched_table_columns()
+        baseline_unmatched_data, compare_unmatched_data = _get_unmatched_data(target_comparison)
+
+        return (baseline_unmatched_data, unmatched_columns,
+                compare_unmatched_data, unmatched_columns)
 
 
 def perform_track_comparison(backend, selected_tracks, baseline_track):
@@ -513,17 +1277,17 @@ def compare_tracks_strict_sequence(baseline_notes, compare_notes, baseline_name,
     # 按琴键编号(note.id)分组
     baseline_by_key = defaultdict(list)
     compare_by_key = defaultdict(list)
-    
+
     for note in baseline_notes:
         baseline_by_key[note.id].append(note)
-    
+
     for note in compare_notes:
         compare_by_key[note.id].append(note)
-    
+
     # 对每个琴键按时间排序
     for key_id in baseline_by_key:
         baseline_by_key[key_id].sort(key=lambda n: n.key_on_ms)
-    
+
     for key_id in compare_by_key:
         compare_by_key[key_id].sort(key=lambda n: n.key_on_ms)
     
@@ -544,7 +1308,7 @@ def compare_tracks_strict_sequence(baseline_notes, compare_notes, baseline_name,
     
     # 对每个琴键进行严格序号匹配
     all_key_ids = set(baseline_by_key.keys()) | set(compare_by_key.keys())
-    
+
     for key_id in sorted(all_key_ids):
         baseline_group = baseline_by_key.get(key_id, [])
         compare_group = compare_by_key.get(key_id, [])
@@ -567,7 +1331,7 @@ def compare_tracks_strict_sequence(baseline_notes, compare_notes, baseline_name,
             # 计算各种时间差
             b_hammer_time = b_note.get_first_hammer_time() if hasattr(b_note, 'get_first_hammer_time') else None
             c_hammer_time = c_note.get_first_hammer_time() if hasattr(c_note, 'get_first_hammer_time') else None
-            hammer_time_diff = (c_hammer_time * 10) - (b_hammer_time * 10) if b_hammer_time is not None and c_hammer_time is not None else 0
+            hammer_time_diff = c_hammer_time - b_hammer_time if b_hammer_time is not None and c_hammer_time is not None else 0
 
             duration_diff = (c_note.duration_ms - b_note.duration_ms) if hasattr(b_note, 'duration_ms') and hasattr(c_note, 'duration_ms') else 0
 
@@ -578,18 +1342,20 @@ def compare_tracks_strict_sequence(baseline_notes, compare_notes, baseline_name,
             matched_pairs.append({
                 'key_id': key_id,
                 'sequence': i,
+                'baseline_uuid': getattr(b_note, 'uuid', 'N/A'),
+                'compare_uuid': getattr(c_note, 'uuid', 'N/A'),
                 'baseline_keyon': b_note.key_on_ms,
                 'compare_keyon': c_note.key_on_ms,
                 'keyon_diff_ms': keyon_diff,
                 'keyon_diff_abs': keyon_diff_abs,
                 'grade': grade,
                 # 标准音轨的额外信息
-                'baseline_hammer_velocity': b_note.get_first_hammer_velocity() if hasattr(b_note, 'get_first_hammer_velocity') and b_note.get_first_hammer_velocity() is not None else 0,
-                'baseline_hammer_time': (b_note.get_first_hammer_time() * 10) if hasattr(b_note, 'get_first_hammer_time') and b_note.get_first_hammer_time() is not None else 0,  # 转换为0.1ms到ms
-                'baseline_duration': b_note.duration_ms if hasattr(b_note, 'duration_ms') else 0,
+                'baseline_hammer_velocity': b_note.get_first_hammer_velocity() or 0,
+                'baseline_hammer_time': b_note.get_first_hammer_time() or 0,  # 已经是ms单位
+                'baseline_duration': getattr(b_note, 'duration_ms', None) or 0,
                 # 对比音轨的额外信息
-                'compare_hammer_velocity': c_note.get_first_hammer_velocity() if hasattr(c_note, 'get_first_hammer_velocity') and c_note.get_first_hammer_velocity() is not None else 0,
-                'compare_hammer_time': (c_note.get_first_hammer_time() * 10) if hasattr(c_note, 'get_first_hammer_time') and c_note.get_first_hammer_time() is not None else 0,  # 转换为0.1ms到ms
+                'compare_hammer_velocity': c_note.get_first_hammer_velocity() or 0,
+                'compare_hammer_time': c_note.get_first_hammer_time() or 0,  # 已经是ms单位
                 'compare_duration': c_note.duration_ms if hasattr(c_note, 'duration_ms') else 0,
                 # 各种差异
                 'hammer_time_diff_ms': hammer_time_diff,
@@ -626,6 +1392,7 @@ def compare_tracks_strict_sequence(baseline_notes, compare_notes, baseline_name,
         'unmatched_compare': unmatched_compare,
         'grade_counts': grade_counts,
         'grade_percentages': grade_percentages,
+        'available_keys': sorted(all_key_ids),  # 可用的按键ID列表
     }
 
 
@@ -677,7 +1444,7 @@ def create_comparison_results_ui(results):
                             color=color_class,
                             size='lg',
                             className="mb-1",
-                            disabled=(count == 0),
+                            disabled=False,  # 总是允许点击，即使count为0
                             style={'fontSize': '24px', 'fontWeight': 'bold', 'width': '100%'}
                         ),
                         html.P(f"{grade_name}", className="text-muted mb-0"),
@@ -855,3 +1622,184 @@ def create_track_selection_ui(algorithms) -> html.Div:
     ])
 
 
+def register_callbacks(app, session_manager):
+    """
+    注册音轨对比页面的回调
+
+    Args:
+        app: Dash应用实例
+        session_manager: SessionManager实例
+    """
+
+    @app.callback(
+        Output('track-comparison-file-prompt', 'style'),
+        Output('track-selection-content', 'children'),
+        Output('comparison-settings-area', 'style'),
+        Input('url', 'pathname'),
+        Input('algorithm-list-trigger', 'data'),
+        State('session-id', 'data')
+    )
+    def update_track_selection(pathname, trigger, session_id):
+        return update_track_selection_handler(pathname, trigger, session_id, session_manager)
+
+    @app.callback(
+        Output('comparison-settings-content', 'children'),
+        Input({'type': 'baseline-radio', 'index': dash.ALL}, 'value'),
+        State('url', 'pathname'),
+        prevent_initial_call=True
+    )
+    def update_comparison_settings(baseline_values, pathname):
+        return update_comparison_settings_handler(baseline_values, pathname)
+
+    @app.callback(
+        Output('comparison-results-area', 'children'),
+        Output('comparison-results-area', 'style'),
+        Output('track-comparison-store', 'data'),
+        Input('start-comparison-btn', 'n_clicks'),
+        State({'type': 'track-select-checkbox', 'index': dash.ALL}, 'value'),
+        State({'type': 'track-select-checkbox', 'index': dash.ALL}, 'id'),
+        State({'type': 'baseline-radio', 'index': dash.ALL}, 'value'),
+        State('session-id', 'data'),
+        prevent_initial_call=True
+    )
+    def perform_comparison(n_clicks, checkbox_values, checkbox_ids, baseline_values, session_id):
+        return perform_comparison_handler(n_clicks, checkbox_values, checkbox_ids, baseline_values, session_id, session_manager)
+
+    @app.callback(
+        Output('track-comparison-detail-table-area', 'style'),
+        Output('track-comparison-key-filter-area', 'style'),
+        Output('current-table-state', 'children'),
+        Input({'type': 'track-comparison-grade-btn', 'index': dash.ALL}, 'n_clicks'),
+        Input('hide-track-comparison-detail-table', 'n_clicks'),
+        prevent_initial_call=True
+    )
+    def update_table_visibility(grade_btn_clicks, hide_btn_clicks):
+        return update_table_visibility_handler(grade_btn_clicks, hide_btn_clicks)
+
+    @app.callback(
+        Output('track-comparison-key-filter', 'options'),
+        Output('track-comparison-key-filter', 'value'),
+        Input('current-table-state', 'children'),
+        State('track-comparison-store', 'data'),
+        prevent_initial_call=True
+    )
+    def update_key_filter_options(current_state_json, store_data):
+        return update_key_filter_options_handler(current_state_json, store_data)
+
+    @app.callback(
+        Output('track-comparison-unmatched-area', 'style'),
+        Input('track-comparison-key-filter', 'value'),
+        Input('current-table-state', 'children'),
+        State('track-comparison-store', 'data'),
+        prevent_initial_call=True
+    )
+    def update_unmatched_area_visibility(key_filter_value, current_state_json, store_data):
+        return update_unmatched_area_visibility_handler(current_state_json, key_filter_value, store_data)
+
+    @app.callback(
+        Output('track-comparison-detail-datatable', 'data'),
+        Output('track-comparison-detail-datatable', 'columns'),
+        Input('current-table-state', 'children'),
+        Input('track-comparison-key-filter', 'value'),
+        State('track-comparison-store', 'data'),
+        prevent_initial_call=True
+    )
+    def update_detail_table(current_state_json, key_filter_value, store_data):
+        return update_detail_table_handler(current_state_json, key_filter_value, store_data)
+
+    @app.callback(
+        Output('track-comparison-anomaly-area', 'style'),
+        Output('track-comparison-anomaly-empty', 'style'),
+        Output('track-comparison-anomaly-table', 'style'),
+        Output('track-comparison-anomaly-table', 'data'),
+        Output('track-comparison-anomaly-table', 'columns'),
+        Input('current-table-state', 'children'),
+        Input('track-comparison-key-filter', 'value'),
+        State('track-comparison-store', 'data'),
+        prevent_initial_call=True
+    )
+    def update_anomaly_table(current_state_json, key_filter_value, store_data):
+        return update_anomaly_table_handler(current_state_json, key_filter_value, store_data)
+
+    @app.callback(
+        Output('track-comparison-unmatched-empty', 'style'),
+        Output('track-comparison-unmatched-baseline-area', 'style'),
+        Output('track-comparison-unmatched-compare-area', 'style'),
+        Output('track-comparison-unmatched-baseline-table', 'data'),
+        Output('track-comparison-unmatched-baseline-table', 'columns'),
+        Output('track-comparison-unmatched-compare-table', 'data'),
+        Output('track-comparison-unmatched-compare-table', 'columns'),
+        Input('current-table-state', 'children'),
+        State('track-comparison-store', 'data'),
+        prevent_initial_call=True
+    )
+    def update_unmatched_tables(current_state_json, store_data):
+        return update_unmatched_tables_handler(current_state_json, store_data)
+
+    @app.callback(
+        Output({'type': 'baseline-radio', 'index': dash.ALL}, 'value'),
+        Input({'type': 'baseline-radio', 'index': dash.ALL}, 'value'),
+        State({'type': 'baseline-radio', 'index': dash.ALL}, 'id'),
+        prevent_initial_call=True
+    )
+    def enforce_baseline_radio_mutual_exclusion(current_values, current_ids):
+        """
+        确保标准音轨RadioItems的互斥性 - 只能选择其中一个
+
+        Args:
+            current_values: 当前所有RadioItems的值列表
+            current_ids: 当前所有RadioItems的ID列表
+
+        Returns:
+            更新后的值列表，确保只有一个被选中
+        """
+        # 找出哪些RadioItems有值（被选中）
+        selected_indices = []
+        selected_values = []
+
+        for idx, (value, id_dict) in enumerate(zip(current_values, current_ids)):
+            if value is not None:
+                selected_indices.append(idx)
+                selected_values.append(value)
+
+        # 如果没有选中任何项，返回当前状态
+        if not selected_indices:
+            return current_values
+
+        # 如果只选中了一个，保持现状
+        if len(selected_indices) == 1:
+            return current_values
+
+        # 如果选中了多个，保留最后一个选中的，取消其他选择
+        # Dash的回调上下文可以帮助我们确定哪个触发了变化
+        ctx = dash.callback_context
+        if ctx.triggered:
+            # 找出触发变化的输入
+            triggered_prop = ctx.triggered[0]['prop_id']
+            if 'baseline-radio' in triggered_prop:
+                # 解析触发者的ID
+                try:
+                    # 从prop_id中提取index
+                    # 格式类似：'{"index":"alg1","type":"baseline-radio"}.value'
+                    import json
+                    id_str = triggered_prop.split('.')[0]
+                    id_dict = json.loads(id_str)
+                    triggered_index = id_dict['index']
+
+                    # 只保留触发者的选择，取消其他所有选择
+                    result_values = [None] * len(current_values)
+                    for idx, id_dict in enumerate(current_ids):
+                        if id_dict['index'] == triggered_index:
+                            result_values[idx] = triggered_index
+                            break
+
+                    return result_values
+                except (json.JSONDecodeError, KeyError):
+                    pass
+
+        # 备用逻辑：保留第一个选中的，取消其他
+        result_values = [None] * len(current_values)
+        if selected_indices:
+            result_values[selected_indices[0]] = selected_values[0]
+
+        return result_values

@@ -8,7 +8,7 @@
 不再使用已废弃的 global_time_offset 概念。
 """
 
-from typing import List, Dict, Any
+from typing import List, Dict
 from utils.logger import Logger
 import math
 
@@ -177,18 +177,67 @@ class DelayMetrics:
         logger.info(f"📊 变异系数 CV: {cv:.2f}% (基于{len(offsets)}个精确匹配对)")
         return cv
     
+    def get_variance(self) -> float:
+        """
+        计算方差
+
+        Returns:
+            float: 方差（单位：0.1ms²）
+        """
+        offsets = self._get_keyon_offsets()
+        if len(offsets) < 2:
+            return 0.0
+
+        mean = sum(offsets) / len(offsets)
+        variance = sum((x - mean) ** 2 for x in offsets) / len(offsets)
+        logger.info(f"📊 方差: {variance/100:.2f}ms² (基于{len(offsets)}个精确匹配对)")
+        return variance
+
+    def get_max_error(self) -> float:
+        """
+        计算最大偏差
+
+        Returns:
+            float: 最大偏差（单位：0.1ms）
+        """
+        offsets = self._get_keyon_offsets()
+        if not offsets:
+            return 0.0
+
+        max_error = max(offsets)
+        logger.info(f"📊 最大偏差: {max_error/10:.2f}ms (基于{len(offsets)}个精确匹配对)")
+        return max_error
+
+    def get_min_error(self) -> float:
+        """
+        计算最小偏差
+
+        Returns:
+            float: 最小偏差（单位：0.1ms）
+        """
+        offsets = self._get_keyon_offsets()
+        if not offsets:
+            return 0.0
+
+        min_error = min(offsets)
+        logger.info(f"📊 最小偏差: {min_error/10:.2f}ms (基于{len(offsets)}个精确匹配对)")
+        return min_error
+
     def get_all_metrics(self) -> Dict[str, float]:
         """
         一次性获取所有延时统计指标
-        
+
         Returns:
             dict: 包含所有延时指标的字典
         """
         return {
-            'mean_error': self.get_mean_error(),
-            'mae': self.get_mean_absolute_error(),
-            'std_deviation': self.get_standard_deviation(),
-            'rmse': self.get_root_mean_squared_error(),
-            'cv': self.get_coefficient_of_variation(),
-            'sample_count': len(self._get_keyon_offsets())
+            'mean_error': self.get_mean_error(),  # 平均延时
+            'mae': self.get_mean_absolute_error(),  # 平均绝对误差
+            'std_deviation': self.get_standard_deviation(),  # 标准差
+            'variance': self.get_variance(),  # 方差
+            'rmse': self.get_root_mean_squared_error(),  # 均方根误差
+            'cv': self.get_coefficient_of_variation(),  # 变异系数
+            'max_error': self.get_max_error(),  # 最大偏差
+            'min_error': self.get_min_error(),  # 最小偏差
+            'sample_count': len(self._get_keyon_offsets())  # 样本数量
         }
