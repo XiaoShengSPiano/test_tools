@@ -17,6 +17,7 @@ from backend.multi_algorithm_manager import AlgorithmDataset
 from backend.session_manager import SessionManager
 from ui.scatter_handler_base import ScatterHandlerBase
 from utils.logger import Logger
+from spmid.note_matcher import MatchType
 
 
 logger = Logger.get_logger()
@@ -59,18 +60,18 @@ class VelocityComparisonHandler(ScatterHandlerBase):
                 return go.Figure()  # 返回空图表
             
             # 收集锤速数据
-            logger.info("[DEBUG] 开始收集锤速数据")
+            logger.debug("[DEBUG] 开始收集锤速数据")
             velocity_data = self._collect_velocity_comparison_data(backend)
-            logger.info(f"[DEBUG] 收集到 {len(velocity_data)} 个锤速数据点")
+            logger.debug(f"[DEBUG] 收集到 {len(velocity_data)} 个锤速数据点")
             
             if not velocity_data:
                 logger.warning("[WARNING] 没有收集到锤速数据")
                 return go.Figure()  # 返回空图表
             
             # 生成对比图表
-            logger.info("[DEBUG] 开始生成锤速对比图表")
+            logger.debug("[DEBUG] 开始生成锤速对比图表")
             fig = self._create_velocity_comparison_plot(velocity_data)
-            logger.info("[DEBUG] 锤速对比图表生成完成")
+            logger.debug("[DEBUG] 锤速对比图表生成完成")
             return fig
             
         except Exception as e:
@@ -91,12 +92,12 @@ class VelocityComparisonHandler(ScatterHandlerBase):
         # 检测触发源
         ctx = callback_context
         if not ctx.triggered:
-            logger.debug("[WARNING] 锤速对比图点击回调：没有触发源")
+            logger.warning("[WARNING] 锤速对比图点击回调：没有触发源")
             return current_style, [], no_update, no_update, no_update
         
         trigger_prop = ctx.triggered[0]['prop_id']
         trigger_id = trigger_prop.split('.')[0]
-        logger.info(f"[INFO] 锤速对比图点击回调触发：prop_id={trigger_prop}, trigger_id={trigger_id}, click_data={click_data is not None}, close_modal_clicks={close_modal_clicks}, close_btn_clicks={close_btn_clicks}")
+        logger.debug(f"[DEBUG] 锤速对比图点击回调触发：prop_id={trigger_prop}, trigger_id={trigger_id}, click_data={click_data is not None}, close_modal_clicks={close_modal_clicks}, close_btn_clicks={close_btn_clicks}")
         
         # 如果点击了关闭按钮，隐藏模态框
         if trigger_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
@@ -135,8 +136,8 @@ class VelocityComparisonHandler(ScatterHandlerBase):
             # 解析锤速对比图的customdata格式: [key_id, algorithm_name, record_velocity, replay_velocity, velocity_diff, absolute_delay, record_index, replay_index]
             key_id = int(customdata[0])
             algorithm_name = customdata[1]
-            record_index = int(customdata[6])  # record_index在第7位（索引6）
-            replay_index = int(customdata[7])  # replay_index在第8位（索引7）
+            record_index = customdata[6]  # record_index在第7位（索引6），现在是UUID字符串
+            replay_index = customdata[7]  # replay_index在第8位（索引7），现在是UUID字符串
             
             logger.info(f"🖱️ 锤速对比图点击: 算法={algorithm_name}, 按键={key_id}, record_index={record_index}, replay_index={replay_index}")
             
@@ -233,33 +234,32 @@ class VelocityComparisonHandler(ScatterHandlerBase):
         algorithm_name = click_data.get('algorithm_name')
         record_index = click_data.get('record_index')
         replay_index = click_data.get('replay_index')
-        
-        if not algorithm_name or record_index is None or replay_index is None:
+
+        if record_index is None or replay_index is None:
             logger.error(f"[ERROR] 锤速对比图缺少必要参数: algorithm_name={algorithm_name}, record_index={record_index}, replay_index={replay_index}")
             return None, None, None
-        
-        # 从后端查找Note对象
-        record_note, replay_note = self._find_notes_from_precision_data(backend, record_index, replay_index, algorithm_name)
-        
-        if not record_note or not replay_note:
-            logger.error(f"[ERROR] 无法找到锤速对比图的Note对象: algorithm_name={algorithm_name}, record_index={record_index}, replay_index={replay_index}")
-            return None, None, None
-        
-        # 计算平均延时
-        try:
-            mean_delays = self._calculate_delays_for_velocity_comparison_click(
-                backend, algorithm_name
+
+        # 生成图表 - 使用backend的方法，就像其他处理器一样
+        if algorithm_name:
+            # 多算法模式
+            logger.debug(f"🔍 调用backend.generate_multi_algorithm_scatter_detail_plot_by_indices: algorithm_name='{algorithm_name}', record_index={record_index}, replay_index={replay_index}")
+
+            detail_figure1, detail_figure2, detail_figure_combined = backend.generate_multi_algorithm_scatter_detail_plot_by_indices(
+                algorithm_name=algorithm_name,
+                record_index=record_index,
+                replay_index=replay_index
             )
-        except RuntimeError as e:
-            logger.error(f"[ERROR] 计算平均延时失败: {e}")
-            return None, None, None
-        
-        # 生成图表
-        algorithm_name_for_plot = click_data.get('algorithm_name')
-        detail_figure1 = self._plot_single_note(backend, record_note, None, mean_delays, algorithm_name_for_plot)
-        detail_figure2 = self._plot_single_note(backend, None, replay_note, mean_delays, algorithm_name_for_plot)
-        detail_figure_combined = self._plot_combined_notes(backend, record_note, replay_note, mean_delays, algorithm_name_for_plot)
-        
+        else:
+            # 单算法模式
+            logger.debug(f"🔍 调用backend.generate_scatter_detail_plot_by_indices: record_index={record_index}, replay_index={replay_index}")
+
+            detail_figure1, detail_figure2, detail_figure_combined = backend.generate_scatter_detail_plot_by_indices(
+                record_index=record_index,
+                replay_index=replay_index
+            )
+
+        logger.debug(f"🔍 锤速对比图生成结果: figure1={detail_figure1 is not None}, figure2={detail_figure2 is not None}, figure_combined={detail_figure_combined is not None}")
+
         return detail_figure1, detail_figure2, detail_figure_combined
     
     def _calculate_delays_for_velocity_comparison_click(
@@ -397,41 +397,18 @@ class VelocityComparisonHandler(ScatterHandlerBase):
         if not algorithm.analyzer or not algorithm.analyzer.note_matcher:
             return []
         
-        # 获取精确匹配数据
-        precision_data = algorithm.analyzer.note_matcher.get_precision_offset_alignment_data()
-        if not precision_data:
+        # 获取匹配对（直接从NoteMatcher获取，它现在已经包含了所有匹配对且带评级）
+        matched_pairs = algorithm.analyzer.note_matcher.matched_pairs
+        if not matched_pairs:
             return []
         
         velocity_data = []
         
-        # 处理每个精确匹配对
-        for item in precision_data:
+        # 处理每个匹配对
+        for record_note, replay_note, match_type, keyon_error_ms in matched_pairs:
             try:
-                # 提取基础信息
-                record_index = item.get('record_index')
-                replay_index = item.get('replay_index')
-                key_id = item.get('key_id')
-                
-                if not all([record_index is not None, replay_index is not None, key_id is not None]):
-                    continue
-                
-                # 获取precision_matched_pairs（统一从note_matcher获取）
-                if not algorithm.analyzer.note_matcher:
-                    logger.warning(f"[WARNING] 算法 {algorithm.metadata.algorithm_name} 缺少note_matcher")
-                    continue
-                
-                precision_matched_pairs = algorithm.analyzer.note_matcher.precision_matched_pairs
-                
-                if not precision_matched_pairs:
-                    logger.warning(f"[WARNING] 算法 {algorithm.metadata.algorithm_name} 的precision_matched_pairs为空")
-                    continue
-                
-                # 查找对应的音符对
-                record_note, replay_note = self._find_notes_in_precision_pairs(
-                    precision_matched_pairs, record_index, replay_index
-                )
-                
-                if not record_note or not replay_note:
+                # 只处理精确匹配（优秀、良好、一般），对应误差 ≤ 50ms
+                if match_type not in [MatchType.EXCELLENT, MatchType.GOOD, MatchType.FAIR]:
                     continue
                 
                 # 提取锤速
@@ -442,77 +419,78 @@ class VelocityComparisonHandler(ScatterHandlerBase):
                     continue
                 
                 # 构建数据项
-                velocity_item = self._build_velocity_data_item(
-                    item, algorithm.metadata.algorithm_name,
-                    record_note, replay_note, record_velocity, replay_velocity
-                )
+                velocity_item = {
+                    'key_id': record_note.id,
+                    'algorithm_name': algorithm.metadata.algorithm_name,
+                    'record_velocity': record_velocity,
+                    'replay_velocity': replay_velocity,
+                    'record_hammer_time_ms': record_note.first_hammer_time,
+                    'replay_hammer_time_ms': replay_note.first_hammer_time,
+                    'record_index': record_note.uuid,
+                    'replay_index': replay_note.uuid,
+                    'absolute_delay': (replay_note.key_on_ms - record_note.key_on_ms)
+                }
                 
                 velocity_data.append(velocity_item)
                 
             except Exception as e:
-                logger.warning(f"[WARNING] 处理精确匹配项失败 (record_index={record_index}, replay_index={replay_index}): {e}")
+                logger.warning(f"[WARNING] 提取匹配项速度数据失败 (UUID={record_note.uuid}): {e}")
                 continue
         
         return velocity_data
     
     def _get_velocity_from_note(self, note: Any) -> Optional[float]:
         """
-        从音符的hammers中提取锤速
-        
+        从音符中提取锤速
+
         Args:
             note: 音符对象
-            
-        Returns:
-            Optional[float]: 锤速值，仅从hammers中获取
-        """
-        try:
-            if not note:
-                return None
-            
-            # 只从hammers数据中获取锤速
-            if hasattr(note, 'hammers') and note.hammers is not None:
-                if hasattr(note.hammers, 'values') and len(note.hammers.values) > 0:
-                    hammer_velocity = note.hammers.values[0]
-                    if hammer_velocity is not None and not pd.isna(hammer_velocity):
-                        return float(hammer_velocity)
-                elif hasattr(note.hammers, 'iloc') and len(note.hammers) > 0:
-                    hammer_velocity = note.hammers.iloc[0]
-                    if hammer_velocity is not None and not pd.isna(hammer_velocity):
-                        return float(hammer_velocity)
-            
-            return None
-            
-        except Exception as e:
-            logger.warning(f"[WARNING] 从音符提取锤速失败: {e}")
-            return None
-    
-    def _get_velocity_from_hammers(self, hammers: Any) -> Optional[float]:
-        """
-        从锤子数据中提取锤速
-        
-        Args:
-            hammers: 锤子数据
-            
+
         Returns:
             Optional[float]: 锤速值
         """
         try:
-            # 尝试多种方式获取锤速
-            if hasattr(hammers, 'velocity') and not pd.isna(hammers.velocity):
-                return float(hammers.velocity)
-            elif hasattr(hammers, 'hammer_velocity') and not pd.isna(hammers.hammer_velocity):
-                return float(hammers.hammer_velocity)
-            elif hasattr(hammers, 'values') and len(hammers.values) > 0:
-                first_value = hammers.values[0]
-                if not pd.isna(first_value):
-                    return float(first_value)
-            else:
-                logger.debug(f"[DEBUG] 锤子数据没有有效锤速: {type(hammers)}")
+            if not note:
                 return None
-                
+
+            return note.first_hammer_velocity
+
         except Exception as e:
-            logger.debug(f"[DEBUG] 从锤子数据提取锤速失败: {e}")
+            logger.warning(f"[WARNING] 从音符提取锤速失败: {e}")
             return None
+    
+    def _build_velocity_data_item(self, item: Dict, algorithm_name: str,
+                                 record_note: Any, replay_note: Any,
+                                 record_velocity: float, replay_velocity: float) -> VelocityDataItem:
+        """
+        构建锤速数据项
+
+        Args:
+            item: 精确匹配项数据
+            algorithm_name: 算法名称
+            record_note: 录制音符
+            replay_note: 播放音符
+            record_velocity: 录制锤速
+            replay_velocity: 播放锤速
+
+        Returns:
+            VelocityDataItem: 锤速数据项
+        """
+        # 获取锤击时间
+        record_hammer_time = record_note.first_hammer_time
+        replay_hammer_time = replay_note.first_hammer_time
+
+        return {
+            'key_id': item.get('key_id'),
+            'algorithm_name': algorithm_name,
+            'record_velocity': record_velocity,
+            'replay_velocity': replay_velocity,
+            'record_hammer_time_ms': record_hammer_time,
+            'replay_hammer_time_ms': replay_hammer_time,
+            'record_index': item.get('record_index'),
+            'replay_index': item.get('replay_index'),
+            'absolute_delay': item.get('keyon_offset', 0) / 10.0  # 转换为毫秒
+        }
     
     def _create_velocity_comparison_plot(self, velocity_data: List[VelocityDataItem]) -> Figure:
         """

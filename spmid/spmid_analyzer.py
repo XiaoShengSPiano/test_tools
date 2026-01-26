@@ -17,7 +17,6 @@ from .types import ErrorNote
 from .data_filter import DataFilter
 from .invalid_notes_statistics import InvalidNotesStatistics
 from .note_matcher import NoteMatcher, MatchType
-from .error_detector import ErrorDetector
 from .filter_collector import FilterCollector
 from .filter_integrator import FilterIntegrator
 from typing import List, Tuple, Optional, Dict, Any, Union, TYPE_CHECKING
@@ -237,9 +236,6 @@ class SPMIDAnalyzer:
         """获取音符匹配器实例"""
         return self.note_matcher
     
-    def get_error_detector(self) -> Optional[ErrorDetector]:
-        """获取异常检测器实例"""
-        return self.error_detector
     
     def get_valid_record_data(self) -> Optional[List[Note]]:
         """

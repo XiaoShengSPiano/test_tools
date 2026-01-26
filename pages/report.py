@@ -83,6 +83,9 @@ def layout():
             ])
         ], className="shadow-sm"),
         
+        # 存储跳转来源图表ID，用于返回时滚动定位（与其他页面保持一致）
+        dcc.Store(id='jump-source-plot-id', data=None),
+        
     ], fluid=True, className="mt-3")
 
 
@@ -141,55 +144,65 @@ def load_report_content(session_id, session_manager):
             logger.warning(f"[WARN] 没有活跃算法，返回等待数据提示")
             return _create_waiting_data_alert()
         
-        # 构建报告内容
-        report_components = []
+        # 构建报告内容分类容器
+        overview_sections = [html.H3("📋 1. 数据概览", className="mt-4 mb-3 text-primary")]
+        error_sections = [html.H3("⚠️ 2. 错误统计", className="mt-5 mb-3 text-primary")]
+        delay_sections = [html.H3("⏱️ 3. 延时误差统计指标", className="mt-5 mb-3 text-primary")]
+        grade_sections = [html.H3("📊 4. 匹配质量评级统计", className="mt-5 mb-3 text-primary")]
         
-        # 为每个活跃算法生成报告
+        has_delay_data = False
+        has_grade_data = False
+
+        # 为每个活跃算法收集各项指标
         for algorithm in active_algorithms:
             if not algorithm.analyzer:
                 continue
             
             algorithm_name = algorithm.metadata.algorithm_name
             
-            # 添加分隔标题
-            report_components.append(
-                html.H3(f"📊 {algorithm_name}", className="mt-4 mb-3 text-primary")
-            )
-            
-            # 1. 数据概览（统一通过backend获取数据）
+            # 1. 收集数据概览
             overview_stats = backend.get_data_overview_statistics(algorithm)
-            report_components.append(
+            overview_sections.append(
                 create_data_overview_card(overview_stats, algorithm_name)
             )
             
-            # 2. 错误统计
-            error_sections = create_error_statistics_section(backend, [algorithm])
-            report_components.extend(error_sections)
+            # 2. 收集错误统计
+            alg_error_components = create_error_statistics_section(backend, [algorithm])
+            error_sections.extend(alg_error_components)
 
-            # 3. 延时误差统计指标
+            # 3. 收集延时误差统计指标
             try:
                 delay_metrics = backend.get_delay_metrics(algorithm)
                 if delay_metrics:
-                    report_components.append(
+                    delay_sections.append(
                         create_delay_metrics_card(delay_metrics, algorithm_name)
                     )
+                    has_delay_data = True
             except Exception as e:
                 logger.warning(f"获取延时误差统计指标失败: {e}")
-                traceback.print_exc()
 
-            # 4. 评级统计
+            # 4. 收集评级统计
             try:
                 graded_stats = backend.get_graded_error_stats(algorithm)
                 if graded_stats and 'error' not in graded_stats:
-                    report_components.append(
+                    grade_sections.append(
                         create_grade_statistics_card(graded_stats, algorithm_name)
                     )
-                    report_components.append(
+                    grade_sections.append(
                         create_grade_detail_table_placeholder(algorithm_name)
                     )
+                    has_grade_data = True
             except Exception as e:
                 logger.warning(f"获取评级统计失败: {e}")
-                traceback.print_exc()
+
+        # 组合最终报告组件
+        report_components = overview_sections + error_sections
+        
+        if has_delay_data:
+            report_components.extend(delay_sections)
+        
+        if has_grade_data:
+            report_components.extend(grade_sections)
         
         logger.info(f"[OK] 异常检测报告页面加载成功 (session={session_id})")
         return html.Div(report_components)
@@ -387,18 +400,20 @@ def _create_grade_detail_table_content(detail_data, grade_key: str, algorithm_na
     else:
         # 普通匹配的列定义
         columns = [
-            {"name": "算法名称", "id": "algorithm_name"},
-            {"name": "类型", "id": "data_type"},
-            {"name": "UUID", "id": "global_index"},
-            {"name": "键位ID", "id": "keyId"},
-            {"name": "按键时间(ms)", "id": "keyOn"},
-            {"name": "释放时间(ms)", "id": "keyOff"},
-            {"name": "锤击时间(ms)", "id": "hammer_times"},
-            {"name": "锤速", "id": "hammer_velocities"},
-            {"name": "按键时长(ms)", "id": "duration"},
-            {"name": "锤击时间差(ms)", "id": "hammer_time_diff"},
-            {"name": "锤速差", "id": "hammer_velocity_diff"},
-            {"name": "匹配状态", "id": "match_status"}
+            {"name": "算法\n名称", "id": "algorithm_name", "type": "text"},
+            {"name": "类型", "id": "data_type", "type": "text"},
+            {"name": "UUID", "id": "global_index", "type": "text"},
+            {"name": "按键ID", "id": "keyId", "type": "text"},
+            {"name": "按键时间\n(ms)", "id": "keyOn", "type": "text"},
+            {"name": "释放时间\n(ms)", "id": "keyOff", "type": "text"},
+            {"name": "锤击时间\n(ms)", "id": "hammer_times", "type": "text"},
+            {"name": "锤速", "id": "hammer_velocities", "type": "numeric"},
+            {"name": "按键时长\n(ms)", "id": "duration", "type": "text"},
+            {"name": "按键开始差\n(ms)", "id": "keyon_diff", "type": "text"},
+            {"name": "持续时间差\n(ms)", "id": "duration_diff", "type": "text"},
+            {"name": "锤击时间差\n(ms)", "id": "hammer_time_diff", "type": "text"},
+            {"name": "锤速差", "id": "hammer_velocity_diff", "type": "numeric"},
+            {"name": "匹配状态", "id": "match_status", "type": "text"}
         ]
     
     return html.Div([
@@ -420,22 +435,53 @@ def _create_grade_detail_table_content(detail_data, grade_key: str, algorithm_na
             style_table={
                 'maxHeight': '400px',
                 'overflowY': 'auto',
-                'overflowX': 'auto'
+                'overflowX': 'auto',
+                'minWidth': '1200px'  # 增加最小宽度以确保所有列可见
             },
             style_cell={
                 'textAlign': 'center',
-                'fontSize': '14px',
+                'fontSize': '12px',
                 'fontFamily': 'Arial, sans-serif',
-                'padding': '8px',
+                'padding': '8px 3px',
                 'minWidth': '80px',
-                'cursor': 'pointer'  # 鼠标指针变为手型
+                'maxWidth': '140px',
+                'whiteSpace': 'normal',
+                'cursor': 'pointer'
             },
             style_header={
                 'backgroundColor': '#f8f9fa',
                 'fontWeight': 'bold',
-                'borderBottom': '2px solid #dee2e6'
+                'borderBottom': '2px solid #dee2e6',
+                'whiteSpace': 'normal',
+                'height': 'auto',
+                'lineHeight': '1.2',
+                'fontSize': '11px',
+                'padding': '8px 3px',
+                'textAlign': 'center'
             },
             style_data_conditional=[
+                # 为差异列设置更大的宽度
+                {
+                    'if': {'column_id': 'keyon_diff'},
+                    'minWidth': '120px',
+                    'width': '140px'
+                },
+                {
+                    'if': {'column_id': 'duration_diff'},
+                    'minWidth': '120px',
+                    'width': '140px'
+                },
+                {
+                    'if': {'column_id': 'hammer_time_diff'},
+                    'minWidth': '120px',
+                    'width': '140px'
+                },
+                # 为其他包含(ms)的列设置中等宽度
+                {
+                    'if': {'column_id': ['keyOn', 'keyOff', 'hammer_times', 'duration']},
+                    'minWidth': '100px',
+                    'width': '110px'
+                },
                 # 交替行颜色区分：奇数行白色，偶数行淡蓝色
                 {
                     'if': {'row_index': 'odd'},    # 奇数行（1,3,5...）
@@ -463,138 +509,6 @@ def _create_grade_detail_table_content(detail_data, grade_key: str, algorithm_na
     ])
 
 
-# ==================== 回调函数实现 ====================
-
-def _handle_grade_detail_click(n_clicks_list, page_current_list, page_size_list, session_id, session_manager):
-    """
-    处理评级统计按钮点击的业务逻辑（支持分页）
-
-    Args:
-        n_clicks_list: 所有按钮的点击次数列表
-        page_current_list: 当前页码列表
-        page_size_list: 每页大小列表
-        session_id: 会话ID
-        session_manager: SessionManager实例
-
-    Returns:
-        Tuple: (表格样式列表, 表格内容列表)
-    """
-
-    ctx = callback_context
-    if not ctx.triggered:
-        return [no_update], [no_update]
-
-    # 解析触发的组件
-    triggered_id = ctx.triggered[0]['prop_id']
-
-    # 判断触发类型
-    is_button_click = 'grade-detail-btn' in triggered_id
-    is_pagination = 'grade-detail-datatable' in triggered_id and ('page_current' in triggered_id or 'page_size' in triggered_id)
-
-    if not (is_button_click or is_pagination):
-        return [no_update], [no_update]
-
-    # 获取后端实例
-    backend = session_manager.get_backend(session_id)
-    if not backend:
-        return [no_update], [no_update]
-
-    # 获取活跃算法数量
-    active_algorithms = backend.get_active_algorithms()
-    if not active_algorithms:
-        return [no_update], [no_update]
-    
-    # 获取后端实例
-    backend = session_manager.get_backend(session_id)
-    if not backend:
-        return [no_update], [no_update]
-    
-    num_outputs = len(active_algorithms)
-
-    # 初始化输出值
-    styles = [no_update] * num_outputs
-    children_list = [no_update] * num_outputs
-
-    if is_button_click:
-        # 按钮点击：解析按钮信息并显示表格
-        try:
-            id_part = triggered_id.split('.')[0]
-            button_props = json.loads(id_part)
-            button_index = button_props['index']  # 格式：算法名_评级类型
-        except (json.JSONDecodeError, KeyError):
-            return [no_update], [no_update]
-
-        # 解析button_index: "算法名_评级类型"
-        if '_' in button_index:
-            algorithm_name, grade_key = button_index.rsplit('_', 1)
-        else:
-            return [no_update], [no_update]
-
-        # 找到对应算法的索引
-        target_index = None
-        for i, algorithm in enumerate(active_algorithms):
-            if algorithm.metadata.algorithm_name == algorithm_name:
-                target_index = i
-                break
-
-        if target_index is None:
-            return [no_update], [no_update]
-
-        # 记录当前显示的评级信息
-        _set_current_grade_key_for_table(algorithm_name, grade_key)
-
-        # 获取第一页数据
-        page_current = 0
-        page_size = 50
-        detail_data, total_count = _get_grade_detail_data_paginated(backend, grade_key, algorithm_name, page_current, page_size)
-
-        if not detail_data:
-            # 没有数据，隐藏表格
-            styles[target_index] = {'display': 'none'}
-            children_list[target_index] = no_update
-        else:
-            # 有数据，显示表格
-            styles[target_index] = {'display': 'block', 'marginTop': '20px'}
-            children_list[target_index] = _create_grade_detail_table_content(
-                detail_data, grade_key, algorithm_name, total_count, page_current, page_size
-            )
-
-    elif is_pagination:
-        # 分页操作：更新表格数据
-        # 解析表格ID以确定是哪个算法
-        try:
-            id_part = triggered_id.split('.')[0]
-            table_props = json.loads(id_part)
-            algorithm_name = table_props['index']
-        except (json.JSONDecodeError, KeyError):
-            return [no_update], [no_update]
-
-        # 找到对应算法的索引
-        target_index = None
-        for i, algorithm in enumerate(active_algorithms):
-            if algorithm.metadata.algorithm_name == algorithm_name:
-                target_index = i
-                break
-
-        if target_index is None:
-            return [no_update], [no_update]
-
-        # 获取分页参数（使用对应的索引）
-        page_current = page_current_list[target_index] if target_index < len(page_current_list) else 0
-        page_size = page_size_list[target_index] if target_index < len(page_size_list) else 50
-
-        # 从当前表格状态获取评级信息（需要从State中获取，但这里简化处理）
-        # 这里假设表格ID中包含评级信息，或者从现有数据中推断
-        grade_key = _get_current_grade_key_from_table(algorithm_name, backend)  # 需要实现这个函数
-
-        if grade_key:
-            detail_data, total_count = _get_grade_detail_data_paginated(backend, grade_key, algorithm_name, page_current, page_size)
-            styles[target_index] = {'display': 'block', 'marginTop': '20px'}
-            children_list[target_index] = _create_grade_detail_table_content(
-                detail_data, grade_key, algorithm_name, total_count, page_current, page_size
-            )
-    
-    return styles, children_list
 
 
 def _handle_hammer_error_click(btn_clicks_list, clear_clicks_list, current_children_list, session_id, session_manager):
@@ -836,132 +750,6 @@ def _handle_invalid_notes_click(btn_clicks_list, clear_clicks_list, current_chil
     return styles, children_list, clear_btn_styles
 
 
-def _handle_grade_detail_table_click(active_cell_list, close_clicks, table_data_list, table_id_list, session_id, session_manager):
-    """
-    处理评级详情表格点击，显示按键曲线对比
-    
-    Args:
-        active_cell_list: 所有表格的active_cell列表
-        close_clicks: 关闭按钮点击次数
-        table_data_list: 所有表格的数据列表
-        table_id_list: 所有表格的ID列表
-        session_id: 会话ID
-        session_manager: SessionManager实例
-    
-    Returns:
-        tuple: (modal_style, comparison_container_children)
-    """
-    from dash import callback_context, no_update
-    from plotly.subplots import make_subplots
-    import plotly.graph_objects as go
-    
-    ctx = callback_context
-    if not ctx.triggered:
-        return no_update, no_update
-    
-    trigger_id = ctx.triggered[0]['prop_id']
-    
-    # 处理关闭按钮
-    if 'close-grade-detail-curves-modal' in trigger_id:
-        modal_style = {'display': 'none', 'position': 'fixed', 'zIndex': '9999', 'left': '0', 'top': '0', 'width': '100%', 'height': '100%', 'backgroundColor': 'rgba(0,0,0,0.6)', 'backdropFilter': 'blur(5px)', 'alignItems': 'center', 'justifyContent': 'center'}
-        return modal_style, []
-    
-    # 处理表格点击
-    if 'grade-detail-datatable' not in trigger_id or '.active_cell' not in trigger_id:
-        return no_update, no_update
-    
-    # 提取触发的表格ID
-    try:
-        id_str = trigger_id.split('.')[0]
-        triggered_table_id = json.loads(id_str)
-        triggered_index = triggered_table_id['index']
-    except Exception as e:
-        logger.error(f"[ERROR] 解析表格ID失败: {e}")
-        return no_update, no_update
-    
-    # 找到触发的表格在列表中的位置
-    table_idx = None
-    for i, table_id in enumerate(table_id_list):
-        if table_id and table_id.get('index') == triggered_index:
-            table_idx = i
-            break
-    
-    if table_idx is None or table_idx >= len(active_cell_list):
-        return no_update, no_update
-    
-    active_cell = active_cell_list[table_idx]
-    table_data = table_data_list[table_idx]
-    
-    if not active_cell or not table_data:
-        return no_update, no_update
-    
-    # 获取backend
-    backend = session_manager.get_backend(session_id)
-    if not backend:
-        return no_update, no_update
-    
-    try:
-        # 获取点击的行数据
-        row_idx = active_cell.get('row')
-        if row_idx is None or row_idx >= len(table_data):
-            return no_update, no_update
-        
-        row_data = table_data[row_idx]
-        algorithm_name = triggered_index  # 表格ID的index就是algorithm_name
-        data_type = row_data.get('data_type')  # '录制' 或 '播放'
-        global_index = row_data.get('global_index')
-        
-        if global_index is None or not algorithm_name:
-            logger.warning(f"[WARNING] 缺少必要字段: algorithm_name={algorithm_name}, global_index={global_index}")
-            return no_update, no_update
-        
-        logger.info(f"🖱️ 评级详情表格点击: 算法={algorithm_name}, 数据类型={data_type}, 索引={global_index}")
-        
-        # 根据数据类型确定record_index和replay_index
-        # 评级表格的数据是成对的（录制+播放），需要从全局索引找到匹配对
-        if data_type == '录制':
-            record_index = global_index
-            replay_index = None
-            # 从下一行获取replay_index（评级表格是成对显示的）
-            if row_idx + 1 < len(table_data):
-                next_row = table_data[row_idx + 1]
-                if next_row.get('data_type') == '播放':
-                    replay_index = next_row.get('global_index')
-        else:  # '播放'
-            replay_index = global_index
-            record_index = None
-            # 从上一行获取record_index
-            if row_idx > 0:
-                prev_row = table_data[row_idx - 1]
-                if prev_row.get('data_type') == '录制':
-                    record_index = prev_row.get('global_index')
-        
-        # 如果两个索引都有效，生成曲线图
-        if record_index is not None and replay_index is not None:
-            # 生成详细曲线图
-            detail_figure1, detail_figure2, detail_figure_combined = backend.generate_multi_algorithm_scatter_detail_plot_by_indices(
-                algorithm_name=algorithm_name,
-                record_index=record_index,
-                replay_index=replay_index
-            )
-            
-            if detail_figure_combined:
-                modal_style = {'display': 'flex', 'position': 'fixed', 'zIndex': '9999', 'left': '0', 'top': '0', 'width': '100%', 'height': '100%', 'backgroundColor': 'rgba(0,0,0,0.6)', 'backdropFilter': 'blur(5px)', 'alignItems': 'center', 'justifyContent': 'center'}
-                comparison_children = [dcc.Graph(figure=detail_figure_combined, style={'height': '800px'})]
-                return modal_style, comparison_children
-            else:
-                logger.warning("[WARNING] 图表生成失败")
-                modal_style = {'display': 'flex', 'position': 'fixed', 'zIndex': '9999', 'left': '0', 'top': '0', 'width': '100%', 'height': '100%', 'backgroundColor': 'rgba(0,0,0,0.6)', 'backdropFilter': 'blur(5px)', 'alignItems': 'center', 'justifyContent': 'center'}
-                return modal_style, [html.Div([html.P("无法生成详细图表", className="text-warning text-center")])]
-        else:
-            logger.warning(f"[WARNING] 缺少索引信息: record_index={record_index}, replay_index={replay_index}")
-            return no_update, no_update
-                
-    except Exception as e:
-        logger.error(f"[ERROR] 处理评级详情表格点击失败: {e}")
-        logger.error(traceback.format_exc())
-        modal_style = {'display': 'flex', 'position': 'fixed', 'zIndex': '9999', 'left': '0', 'top': '0', 'width': '100%', 'height': '100%', 'backgroundColor': 'rgba(0,0,0,0.6)', 'backdropFilter': 'blur(5px)', 'alignItems': 'center', 'justifyContent': 'center'}
-        return modal_style, [html.Div([html.P(f"处理点击失败: {str(e)}", className="text-danger text-center")])]
 
 
 def _handle_error_table_click(active_cell_list, table_data_list, table_id_list, session_id, session_manager):
@@ -1147,19 +935,6 @@ def register_callbacks(app, session_manager):
         """当session-id或算法状态变化时，自动加载报告内容"""
         return load_report_content(session_id, session_manager)
     
-    # 2. 评级详情表格回调
-    @app.callback(
-        Output({'type': 'grade-detail-table', 'index': dash.dependencies.ALL}, 'style'),
-        Output({'type': 'grade-detail-table', 'index': dash.dependencies.ALL}, 'children'),
-        Input({'type': 'grade-detail-btn', 'index': dash.dependencies.ALL}, 'n_clicks'),
-        Input({'type': 'grade-detail-datatable', 'index': dash.dependencies.ALL}, 'page_current'),
-        Input({'type': 'grade-detail-datatable', 'index': dash.dependencies.ALL}, 'page_size'),
-        State('session-id', 'data'),
-        prevent_initial_call=True
-    )
-    def show_grade_detail(n_clicks_list, page_current_list, page_size_list, session_id):
-        """处理评级统计按钮点击，显示详细数据表格（支持分页）"""
-        return _handle_grade_detail_click(n_clicks_list, page_current_list, page_size_list, session_id, session_manager)
     
     # 3. 锤击错误详情表格回调
     @app.callback(
@@ -1214,22 +989,5 @@ def register_callbacks(app, session_manager):
             session_id, session_manager
         )
     
-    # 6. 评级详情表格点击回调 - 显示按键曲线对比（悬浮窗）
-    @app.callback(
-        [Output('grade-detail-curves-modal', 'style'),
-         Output('grade-detail-curves-comparison-container', 'children')],
-        [Input({'type': 'grade-detail-datatable', 'index': dash.ALL}, 'active_cell'),
-         Input('close-grade-detail-curves-modal', 'n_clicks')],
-        [State({'type': 'grade-detail-datatable', 'index': dash.ALL}, 'data'),
-         State({'type': 'grade-detail-datatable', 'index': dash.ALL}, 'id'),
-         State('session-id', 'data')],
-        prevent_initial_call=True
-    )
-    def handle_grade_detail_table_click(active_cell_list, close_clicks, table_data_list, table_id_list, session_id):
-        """处理评级详情表格点击，显示按键曲线对比（悬浮窗）"""
-        return _handle_grade_detail_table_click(
-            active_cell_list, close_clicks, table_data_list, table_id_list,
-            session_id, session_manager
-        )
 
 

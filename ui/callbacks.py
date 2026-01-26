@@ -176,8 +176,11 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
     # 注册文件上传回调
     register_file_upload_callbacks(app, session_manager)
 
-    # 注册算法管理回调（可能需要调整）
+    # 注册算法管理回调
     register_algorithm_callbacks(app, session_manager)
+
+    # 注册评级详情核心回调 (包含按键筛选、对比模态框、跳转跳转等)
+    register_all_callbacks(app, session_manager)
 
     # 注册散点图回调 - 暂时禁用
     # register_scatter_callbacks(app, session_manager)
@@ -3765,6 +3768,9 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         """创建只显示单侧数据的曲线图"""
 
         try:
+            logger.info(f"[DEBUG] 创建单侧数据曲线图: key_id={key_id}, data_label={data_label}, algorithm_name={algorithm_name}")
+            logger.info(f"[DEBUG] note_data类型: {type(note_data)}")
+
             # 创建子图
             fig = make_subplots(
                 rows=1, cols=1,
@@ -3773,16 +3779,21 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
 
             # 提取数据
             note_offset = getattr(note_data, 'offset', 0)  # 获取偏移量
+            logger.info(f"[DEBUG] note_offset: {note_offset}")
             has_data = False
             
             # 1. 绘制 after_touch 曲线
-            if hasattr(note_data, 'after_touch') and note_data.after_touch is not None and len(note_data.after_touch.index) > 0:
-                at_time_data = note_data.after_touch.index
-                at_value_data = note_data.after_touch.values if hasattr(note_data.after_touch, 'values') else [0] * len(at_time_data)
-                
+            if hasattr(note_data, 'after_touch') and note_data.after_touch is not None and not note_data.after_touch.empty:
+                logger.info(f"[DEBUG] 找到after_touch数据，长度: {len(note_data.after_touch)}")
+                # after_touch 是 pandas Series，直接使用 index 和 values
+                at_time_data = note_data.after_touch.index.tolist()
+                at_value_data = note_data.after_touch.values.tolist()
+                logger.info(f"[DEBUG] after_touch时间范围: {min(at_time_data)} - {max(at_time_data)}")
+                logger.info(f"[DEBUG] after_touch值范围: {min(at_value_data)} - {max(at_value_data)}")
+
                 # 转换为毫秒，加上offset
                 at_time_ms = [(t + note_offset) / 10.0 for t in at_time_data]
-                
+
                 # 添加after_touch曲线
                 fig.add_trace(
                     go.Scatter(
@@ -3790,26 +3801,35 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                         y=at_value_data,
                         mode='lines',
                         name=f'{data_label}触后曲线',
-                        line=dict(color='blue', width=2)
+                        line=dict(color='blue', width=2),
+                        hovertemplate='<b>时间</b>: %{x:.2f}ms<br><b>触后值</b>: %{y}<extra></extra>'
                     ),
                     row=1, col=1
                 )
                 has_data = True
+                logger.info(f"[DEBUG] 已添加after_touch曲线")
+            else:
+                logger.warning(f"[WARNING] 没有找到有效的after_touch数据")
             
             # 2. 绘制 hammers 锤击点（过滤掉锤速为0的点）
-            if hasattr(note_data, 'hammers') and note_data.hammers is not None and len(note_data.hammers.index) > 0:
-                hm_time_data = note_data.hammers.index
-                hm_value_data = note_data.hammers.values if hasattr(note_data.hammers, 'values') else [0] * len(hm_time_data)
-                
+            if hasattr(note_data, 'hammers') and note_data.hammers is not None and not note_data.hammers.empty:
+                logger.info(f"[DEBUG] 找到hammers数据，长度: {len(note_data.hammers)}")
+                # hammers 是 pandas Series，直接使用 index 和 values
+                hm_time_data = note_data.hammers.index.tolist()
+                hm_value_data = note_data.hammers.values.tolist()
+                logger.info(f"[DEBUG] hammers时间范围: {min(hm_time_data)} - {max(hm_time_data)}")
+                logger.info(f"[DEBUG] hammers值范围: {min(hm_value_data)} - {max(hm_value_data)}")
+
                 # 过滤掉锤速为0的点
                 hammer_mask = [v > 0 for v in hm_value_data]
+                logger.info(f"[DEBUG] 锤击点过滤: 总共{len(hammer_mask)}个点，其中{sum(hammer_mask)}个有效")
                 if any(hammer_mask):
                     filtered_time = [t for t, m in zip(hm_time_data, hammer_mask) if m]
                     filtered_value = [v for v, m in zip(hm_value_data, hammer_mask) if m]
-                    
+
                     # 转换为毫秒，加上offset
                     hm_time_ms = [(t + note_offset) / 10.0 for t in filtered_time]
-                    
+
                     # 添加hammers锤击点
                     fig.add_trace(
                         go.Scatter(
@@ -3823,6 +3843,11 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                         row=1, col=1
                     )
                     has_data = True
+                    logger.info(f"[DEBUG] 已添加锤击点")
+                else:
+                    logger.warning(f"[WARNING] 所有锤击点都被过滤掉了（锤速为0）")
+            else:
+                logger.warning(f"[WARNING] 没有找到有效的hammers数据")
             
             # 如果没有任何数据
             if not has_data:
@@ -3850,7 +3875,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
 
             # 更新坐标轴标签
             fig.update_xaxes(title_text="时间 (ms)", row=1, col=1)
-            fig.update_yaxes(title_text="触后值", row=1, col=1)
+            fig.update_yaxes(title_text="触后值 / 锤速", row=1, col=1)
 
             return fig
 

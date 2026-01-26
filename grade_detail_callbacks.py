@@ -1,579 +1,430 @@
 """
-匹配质量评级统计详情回调函数
+匹配质量评级统计详情回调控制逻辑
 """
-import traceback
-import logging
-import dash
 import json
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-from dash import Input, Output, State, html, no_update, dash_table, dcc
-from typing import Dict, List, Optional, Tuple, Any, Union
-from backend.session_manager import SessionManager
-from spmid.spmid_reader import Note
-from spmid.note_matcher import MatchType
+import logging
+import traceback
+from typing import Dict, List, Optional, Any
 
-# 获取logger
+import dash
+import plotly.graph_objects as go
+from dash import Input, Output, State, html, no_update, dcc
+
+from backend.session_manager import SessionManager
+from spmid.note_matcher import MatchType
+from spmid.spmid_reader import Note
+from utils.constants import GRADE_RANGE_CONFIG
+from backend.force_curve_analyzer import ForceCurveAnalyzer
+
+# 日志记录器
 logger = logging.getLogger(__name__)
 
-
-# 导入统一的评级配置
-from utils.constants import GRADE_RANGE_CONFIG
-
+# ==========================================
+# 1. 数据工具函数 (Utilities)
+# ==========================================
 
 def get_note_matcher_from_backend(backend, algorithm_name: Optional[str] = None) -> Optional[Any]:
-    """
-    从backend获取note_matcher实例
-
-    Args:
-        backend: 后端实例
-        algorithm_name: 算法名称（None表示单算法模式）
-
-    Returns:
-        note_matcher实例或None
-    """
+    """获取指定算法的 NoteMatcher 实例"""
     if algorithm_name:
-        # 多算法模式
         active_algorithms = backend.get_active_algorithms()
-        target_algorithm = next((alg for alg in active_algorithms if alg.metadata.algorithm_name == algorithm_name), None)
-        if not target_algorithm or not target_algorithm.analyzer:
-            return None
-        return target_algorithm.analyzer.note_matcher
-    else:
-        # 单算法模式
-        if not backend.analyzer:
-            return None
-        return backend.analyzer.note_matcher
+        target = next((alg for alg in active_algorithms if alg.metadata.algorithm_name == algorithm_name), None)
+        return target.analyzer.note_matcher if target and target.analyzer else None
+    return backend.analyzer.note_matcher if backend and backend.analyzer else None
 
-
-def format_hammer_time(note : Note) -> str:
-    """格式化锤击时间（只显示第一个，加offset）"""
-    if not note.hammers.empty:
-        first_time = note.get_first_hammer_time()
-        return f"{first_time:.2f}"
+def format_hammer_time(note: Note) -> str:
+    """格式化锤击时间点（首个锤头时间 + Offset）"""
+    if note and not note.hammers.empty:
+        return f"{note.get_first_hammer_time():.2f}"
     return "N/A"
 
-
-def format_hammer_velocity(note) -> str:
-    """格式化锤速（只显示第一个）"""
-    if not note.hammers.empty:
-        first_velocity = note.get_first_hammer_velocity()
-        return f"{first_velocity:.2f}"
+def format_hammer_velocity(note: Note) -> str:
+    """格式化首个锤击速度"""
+    if note and not note.hammers.empty:
+        return f"{note.get_first_hammer_velocity():.2f}"
     return "N/A"
 
+# ==========================================
+# 2. 核心数据获取层 (Data Layer)
+# ==========================================
 
-def create_table_row(item: Dict, note, data_type: str, grade_key: str) -> Dict[str, Any]:
+def get_grade_detail_data(backend, grade_key: str, algorithm_name: Optional[str] = None) -> List[Dict[str, Any]]:
     """
-    创建表格行数据
-
-    Args:
-        item: 偏移对齐数据项
-        note: Note对象
-        data_type: 数据类型（'录制'或'播放'）
-        grade_key: 评级键
-
-    Returns:
-        表格行字典
+    流式获取指定匹配等级的行数据
+    包含：录制/播放对比对、关键时间差计算
     """
-    delay_error = abs(item['corrected_offset']) / 10.0
-
-    if data_type == '录制':
-        key_on = item['record_keyon']
-        key_off = item['record_keyoff']
-        duration = item['record_duration']
-    else:  # 播放
-        key_on = item['replay_keyon']
-        key_off = item['replay_keyoff']
-        duration = item['replay_duration']
-
-    # 根据数据类型显示对应的全局索引
-    if data_type == '录制':
-        global_index = item['record_index']
-    else:  # 播放
-        global_index = item['replay_index']
-
-    row = {
-        'data_type': data_type,
-        'global_index': global_index,
-        'keyId': item['key_id'],
-        'keyOn': f"{key_on / 10.0:.2f}",
-        'keyOff': f"{key_off / 10.0:.2f}",
-        'hammer_times': format_hammer_time(note),
-        'hammer_velocities': format_hammer_velocity(note),
-        'duration': f"{duration / 10.0:.2f}",
-        'match_status': f"延时误差: {delay_error:.2f}ms",
-        'row_type': 'record' if data_type == '录制' else 'replay'
-    }
-
-    return row
-
-
-def _add_curve_trace(fig, note, times, color, name):
-    """添加触后曲线到图表"""
-    if len(note.after_touch) == 0 or times is None:
-        return
-
-    fig.add_trace(
-        go.Scatter(
-            x=times,
-            y=note.after_touch.values,
-            mode='lines',
-            name=name,
-            line=dict(color=color, width=2),
-            showlegend=True
-        )
-    )
-
-
-def _add_hammer_marker(fig, note, after_touch_times, color, name_prefix):
-    """添加锤击时间点到图表"""
-    if len(note.hammers) == 0 or len(note.hammers.values) == 0:
-        return
-
-    first_hammer_value = note.hammers.values[0]
-    hammer_time = (note.hammers.index[0] + note.offset) / 10.0  # 转换为ms
-
-    # 计算在触后曲线上的对应位置
-    if len(note.after_touch) > 0 and after_touch_times is not None:
-        time_diffs = abs(after_touch_times - hammer_time)
-        closest_idx = time_diffs.argmin()
-        after_touch_value = note.after_touch.iloc[closest_idx]
-        hover_text = f'{name_prefix}锤击时间<br>时间: %{{x:.2f}} ms<br>触后值: %{{y}}<br>锤速: {first_hammer_value}<extra></extra>'
-    else:
-        after_touch_value = 0
-        hover_text = f'{name_prefix}锤击时间<br>时间: %{{x:.2f}} ms<br>触后值: N/A<br>锤速: {first_hammer_value}<extra></extra>'
-
-    fig.add_trace(
-        go.Scatter(
-            x=[hammer_time],
-            y=[after_touch_value],
-            mode='markers',
-            name=f'{name_prefix}锤击时间',
-            marker=dict(color=color, size=10, symbol='diamond'),
-            showlegend=True,
-            hovertemplate=hover_text
-        )
-    )
-
-
-def _add_hammer_marker_subplot(fig, note, after_touch_times, color, name_prefix, row, col):
-    """添加锤击时间点到指定的子图"""
-    if len(note.hammers) == 0 or len(note.hammers.values) == 0:
-        return
-
-    first_hammer_value = note.hammers.values[0]
-    hammer_time = (note.hammers.index[0] + note.offset) / 10.0  # 转换为ms
-
-    # 计算在触后曲线上的对应位置
-    if len(note.after_touch) > 0 and after_touch_times is not None:
-        time_diffs = abs(after_touch_times - hammer_time)
-        closest_idx = time_diffs.argmin()
-        after_touch_value = note.after_touch.iloc[closest_idx]
-        hover_text = f'{name_prefix}锤击时间<br>时间: %{{x:.2f}} ms<br>触后值: %{{y}}<br>锤速: {first_hammer_value}<extra></extra>'
-    else:
-        after_touch_value = 0
-        hover_text = f'{name_prefix}锤击时间<br>时间: %{{x:.2f}} ms<br>触后值: N/A<br>锤速: {first_hammer_value}<extra></extra>'
-
-    fig.add_trace(
-        go.Scatter(
-            x=[hammer_time],
-            y=[after_touch_value],
-            mode='markers',
-            name=f'{name_prefix}锤击时间',
-            marker=dict(color=color, size=10, symbol='diamond'),
-            showlegend=True,  # 在子图中显示图例
-            hovertemplate=hover_text
-        ),
-        row=row, col=col
-    )
-
-
-def _add_hammer_marker_subplot_offset(fig, note, after_touch_times, color, name_prefix, row, col, offset_ms):
-    """添加偏移后的锤击时间点到指定的子图"""
-    if len(note.hammers) == 0 or len(note.hammers.values) == 0:
-        return
-
-    first_hammer_value = note.hammers.values[0]
-    hammer_time = (note.hammers.index[0] + note.offset) / 10.0  # 转换为ms
-    hammer_time_offset = hammer_time - offset_ms  # 应用偏移
-
-    # 计算在触后曲线上的对应位置
-    if len(note.after_touch) > 0 and after_touch_times is not None:
-        time_diffs = abs(after_touch_times - hammer_time_offset)
-        closest_idx = time_diffs.argmin()
-        after_touch_value = note.after_touch.iloc[closest_idx]
-        hover_text = f'{name_prefix}锤击时间 (偏移后)<br>原始时间: {hammer_time:.2f} ms<br>偏移后时间: %{{x:.2f}} ms<br>偏移量: {offset_ms:.2f} ms<br>触后值: %{{y}}<br>锤速: {first_hammer_value}<extra></extra>'
-    else:
-        after_touch_value = 0
-        hover_text = f'{name_prefix}锤击时间 (偏移后)<br>原始时间: {hammer_time:.2f} ms<br>偏移后时间: %{{x:.2f}} ms<br>偏移量: {offset_ms:.2f} ms<br>触后值: N/A<br>锤速: {first_hammer_value}<extra></extra>'
-
-    fig.add_trace(
-        go.Scatter(
-            x=[hammer_time_offset],
-            y=[after_touch_value],
-            mode='markers',
-            name=f'{name_prefix}锤击时间 (偏移后)',
-            marker=dict(color=color, size=10, symbol='diamond'),
-            showlegend=False,  # 第二行不显示图例，避免重复
-            hovertemplate=hover_text
-        ),
-        row=row, col=col
-    )
-
-
-def _add_curve_to_subplot(fig, note, times, color, name, row, col, show_legend=True):
-    """添加触后曲线到指定的子图"""
-    if len(note.after_touch) == 0 or times is None:
-        return
-
-    fig.add_trace(
-        go.Scatter(
-            x=times,
-            y=note.after_touch.values,
-            mode='lines',
-            name=name,
-            line=dict(color=color, width=2),
-            showlegend=show_legend
-        ),
-        row=row, col=col
-    )
-
-
-def _get_average_delay(backend, algorithm_name):
-    """获取平均延时"""
     try:
-        if algorithm_name and algorithm_name != 'single':
-            # 多算法模式
-            active_algorithms = backend.get_active_algorithms()
-            target_algorithm = next((alg for alg in active_algorithms if alg.metadata.algorithm_name == algorithm_name), None)
-            if target_algorithm and target_algorithm.analyzer and hasattr(target_algorithm.analyzer, 'get_global_average_delay'):
-                average_delay_0_1ms = target_algorithm.analyzer.get_global_average_delay()
-            else:
-                average_delay_0_1ms = 0.0
-        else:
-            # 单算法模式
-            average_delay_0_1ms = backend.get_global_average_delay()
+        matcher = get_note_matcher_from_backend(backend, algorithm_name)
+        if not matcher: return []
+        
+        matched_pairs = matcher.get_matched_pairs_with_grade()
+        if not matched_pairs: return []
+        
+        # 建立评级映射
+        match_map = {
+            'correct': MatchType.EXCELLENT, 'minor': MatchType.GOOD,
+            'moderate': MatchType.FAIR, 'large': MatchType.POOR, 'severe': MatchType.SEVERE
+        }
+        target_type = match_map.get(grade_key)
+        
+        detail_data = []
+        for rec_note, rep_note, m_type, err_ms in matched_pairs:
+            if m_type != target_type: continue
+            
+            # 计算差异指标 (播放相对于录制)
+            k_diff = rep_note.key_on_ms - rec_note.key_on_ms
+            d_diff = rep_note.duration_ms - rec_note.duration_ms
 
-        average_delay_ms = average_delay_0_1ms / 10.0
-        logger.debug(f"[DEBUG] 获取平均延时: {average_delay_ms:.2f}ms (算法: {algorithm_name})")
-        return average_delay_ms
+            # 计算锤击时间差和锤速差
+            rec_hammer_time = rec_note.get_first_hammer_time() 
+            rep_hammer_time = rep_note.get_first_hammer_time()
+            hammer_time_diff = rep_hammer_time - rec_hammer_time if rec_hammer_time and rep_hammer_time else 0
+
+            rec_hammer_velocity = rec_note.get_first_hammer_velocity()
+            rep_hammer_velocity = rep_note.get_first_hammer_velocity()
+            hammer_velocity_diff = rep_hammer_velocity - rec_hammer_velocity if rec_hammer_velocity and rep_hammer_velocity else 0
+            
+            # 基础行 (录制) - 添加配对信息以便查找
+            record_row = {
+                'data_type': '录制', 'global_index': rec_note.uuid, 'keyId': rec_note.id,
+                'keyOn': f"{rec_note.key_on_ms:.2f}", 'keyOff': f"{rec_note.key_off_ms:.2f}",
+                'hammer_times': format_hammer_time(rec_note), 'hammer_velocities': format_hammer_velocity(rec_note),
+                'duration': f"{rec_note.duration_ms:.2f}", 'row_type': 'record',
+                'match_status': f"误差: {err_ms:.2f}ms", 'keyon_diff': '', 'duration_diff': '', 'hammer_time_diff': '', 'hammer_velocity_diff': '',
+                'record_uuid': rec_note.uuid, 'replay_uuid': rep_note.uuid  # 添加配对信息
+            }
+            # 对比行 (播放) - 添加配对信息以便查找
+            replay_row = {
+                'data_type': '播放', 'global_index': rep_note.uuid, 'keyId': rep_note.id,
+                'keyOn': f"{rep_note.key_on_ms:.2f}", 'keyOff': f"{rep_note.key_off_ms:.2f}",
+                'hammer_times': format_hammer_time(rep_note), 'hammer_velocities': format_hammer_velocity(rep_note),
+                'duration': f"{rep_note.duration_ms:.2f}", 'row_type': 'replay',
+                'keyon_diff': f"{k_diff:+.2f}ms", 'duration_diff': f"{d_diff:+.2f}ms",
+                'hammer_time_diff': f"{hammer_time_diff:+.2f}ms" if hammer_time_diff else '',
+                'hammer_velocity_diff': f"{hammer_velocity_diff:+.2f}" if hammer_velocity_diff else '',
+                'match_status': f"误差: {err_ms:.2f}ms",
+                'record_uuid': rec_note.uuid, 'replay_uuid': rep_note.uuid  # 添加配对信息
+            }
+            
+            if algorithm_name:
+                record_row['algorithm_name'] = algorithm_name
+                replay_row['algorithm_name'] = algorithm_name
+                
+            detail_data.extend([record_row, replay_row])
+        return detail_data
     except Exception as e:
-        logger.warning(f"[WARNING] 获取平均延时失败: {e}")
-        return 0.0
+        logger.error(f"Error fetching grade detail: {e}")
+        return []
 
+def get_failed_matches_detail_data(matcher, algorithm_name: Optional[str] = None) -> List[Dict[str, Any]]:
+    """获取无法匹配（Major 异常）的音符详情"""
+    try:
+        failure_reasons = getattr(matcher, 'failure_reasons', {})
+        if not failure_reasons: return []
+        
+        detail_data = []
+        for (data_type, index), reason in failure_reasons.items():
+            attr = '_record_data' if data_type == 'record' else '_replay_data'
+            notes = getattr(matcher, attr, [])
+            if index < len(notes):
+                note = notes[index]
+                row = {
+                    'row_type': '录制' if data_type == 'record' else '播放',
+                    'index': index, 'key_id': note.id, 'reason': reason,
+                    'keyon': f"{note.key_on_ms:.2f}", 'keyoff': f"{note.key_off_ms:.2f}",
+                    'duration': f"{note.duration_ms:.2f}", 'hammer_time': format_hammer_time(note),
+                    'hammer_velocity': format_hammer_velocity(note)
+                }
+                if algorithm_name: row['algorithm_name'] = algorithm_name
+                detail_data.append(row)
+        return detail_data
+    except: return []
 
-def _create_curves_subplot(backend, key_id, algorithm_name, matched_result):
-    """创建曲线对比子图"""
-    # 获取数据
-    note_matcher = get_note_matcher_from_backend(backend, algorithm_name)
-    if not note_matcher:
+def show_single_grade_detail(button_index, session_id, session_manager):
+    """根据点击属性派发具体数据及列定义"""
+    backend = session_manager.get_backend(session_id)
+    if not backend: return None
+    
+    try:
+        # 解析按钮索引
+        if '_' in button_index:
+            alg_name, grade_key = button_index.rsplit('_', 1)
+        else:
+            alg_name, grade_key = None, button_index
+            
+        # 根据评级类型抓取数据
+        if grade_key == 'major':
+            matcher = get_note_matcher_from_backend(backend, alg_name)
+            data = get_failed_matches_detail_data(matcher, alg_name)
+            cols = [{"name": n, "id": i} for n, i in [
+                ("类型", "row_type"), ("索引", "index"), ("按键ID", "key_id"), 
+                ("按键时间(ms)", "keyon"), ("释放时间(ms)", "keyoff"), 
+                ("按键时长(ms)", "duration"), ("失败原因", "reason")
+            ]]
+        else:
+            data = get_grade_detail_data(backend, grade_key, alg_name)
+            cols = [
+                {"name": "类型", "id": "data_type"},
+                {"name": "按键ID", "id": "keyId"},
+                {"name": "按键时间\n(ms)", "id": "keyOn"},
+                {"name": "释放时间\n(ms)", "id": "keyOff"},
+                {"name": "锤击时间\n(ms)", "id": "hammer_times"},
+                {"name": "锤速", "id": "hammer_velocities"},
+                {"name": "按键开始差\n(ms)", "id": "keyon_diff"},
+                {"name": "持续时间差\n(ms)", "id": "duration_diff"},
+                {"name": "锤击时间差\n(ms)", "id": "hammer_time_diff"},
+                {"name": "锤速差", "id": "hammer_velocity_diff"},
+                {"name": "匹配状态", "id": "match_status"}
+            ]
+            
+        if alg_name: cols.insert(0, {"name": "算法名称", "id": "algorithm_name"})
+        return {'display': 'block', 'marginTop': '20px'}, cols, data
+    except Exception as e:
+        logger.error(f"Detailed view dispatch error: {e}")
         return None
 
-    record_note = note_matcher._record_data[matched_result.record_index]
-    replay_note = note_matcher._replay_data[matched_result.replay_index]
+# ==========================================
+# 3. 绘图与跳转层 (Viz & Navigation)
+# ==========================================
 
-    # 时间转换
-    record_after_touch_times = (record_note.after_touch.index + record_note.offset) / 10.0 if len(record_note.after_touch) > 0 else None
-    replay_after_touch_times = (replay_note.after_touch.index + replay_note.offset) / 10.0 if len(replay_note.after_touch) > 0 else None
-
-    # 获取平均延时并计算偏移
-    average_delay_ms = _get_average_delay(backend, algorithm_name)
-    replay_after_touch_times_offset = replay_after_touch_times - average_delay_ms if replay_after_touch_times is not None else None
-
-    # 创建子图
-    fig = make_subplots(
-        rows=2, cols=1,
-        subplot_titles=(
-            '原始触后曲线对比',
-            f'偏移后触后曲线对比 (平均延时: {average_delay_ms:.2f}ms)'
-        ),
-        vertical_spacing=0.2,
-        row_heights=[0.5, 0.5]
-    )
-
-    # 添加第一行曲线和锤击点
-    _add_curve_to_subplot(fig, record_note, record_after_touch_times, 'blue', '录制触后', 1, 1, True)
-    _add_curve_to_subplot(fig, replay_note, replay_after_touch_times, 'red', '播放触后', 1, 1, True)
-    _add_hammer_marker_subplot(fig, record_note, record_after_touch_times, 'blue', '录制', 1, 1)
-    _add_hammer_marker_subplot(fig, replay_note, replay_after_touch_times, 'red', '播放', 1, 1)
-
-    # 添加第二行曲线和锤击点
-    _add_curve_to_subplot(fig, record_note, record_after_touch_times, 'blue', '录制触后 (偏移后)', 2, 1, False)
-    _add_curve_to_subplot(fig, replay_note, replay_after_touch_times_offset, 'red', '播放触后 (偏移后)', 2, 1, False)
-    _add_hammer_marker_subplot_offset(fig, record_note, record_after_touch_times, 'blue', '录制', 2, 1, 0)
-    _add_hammer_marker_subplot_offset(fig, replay_note, replay_after_touch_times_offset, 'red', '播放', 2, 1, average_delay_ms)
-
-    return fig
-
-
-def _configure_figure_layout(fig, key_id, algorithm_name):
-    """配置图表布局"""
-    fig.update_layout(
-        height=500,
-        title_text=f"按键 {key_id} 触后曲线对比 - {algorithm_name}",
-        showlegend=True,
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1
-        ),
-        hovermode='x unified'
-    )
-
-    # 更新坐标轴标签
-    fig.update_xaxes(title_text="时间 (ms)")
-    fig.update_yaxes(title_text="触后值")
-
-    # 添加网格线，便于对比
-    fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='lightgray')
-    fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='lightgray')
-
-
-def _create_modal_style(display='block'):
-    """创建模态框样式"""
+def _create_modal_style(show=True):
     return {
-        'display': display,
-        'position': 'fixed',
-        'zIndex': '9999',
-        'left': '0',
-        'top': '0',
-        'width': '100%',
-        'height': '100%',
-        'backgroundColor': 'rgba(0,0,0,0.6)',
+        'display': 'block' if show else 'none',
+        'position': 'fixed', 'zIndex': '9999', 'left': '0', 'top': '0',
+        'width': '100%', 'height': '100%', 'backgroundColor': 'rgba(0,0,0,0.6)',
         'backdropFilter': 'blur(5px)'
     }
 
-
-def _handle_close_button():
-    """处理关闭按钮点击"""
-    return _create_modal_style('none'), [], no_update
-
-
-def _parse_table_trigger(trigger_id):
-    """解析表格点击的触发信息"""
-    try:
-        id_part = trigger_id.split('.')[0]
-        table_props = json.loads(id_part)
-        table_index = table_props.get('index')
-        return table_index
-    except (json.JSONDecodeError, KeyError, ValueError):
-        return None
-
-
-def _extract_active_cell(active_cells):
-    """从active_cells列表中提取激活的单元格"""
-    for cell in active_cells:
-        if cell and isinstance(cell, dict) and 'row' in cell:
-            return cell
-    return None
-
-
-def _get_table_data(table_data_list, table_index):
-    """根据表格索引获取对应的数据"""
-    if isinstance(table_data_list, list) and len(table_data_list) > 0:
-        # 在多算法模式下，我们需要根据 table_index 找到对应的表格数据
-        # 由于回调使用了 dash.ALL，table_data_list 包含所有表格的数据
-        # 我们可以通过 table_index 在列表中查找匹配的数据
-
-        # 由于 dash.ALL 返回的数据顺序通常与组件定义顺序一致
-        # 我们可以尝试通过索引位置来匹配，或者通过数据内容来匹配
-
-        # 更简单的方法：由于表格数据通常按算法顺序创建
-        # 我们可以根据 table_index 的值来选择对应的数据
-        if table_index and isinstance(table_index, str):
-            # 尝试通过某种启发式方法匹配数据
-            # 例如，如果 table_index 是算法名称，我们可以检查数据中是否包含该算法的信息
-            for table_data in table_data_list:
-                if table_data and isinstance(table_data, list) and len(table_data) > 0:
-                    # 检查第一行数据是否包含算法信息
-                    first_row = table_data[0] if table_data else {}
-                    if isinstance(first_row, dict) and 'algorithm_name' in first_row:
-                        if first_row.get('algorithm_name') == table_index:
-                            return table_data
-
-        # 如果没有找到匹配的数据，返回第一个非空数据
-        for table_data in table_data_list:
-            if table_data and isinstance(table_data, list) and len(table_data) > 0:
-                return table_data
-
-        # 默认返回第一个表格的数据（向后兼容）
-        return table_data_list[0]
-    return None
-
-
-def _get_table_data_by_index(table_data_list, triggered_index):
-    """根据触发的索引获取对应的表格数据"""
-    if isinstance(table_data_list, list) and len(table_data_list) > 0:
-        # 在多算法模式下，尝试根据triggered_index找到对应的数据
-
-        # 方法1：检查数据内容是否包含匹配的算法信息
-        for table_data in table_data_list:
-            if table_data and isinstance(table_data, list) and len(table_data) > 0:
-                # 检查第一行数据是否包含算法信息
-                first_row = table_data[0] if table_data else {}
-                if isinstance(first_row, dict) and 'algorithm_name' in first_row:
-                    if first_row.get('algorithm_name') == triggered_index:
-                        return table_data
-
-        # 方法2：如果没有找到匹配的，根据数据的位置关系返回
-        # 通常第一个数据对应第一个算法，第二个对应第二个算法
-        # 这里简化处理，返回第一个非空数据
-        for table_data in table_data_list:
-            if table_data and isinstance(table_data, list) and len(table_data) > 0:
-                return table_data
-
-        # 默认返回第一个
-        return table_data_list[0]
-    return None
-
-
-def _extract_row_data(table_data, active_cell):
-    """从表格数据中提取点击行的数据"""
-    if not table_data or not active_cell:
-        return None
-
-    row_idx = active_cell.get('row')
-    if row_idx is None or row_idx >= len(table_data):
-        return None
-
-    return table_data[row_idx]
-
-
 def _process_note_data(session_manager, session_id, row_data, table_index, active_cell=None):
-    """处理音符数据并生成图表"""
-    if not row_data:
-        return _create_modal_style(), [html.Div("无法获取行数据", className="text-danger text-center")], no_update
-
-    key_id = row_data.get('keyId')
-    global_index = row_data.get('global_index')
-    data_type = row_data.get('data_type')
-
-    if not key_id:
-        return _create_modal_style(), [html.Div("无法获取按键ID", className="text-danger text-center")], no_update
-
+    """基于行数据提取并生成曲线对比模态框内容"""
     try:
-        key_id = int(key_id)
-    except (ValueError, TypeError):
-        return _create_modal_style(), [html.Div("按键ID格式错误", className="text-danger text-center")], no_update
-
-    # 获取后端实例
-    backend = session_manager.get_backend(session_id)
-    if not backend:
-        return _create_modal_style(), [html.Div("无法获取后端实例", className="text-danger text-center")], no_update
-
-    # 获取note_matcher
-    note_matcher = get_note_matcher_from_backend(backend, table_index)
-    if not note_matcher:
-        return _create_modal_style(), [html.Div("无法获取匹配器", className="text-danger text-center")], no_update
-
-    # 查找匹配结果
-    matched_result = None
-    for result in note_matcher.match_results:
-        if result.is_success:
-            if data_type == '录制' and result.record_index == global_index:
-                matched_result = result
-                break
-            elif data_type == '播放' and result.replay_index == global_index:
-                matched_result = result
-                break
-
-    if not matched_result:
-        return _create_modal_style(), [html.Div(f"未找到按键ID {key_id} 的匹配数据", className="text-muted text-center")], no_update
-
-    # 生成图表
-    try:
-        comparison_content = generate_single_key_curves_comparison(
-            backend, key_id, table_index, session_id, matched_result
-        )
-
-        # 准备跳转到瀑布图的信息
-        clicked_info = {
-            'key_id': key_id,
-            'algorithm_name': table_index,
-            'data_type': data_type,
-            'global_index': global_index,
-            'record_idx': matched_result.record_index if hasattr(matched_result, 'record_index') else None,
-            'replay_idx': matched_result.replay_index if hasattr(matched_result, 'replay_index') else None,
-            'source_plot_id': 'grade-detail-curves-modal',  # 标识来源是评级统计曲线对比
-            'table_index': table_index,  # 保存表格索引
-            'row_index': active_cell.get('row') if active_cell else None  # 保存点击的行索引
+        key_id = int(row_data.get('keyId') or row_data.get('key_id'))
+        global_idx = row_data.get('global_index') or row_data.get('index')
+        data_type = row_data.get('data_type') or row_data.get('row_type')
+        
+        backend = session_manager.get_backend(session_id)
+        matcher = get_note_matcher_from_backend(backend, table_index)
+        
+        # 优先使用表格数据中的配对信息（更可靠）
+        record_uuid = row_data.get('record_uuid')
+        replay_uuid = row_data.get('replay_uuid')
+        
+        matched = None
+        if record_uuid and replay_uuid:
+            # 使用配对信息直接查找匹配对
+            matched = matcher.find_matched_pair_by_uuid(str(record_uuid), str(replay_uuid))
+            if matched:
+                logger.info(f"通过配对信息找到匹配对: record_uuid={record_uuid}, replay_uuid={replay_uuid}")
+        
+        if not matched: 
+            logger.warning(f"未找到匹配曲线: key_id={key_id}, global_idx={global_idx}, data_type={data_type}, table_index={table_index}")
+            return _create_modal_style(True), [html.Div("未找到匹配曲线")], no_update
+        
+        # 从matched中解包出正确的note对象
+        rec_note, rep_note, match_type, error_ms = matched
+        
+        # 验证找到的note对象是否正确
+        validation_errors = []
+        if data_type == '录制':
+            if str(rec_note.uuid) != str(global_idx):
+                error_msg = f"UUID不匹配: 期望={global_idx}, 实际rec_note.uuid={rec_note.uuid}"
+                logger.error(error_msg)
+                validation_errors.append(error_msg)
+        elif data_type == '播放':
+            if str(rep_note.uuid) != str(global_idx):
+                error_msg = f"UUID不匹配: 期望={global_idx}, 实际rep_note.uuid={rep_note.uuid}"
+                logger.error(error_msg)
+                validation_errors.append(error_msg)
+        
+        # 验证key_id是否匹配
+        if rec_note.id != key_id:
+            error_msg = f"录制按键ID不匹配: 期望={key_id}, 实际={rec_note.id}"
+            logger.warning(error_msg)
+            validation_errors.append(error_msg)
+        if rep_note.id != key_id:
+            error_msg = f"播放按键ID不匹配: 期望={key_id}, 实际={rep_note.id}"
+            logger.warning(error_msg)
+            validation_errors.append(error_msg)
+        
+        # 如果有严重错误，返回错误信息
+        if validation_errors:
+            error_content = html.Div([
+                html.H5("数据验证失败", className="text-danger"),
+                html.Ul([html.Li(err) for err in validation_errors])
+            ])
+            return _create_modal_style(True), [error_content], no_update
+        
+        # 构建图表
+        fig_original, fig_aligned = _create_curves_subplot(backend, key_id, table_index, matched)
+        jump_info = {
+            'key_id': key_id, 'algorithm_name': table_index, 'record_uuid': rec_note.uuid,
+            'replay_uuid': rep_note.uuid, 'source_plot_id': 'grade-detail-curves-modal',
+            'table_index': table_index, 'row_index': active_cell.get('row') if active_cell else None
         }
 
-        return _create_modal_style(), comparison_content, clicked_info
-
-    except Exception as e:
-        return _create_modal_style(), [html.Div(f"生成曲线对比图失败: {str(e)}", className="text-danger text-center")], no_update
-
-
-def generate_single_key_curves_comparison(backend, key_id: int, algorithm_name: str, session_id: str, matched_result):
-    """生成单个按键的曲线对比图"""
-    try:
-        # 创建曲线对比子图
-        fig = _create_curves_subplot(backend, key_id, algorithm_name, matched_result)
-        if fig is None:
-            return [html.Div([html.P("无法获取匹配器", className="text-danger text-center")])]
-
-        # 配置图表布局
-        fig.update_layout(
-            height=700,  # 增大高度以提供更多间距
-            title_text=f"按键 {key_id} 曲线对比 - {algorithm_name}",
-            showlegend=True,
-            legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=1.02,
-                xanchor="right",
-                x=1
-            ),
-            hovermode='x unified',
-            margin=dict(t=80, b=50, l=50, r=50)  # 增加边距
-        )
-
-        # 更新坐标轴标签
-        fig.update_xaxes(title_text="时间 (ms)", row=1, col=1)
-        fig.update_xaxes(title_text="时间 (ms)", row=2, col=1)
-
-        fig.update_yaxes(title_text="触后值", row=1, col=1)
-        fig.update_yaxes(title_text="触后值", row=2, col=1)
-
-        # 添加网格线，便于对比
-        for row in [1, 2]:
-            fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='lightgray', row=row, col=1)
-            fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='lightgray', row=row, col=1)
-
-        return [
-            dcc.Graph(figure=fig),
-            html.Div([
-                html.Button(
-                    "跳转到瀑布图",
-                    id="jump-to-waterfall-btn-from-grade-detail",
-                    className="btn btn-success",
-                    style={
-                        'backgroundColor': '#28a745',
-                        'border': 'none',
-                        'color': 'white',
-                        'padding': '8px 16px',
-                        'borderRadius': '4px',
-                        'cursor': 'pointer',
-                        'marginTop': '10px'
-                    }
-                )
-            ], style={'textAlign': 'center', 'marginTop': '10px'})
+        # Tab 1: 原始对比
+        tab1_content = [
+            dcc.Graph(figure=fig_original, style={'marginBottom': '20px'}),
+            dcc.Graph(figure=fig_aligned, style={'marginBottom': '20px'}),
         ]
 
-    except Exception as e:
-        print(f"[ERROR] 生成单按键曲线对比图失败: {e}")
-        
-        traceback.print_exc()
-        return [html.Div([html.P(f"生成曲线对比图失败: {str(e)}", className="text-danger text-center")])]
+        # Tab 2: 相似度分析
+        tab2_content = _create_similarity_content(rec_note, rep_note, backend)
 
+        content = [
+            dcc.Tabs([
+                dcc.Tab(label='曲线对比', children=html.Div(tab1_content, style={'padding': '20px'})),
+                dcc.Tab(label='相似度分析', children=html.Div(tab2_content, style={'padding': '20px'}))
+            ]),
+            html.Div(html.Button("跳转到瀑布图", id="jump-to-waterfall-btn-from-grade-detail", className="btn btn-success"),
+                     style={'textAlign': 'center', 'marginTop': '10px'})
+        ]
+        return _create_modal_style(True), content, jump_info
+    except Exception as e:
+        logger.error(f"生成模态框内容失败: {e}")
+        logger.error(traceback.format_exc())
+        return _create_modal_style(True), [html.Div(f"生成失败: {e}")], no_update
+
+def _create_similarity_content(rec_note, rep_note, backend) -> List[Any]:
+    """创建相似度分析Tab内容"""
+    try:
+        # 获取全局平均延时
+        mean_delay = backend.get_global_average_delay() if backend else 0.0
+        
+        # 调用分析器
+        analyzer = ForceCurveAnalyzer()
+        result = analyzer.compare_curves(rec_note, rep_note, 
+                                       record_note=rec_note, replay_note=rep_note,
+                                       mean_delay=mean_delay)
+        
+        if not result:
+            return [html.Div("无法计算相似度", className="alert alert-warning")]
+            
+        # 提取结果
+        similarity = result.get('overall_similarity', 0.0)
+        shape_score = result.get('shape_similarity', 0.0)
+        amp_score = result.get('amplitude_similarity', 0.0)
+        dtw_distance = result.get('dtw_distance', 0.0)
+        
+        # 生成图表
+        figures = analyzer.generate_processing_stages_figures(result)
+        
+        # 构建UI
+        ui_elements = [
+            html.Div([
+                html.H4(f"综合相似度: {similarity:.3f}", className="text-primary"),
+                html.Div([
+                    html.Span(f"形状相似度(60%): {shape_score:.3f}", className="badge bg-info me-2", style={'fontSize': '14px'}),
+                    html.Span(f"幅度还原度(40%): {amp_score:.3f}", className="badge bg-success", style={'fontSize': '14px'})
+                ], className="mb-2"),
+                html.P(f"DTW距离: {dtw_distance:.3f}", className="text-muted small"),
+                html.Hr()
+            ], style={'textAlign': 'center', 'marginBottom': '20px'})
+        ]
+        
+        # 添加所有阶段的图表
+        for fig_item in figures:
+            ui_elements.append(dcc.Graph(
+                figure=fig_item['figure'],
+                style={'marginBottom': '20px', 'height': '350px'}
+            ))
+            
+        return ui_elements
+        
+    except Exception as e:
+        logger.error(f"创建相似度内容失败: {e}")
+        return [html.Div(f"相似度分析出错: {e}", className="alert alert-danger")]
+
+def _add_hammer_markers(fig, note, label, color, time_offset=0.0):
+    """向图表添加锤击点标记（过滤掉锤速为0的点）
+    
+    锤击点的数据完全来自hammers，不依赖after_touch：
+    - X坐标：时间（hammers.index + offset）
+    - Y坐标：锤速值（hammers.values）
+    
+    Args:
+        fig: Plotly图表对象
+        note: Note对象（包含hammers数据）
+        label: 标签名称（如'录制'或'播放'）
+        color: 标记颜色
+        time_offset: 时间偏移量（用于对齐）
+    """
+    if note.hammers.empty:
+        return
+    
+    # 过滤掉锤速为0的点
+    valid_mask = note.hammers.values > 0
+    if not any(valid_mask):
+        return
+    
+    # 从hammers数据中获取时间和锤速
+    hammer_times = (note.hammers.index[valid_mask] + note.offset) / 10.0 - time_offset
+    hammer_velocities = note.hammers.values[valid_mask]
+    
+    # 直接使用锤速值作为Y坐标
+    fig.add_trace(go.Scatter(
+        x=hammer_times.tolist() if hasattr(hammer_times, 'tolist') else list(hammer_times),
+        y=hammer_velocities.tolist() if hasattr(hammer_velocities, 'tolist') else list(hammer_velocities),
+        mode='markers',
+        name=f'{label}锤击',
+        marker=dict(symbol='diamond', size=10, color=color),
+        hovertemplate=f'<b>{label}锤击</b><br>时间: %{{x:.2f}}ms<br>锤速: %{{y}}<extra></extra>'
+    ))
+
+def _add_after_touch_traces(fig, rec_note, rep_note, delay=0.0):
+    """向图表添加触后曲线"""
+    rec_x = (rec_note.after_touch.index + rec_note.offset) / 10.0
+    rep_x = (rep_note.after_touch.index + rep_note.offset) / 10.0 - delay
+    
+    fig.add_trace(go.Scatter(x=rec_x, y=rec_note.after_touch.values, name='录制', line=dict(color='blue')))
+    fig.add_trace(go.Scatter(x=rep_x, y=rep_note.after_touch.values, name='播放', line=dict(color='red')))
+
+def _create_curves_subplot(backend, key_id, algorithm_name, matched_pair):
+    """构建对比曲线 Dash 组件 - 返回两个独立的图表"""
+    rec_note, rep_note, match_type, error_ms = matched_pair
+
+    # 获取平均延时用于对齐
+    delay = (backend.get_global_average_delay() if not algorithm_name else
+             next(alg.analyzer.get_global_average_delay() for alg in backend.get_active_algorithms() 
+                  if alg.metadata.algorithm_name == algorithm_name)) / 10.0
+
+    # 创建原始对比图（偏移前）
+    fig_original = go.Figure()
+    _add_after_touch_traces(fig_original, rec_note, rep_note, delay=0.0)
+    _add_hammer_markers(fig_original, rec_note, '录制', 'blue', time_offset=0.0)
+    _add_hammer_markers(fig_original, rep_note, '播放', 'red', time_offset=0.0)
+    
+    fig_original.update_layout(
+        height=300,
+        title=f"按键 {key_id} - 原始对比",
+        margin=dict(t=50, b=50),
+        xaxis_title="时间 (ms)",
+        yaxis_title="触后值 / 锤速"
+    )
+
+    # 创建对齐对比图（偏移后）
+    fig_aligned = go.Figure()
+    _add_after_touch_traces(fig_aligned, rec_note, rep_note, delay=delay)
+    _add_hammer_markers(fig_aligned, rec_note, '录制', 'blue', time_offset=0.0)
+    _add_hammer_markers(fig_aligned, rep_note, '播放', 'red', time_offset=delay)
+    
+    fig_aligned.update_layout(
+        height=300,
+        title=f"按键 {key_id} - 对齐对比 (偏移: {delay:.1f}ms)",
+        margin=dict(t=50, b=50),
+        xaxis_title="时间 (ms)",
+        yaxis_title="触后值 / 锤速"
+    )
+
+    return fig_original, fig_aligned
+
+# ==========================================
+# 4. 回调函数中心 (Interaction Control)
+# ==========================================
 
 def register_grade_detail_callbacks(app, session_manager: SessionManager):
-    """注册评级统计详情回调函数"""
-
-    # 评级统计表格点击回调 - 显示曲线对比图（使用专用模态框）
+    """注册等级统计主交互逻辑"""
+    
+    # 表格单元格点击 -> 显示对比图
     @app.callback(
         [Output('grade-detail-curves-modal', 'style'),
          Output('grade-detail-curves-comparison-container', 'children'),
@@ -582,758 +433,175 @@ def register_grade_detail_callbacks(app, session_manager: SessionManager):
          Input('close-grade-detail-curves-modal', 'n_clicks')],
         [State({'type': 'grade-detail-datatable', 'index': dash.ALL}, 'data'),
          State('session-id', 'data'),
-         State('grade-detail-curves-modal', 'style')]
+         State('grade-detail-curves-modal', 'style')],
+        prevent_initial_call=True
     )
-    def handle_grade_detail_table_click(active_cells, close_modal_clicks,
-                                       table_data_list, session_id, current_style):
-        """处理评级统计表格点击，显示按键曲线对比图"""
-
-        # 检测触发源
+    def handle_click(cells, n_clicks, table_data_list, session_id, current_style):
         ctx = dash.callback_context
-        if not ctx.triggered:
-            return current_style, [], no_update
-
-        trigger_id = ctx.triggered[0]['prop_id']
-        logger.info(f"[DEBUG] trigger_id={trigger_id}")
-
-        # 处理关闭按钮
-        if trigger_id == 'close-grade-detail-curves-modal.n_clicks':
-            return _handle_close_button()
-
-        # 处理表格点击
-        if 'grade-detail-datatable' in trigger_id and 'active_cell' in trigger_id:
-            # 解析表格信息 - 获取触发表格的索引
-            table_index = _parse_table_trigger(trigger_id)
-            if not table_index:
-                return current_style, [], no_update
-
-            # 根据表格索引找到对应的active_cell和table_data
-            # 由于dash.ALL的返回顺序与组件定义顺序一致，我们需要找到匹配的索引
-            active_cell = None
-            table_data = None
-
-            # 解析触发源的完整ID来获取索引位置
-            try:
-                # trigger_id 格式类似: '{"index":"algorithm_name","type":"grade-detail-datatable"}.active_cell'
-                id_part = trigger_id.split('.')[0]
-                table_props = json.loads(id_part)
-                triggered_index = table_props.get('index')
-
-                # 在多算法模式下，我们需要找到对应索引的数据
-                # 由于回调参数的顺序与组件定义顺序一致，我们可以尝试匹配
-                if triggered_index:
-                    # 简化处理：假设第一个匹配的数据就是正确的
-                    # 在实际应用中，可能需要更复杂的匹配逻辑
-                    active_cell = _extract_active_cell(active_cells)
-                    table_data = _get_table_data_by_index(table_data_list, triggered_index)
-                else:
-                    # 单算法模式或默认处理
-                    active_cell = _extract_active_cell(active_cells)
-                    table_data = _get_table_data(table_data_list, table_index)
-
-            except (json.JSONDecodeError, KeyError):
-                # 回退到原来的逻辑
-                active_cell = _extract_active_cell(active_cells)
-                table_data = _get_table_data(table_data_list, table_index)
-
-            if not active_cell or not table_data:
-                return current_style, [], no_update
-
-            # 提取行数据
-            row_data = _extract_row_data(table_data, active_cell)
-            if not row_data:
-                return current_style, [], no_update
-
-            # 处理音符数据并生成图表
-            return _process_note_data(session_manager, session_id, row_data, table_index, active_cell)
-
+        triggered = ctx.triggered[0]['prop_id']
+        
+        if 'close-grade-detail-curves-modal' in triggered:
+            return _create_modal_style(False), [], no_update
+            
+        if 'active_cell' in triggered:
+            # 提取具体的触发槽
+            target_idx = json.loads(triggered.split('.')[0])['index']
+            active_cell = next((c for c in cells if c), None)
+            
+            # 找到对应的数据块
+            if target_idx == 'single':
+                data = table_data_list[0] if table_data_list else []
+            else:
+                # 简单匹配策略：取第一个非空
+                data = next((d for d in table_data_list if d), [])
+                
+            if active_cell and data:
+                row = data[active_cell['row']]
+                return _process_note_data(session_manager, session_id, row, target_idx, active_cell)
         return current_style, [], no_update
 
-
-    # 统一的回调处理所有评级按钮点击，避免重叠
+    # 按钮点击 -> 展开/切换评级详情
+    # 注意：为了避免 Output 重叠冲突，此回调不再直接输出 'data'，
+    # 而是通过更新 'state_store' 间接触发下方的渲染逻辑。
     @app.callback(
         Output({'type': 'grade-detail-table', 'index': dash.ALL}, 'style'),
         Output({'type': 'grade-detail-datatable', 'index': dash.ALL}, 'columns'),
-        Output({'type': 'grade-detail-datatable', 'index': dash.ALL}, 'data'),
+        Output({'type': 'grade-detail-key-filter', 'index': dash.ALL}, 'options'),
+        Output({'type': 'grade-detail-key-filter', 'index': dash.ALL}, 'value'),
+        Output({'type': 'grade-detail-state-store', 'index': dash.ALL}, 'data'),
         Input({'type': 'grade-detail-btn', 'index': dash.ALL}, 'n_clicks'),
         State('session-id', 'data'),
         prevent_initial_call=True
     )
-    def show_grade_detail(n_clicks_list, session_id):
-        """统一处理所有评级统计详情显示"""
+    def switch_grade(n_clicks_list, session_id):
         ctx = dash.callback_context
-        if not ctx.triggered:
-            return [no_update], [no_update], [no_update]
-
-        # 解析触发的按钮ID
-        triggered_id = ctx.triggered[0]['prop_id']
-        try:
-            id_part = triggered_id.split('.')[0]
-            button_props = json.loads(id_part)
-            button_index = button_props['index']
-        except (json.JSONDecodeError, KeyError):
-            return [no_update], [no_update], [no_update]
-
-        # 获取后端实例，确定有多少个表格需要更新
-        backend = session_manager.get_backend(session_id)
-        if not backend:
-            return [no_update], [no_update], [no_update]
-
-        # 确定输出值的数量和类型
-        active_algorithms = backend.get_active_algorithms()
-        has_single_mode = hasattr(backend, 'analyzer') and backend.analyzer is not None
-
-        # 计算表格数量：算法数量 + 单算法模式（如果没有多算法）
-        if active_algorithms:
-            num_outputs = len(active_algorithms)
-        elif has_single_mode:
-            num_outputs = 1
+        if not ctx.triggered: return [no_update] * 5
+        
+        btn_index = json.loads(ctx.triggered[0]['prop_id'].split('.')[0])['index']
+        # 解析算法和评级
+        if '_' in btn_index:
+            alg_name, actual_grade = btn_index.rsplit('_', 1)
         else:
-            return [no_update], [no_update], [no_update]
-
-        # 获取显示数据
-        result = show_single_grade_detail(button_index, session_id, session_manager)
-
-        # 初始化输出值 - 全部设置为no_update
-        styles = [no_update] * num_outputs
-        columns = [no_update] * num_outputs
-        data = [no_update] * num_outputs
-
-        # 确定要更新的表格索引
-        if '_' in button_index:
-            # 多算法模式: "算法名_评级键" -> 更新对应算法的表格
-            algorithm_name = button_index.rsplit('_', 1)[0]
-            # 找到对应算法在active_algorithms中的索引
-            target_index = None
-            for i, algorithm in enumerate(active_algorithms):
-                if algorithm.metadata.algorithm_name == algorithm_name:
-                    target_index = i
-                    break
-
-            if target_index is not None:
-                styles[target_index] = result[0]
-                columns[target_index] = result[2]
-                data[target_index] = result[3]
-        else:
-            # 单算法模式: "评级键" -> 更新single表格（索引0）
-            if has_single_mode and not active_algorithms:
-                styles[0] = result[0]
-                columns[0] = result[2]
-                data[0] = result[3]
-
-        return styles, columns, data
-
-
-def get_grade_detail_data(backend, grade_key: str, algorithm_name: Optional[str] = None) -> List[Dict[str, Any]]:
-    """
-    获取评级统计的详细数据
-    
-    Args:
-        backend: 后端实例
-        grade_key: 评级键 ('correct', 'minor', 'moderate', 'large', 'severe')
-        algorithm_name: 算法名称（None表示单算法模式）
-    
-    Returns:
-        表格行数据列表
-    """
-    try:
-        # 验证评级键
-        if grade_key not in GRADE_RANGE_CONFIG:
-            logger.warning(f"[WARNING] 无效的评级键: {grade_key}, 有效键: {list(GRADE_RANGE_CONFIG.keys())}")
-            return []
-        
-        # 获取note_matcher实例
-        note_matcher = get_note_matcher_from_backend(backend, algorithm_name)
-        if not note_matcher:
-            logger.warning(f"[WARNING] 获取note_matcher失败: algorithm_name={algorithm_name}")
-            return []
-        
-        # 获取所有精确匹配对（包含评级信息）
-        matched_pairs_with_grade = note_matcher.get_matched_pairs_with_grade()  # List[Tuple[Note, Note, MatchType, float]]
-        if not matched_pairs_with_grade:
-            logger.warning(f"[WARNING] 没有匹配对数据")
-            return []
-        
-        detail_data: List[Dict[str, Any]] = []
-        
-        
-        
-        # 处理每个匹配对
-        for rec_note, rep_note, match_type, keyon_error_ms in matched_pairs_with_grade:
-            # 根据match_type判断是否属于当前评级（不再重复计算）
-            should_include = False
-            if grade_key == 'correct' and match_type == MatchType.EXCELLENT:
-                should_include = True
-            elif grade_key == 'minor' and match_type == MatchType.GOOD:
-                should_include = True
-            elif grade_key == 'moderate' and match_type == MatchType.FAIR:
-                should_include = True
-            elif grade_key == 'large' and match_type == MatchType.POOR:
-                should_include = True
-            elif grade_key == 'severe' and match_type == MatchType.SEVERE:
-                should_include = True
+            alg_name, actual_grade = None, btn_index
             
-            if should_include:
-                # 获取锤击时间和锤速用于计算差值
-                rec_hammer_time = rec_note.get_first_hammer_time() if rec_note.get_first_hammer_time() is not None else None
-                rep_hammer_time = rep_note.get_first_hammer_time() if rep_note.get_first_hammer_time() is not None else None
-                rec_hammer_velocity = rec_note.get_first_hammer_velocity() if rec_note.get_first_hammer_velocity() is not None else None
-                rep_hammer_velocity = rep_note.get_first_hammer_velocity() if rep_note.get_first_hammer_velocity() is not None else None
-
-                # 计算差值
-                hammer_time_diff = (rep_hammer_time - rec_hammer_time) / 10.0 if rec_hammer_time is not None and rep_hammer_time is not None else None
-                hammer_velocity_diff = rep_hammer_velocity - rec_hammer_velocity if rec_hammer_velocity is not None and rep_hammer_velocity is not None else None
-
-                # 创建录制和播放行
-                record_row = {
-                    'data_type': '录制',
-                    'global_index': rec_note.uuid,  # 使用 UUID 作为唯一标识
-                    'keyId': rec_note.id,
-                    'keyOn': f"{rec_note.key_on_ms:.2f}" if rec_note.key_on_ms else 'N/A',
-                    'keyOff': f"{rec_note.key_off_ms:.2f}" if rec_note.key_off_ms else 'N/A',
-                    'hammer_times': format_hammer_time(rec_note),
-                    'hammer_velocities': format_hammer_velocity(rec_note),
-                    'duration': f"{rec_note.duration_ms:.2f}" if rec_note.duration_ms else 'N/A',
-                    'hammer_time_diff': '',  # 录制行没有差值
-                    'hammer_velocity_diff': '',  # 录制行没有差值
-                    'match_status': f"延时误差: {keyon_error_ms:.2f}ms",  # 直接使用保存的误差
-                }
-
-                replay_row = {
-                    'data_type': '播放',
-                    'global_index': rep_note.uuid,  # 使用 UUID 作为唯一标识
-                    'keyId': rep_note.id,
-                    'keyOn': f"{rep_note.key_on_ms:.2f}" if rep_note.key_on_ms else 'N/A',
-                    'keyOff': f"{rep_note.key_off_ms:.2f}" if rep_note.key_off_ms else 'N/A',
-                    'hammer_times': format_hammer_time(rep_note),
-                    'hammer_velocities': format_hammer_velocity(rep_note),
-                    'duration': f"{rep_note.duration_ms:.2f}" if rep_note.duration_ms else 'N/A',
-                    'hammer_time_diff': f"{hammer_time_diff:+.2f}ms" if hammer_time_diff is not None else 'N/A',
-                    'hammer_velocity_diff': f"{hammer_velocity_diff:+.2f}" if hammer_velocity_diff is not None else 'N/A',
-                    'match_status': f"延时误差: {keyon_error_ms:.2f}ms",  # 直接使用保存的误差
-                }
-                
-                # 添加算法名称（如果适用）
-                if algorithm_name:
-                    record_row['algorithm_name'] = algorithm_name
-                    replay_row['algorithm_name'] = algorithm_name
-                
-                detail_data.extend([record_row, replay_row])
+        backend = session_manager.get_backend(session_id)
+        if not backend: return [no_update] * 5
         
-        return detail_data
-    
-    except Exception as e:
-        logger.warning(f"获取评级统计详细数据失败: {e}")
-        traceback.print_exc()
-        return []
-
-
-def get_failed_matches_detail_data(note_matcher, algorithm_name: Optional[str] = None) -> List[Dict[str, Any]]:
-    """
-    获取匹配失败的详细数据
-
-    Args:
-        note_matcher: 音符匹配器实例
-        algorithm_name: 算法名称
-
-    Returns:
-        表格行数据列表
-    """
-    try:
-        # 从failure_reasons中获取失败的音符信息
-        failure_reasons = getattr(note_matcher, 'failure_reasons', {})
-        if not failure_reasons:
-            return []
-
-        detail_data: List[Dict[str, Any]] = []
-
-        # 数据类型映射
-        data_type_map = {
-            'record': ('录制', '_record_data'),
-            'replay': ('播放', '_replay_data')
-        }
-
-        # 一次遍历处理所有失败匹配
-        for (data_type, index), reason in failure_reasons.items():
-            if data_type in data_type_map:
-                display_type, data_attr = data_type_map[data_type]
-
-                # 获取对应的数据列表
-                data_list = getattr(note_matcher, data_attr, [])
-                if index < len(data_list):
-                    note = data_list[index]
-                    row = create_failed_match_row(note, index, display_type, reason, algorithm_name)
-                    if row:
-                        detail_data.append(row)
-
-        return detail_data
-
-    except Exception as e:
-        logger.warning(f"[WARNING] 获取匹配失败详细数据失败: {e}")
-        traceback.print_exc()
-        return []
-
-
-def create_failed_match_row(note, index: int, data_type: str, reason: str, algorithm_name: Optional[str] = None) -> Dict[str, Any]:
-    """
-    创建匹配失败的表格行数据
-
-    Args:
-        note: 音符对象
-        index: 音符索引
-        data_type: 数据类型 ('录制' 或 '播放')
-        reason: 失败原因
-        algorithm_name: 算法名称
-
-    Returns:
-        表格行字典
-    """
-    try:
-        # 基本信息 - 对应新的列定义
-        row = {
-            'row_type': data_type,  # 显示为"录制"或"播放"
-            'index': index,
-            'key_id': getattr(note, 'id', 'N/A'),
-            'reason': reason
-        }
-
-        # 时间信息
-        if note.after_touch is not None and not note.after_touch.empty:
-            try:
-                keyon_time = note.after_touch.index[0]
-                keyoff_time = note.after_touch.index[-1] if len(note.after_touch.index) > 1 else keyon_time
-                row['keyon'] = f"{keyon_time/10:.1f}ms"
-                row['keyoff'] = f"{keyoff_time/10:.1f}ms"
-                row['duration'] = f"{(keyoff_time - keyon_time)/10:.1f}ms"
-            except:
-                row['keyon'] = 'N/A'
-                row['keyoff'] = 'N/A'
-                row['duration'] = 'N/A'
-        else:
-            row['keyon'] = 'N/A'
-            row['keyoff'] = 'N/A'
-            row['duration'] = 'N/A'
-
-        # 锤击信息
-        if hasattr(note, 'hammers') and note.hammers is not None and not note.hammers.empty:
-            try:
-                hammer_time = note.hammers.index[0]
-                row['hammer_time'] = f"{hammer_time/10:.1f}ms"
-                if len(note.hammers.values) > 0:
-                    row['hammer_velocity'] = f"{note.hammers.values[0]:.1f}"
-                else:
-                    row['hammer_velocity'] = 'N/A'
-            except:
-                row['hammer_time'] = 'N/A'
-                row['hammer_velocity'] = 'N/A'
-        else:
-            row['hammer_time'] = 'N/A'
-            row['hammer_velocity'] = 'N/A'
-
-        # 添加算法名称
-        if algorithm_name:
-            row['algorithm_name'] = algorithm_name
-
-        return row
-
-    except Exception as e:
-        print(f"创建匹配失败行数据失败: {e}")
-        return None
-
-
-def show_single_grade_detail(button_index, session_id, session_manager):
-    """处理单个评级统计按钮的点击"""
-
-    backend = session_manager.get_backend(session_id)
-    if not backend:
-        return {'display': 'none'}, no_update, [], []
-
-    try:
-        # 解析按钮ID获取评级类型
-        grade_key = button_index
-
-        # 检查是否是多算法模式下的按钮（格式：算法名_评级类型）
-        if '_' in grade_key:
-            algorithm_name, actual_grade_key = grade_key.rsplit('_', 1)
-        else:
-            algorithm_name = None
-            actual_grade_key = grade_key
-
-        # 获取详细数据
-        detail_data = get_grade_detail_data(backend, actual_grade_key, algorithm_name)
-
-
-        if not detail_data:
-            # 没有数据，隐藏表格
-            return {'display': 'none'}, no_update, [], []
-
-        # 创建表格列定义 - 根据评级类型选择不同的列
-        if actual_grade_key == 'major':
-            # 匹配失败的列定义
-            columns = [
-                {"name": "类型", "id": "row_type"},
-                {"name": "索引", "id": "index"},
-                {"name": "键位ID", "id": "key_id"},
-                {"name": "按键时间(ms)", "id": "keyon"},
-                {"name": "释放时间(ms)", "id": "keyoff"},
-                {"name": "锤击时间(ms)", "id": "hammer_time"},
-                {"name": "锤速", "id": "hammer_velocity"},
-                {"name": "按键时长(ms)", "id": "duration"},
-                {"name": "失败原因", "id": "reason"}
-            ]
-        else:
-            # 普通匹配的列定义 - 分行显示录制和播放信息，包含锤击时间和锤速
-            columns = [
-                {"name": "类型", "id": "data_type"},
-                {"name": "UUID", "id": "global_index"},
-                {"name": "键位ID", "id": "keyId"},
-                {"name": "按键时间(ms)", "id": "keyOn"},
-                {"name": "释放时间(ms)", "id": "keyOff"},
-                {"name": "锤击时间(ms)", "id": "hammer_times"},
-                {"name": "锤速", "id": "hammer_velocities"},
-                {"name": "按键时长(ms)", "id": "duration"},
-                {"name": "匹配状态", "id": "match_status"}
-            ]
-
-        if algorithm_name:
-            columns.insert(0, {"name": "算法名称", "id": "algorithm_name"})
-
-        # 确定表格的正确index
-        if algorithm_name:
-            # 多算法模式：使用算法名称作为index
-            table_index = algorithm_name
-        else:
-            # 单算法模式：使用'single'作为index
-            table_index = 'single'
-
-        # 创建表格内容
-        table_children = [
-            html.H5("详细数据", className="mb-3"),
-            dash_table.DataTable(
-                id={'type': 'grade-detail-datatable', 'index': table_index},
-                columns=columns,
-                data=detail_data,
-                page_action='none',
-                fixed_rows={'headers': True},  # 固定表头
-                active_cell=None,  # 启用active_cell功能
-                style_table={
-                    'maxHeight': '400px',
-                    'overflowY': 'auto',
-                    'overflowX': 'auto'
-                },
-                style_cell={
-                    'textAlign': 'center',
-                    'fontSize': '14px',
-                    'fontFamily': 'Arial, sans-serif',
-                    'padding': '8px',
-                    'minWidth': '80px',
-                    'cursor': 'pointer'  # 添加指针样式，提示可点击
-                },
-                style_header={
-                    'backgroundColor': '#f8f9fa',
-                    'fontWeight': 'bold',
-                    'borderBottom': '2px solid #dee2e6'
-                },
-                style_data_conditional=[
-                    # 录制行样式（默认白色背景）
-                    {
-                        'if': {'filter_query': '{row_type} = "record"'},
-                        'backgroundColor': '#ffffff',
-                        'color': '#000000'
-                    },
-                    # 播放行样式（浅蓝色背景）
-                    {
-                        'if': {'filter_query': '{row_type} = "replay"'},
-                        'backgroundColor': '#e3f2fd',
-                        'color': '#000000'
-                    },
-                    # 不同按键之间的分隔（浅灰色边框）
-                    {
-                        'if': {'row_index': 'odd'},
-                        'borderBottom': '1px solid #e0e0e0'
-                    },
-                    # 悬停样式 - 提供视觉反馈
-                    {
-                        'if': {'state': 'active'},
-                        'backgroundColor': 'rgba(0, 116, 217, 0.3)',
-                        'border': '1px solid rgb(0, 116, 217)'
-                    }
-                ]
-            )
-        ]
-
-        return {'display': 'block', 'marginTop': '20px'}, table_children, columns, detail_data
-
-    except Exception as e:
-        logger.warning(f"[WARNING] 处理评级统计详情失败: {e}")
-        traceback.print_exc()
-
+        # 确定后端活跃算法数
+        active_algs = backend.get_active_algorithms()
+        num_slots = len(active_algs) if active_algs else 1
+        
+        # 获取底层数据结果 (用于项提取)
+        result = show_single_grade_detail(btn_index, session_id, session_manager)
+        if not result: return [no_update] * 5
+        style, cols, all_data = result
+        
+        # 解析可用的按键下拉选项
+        key_ids = sorted(list(set(r.get('keyId') or r.get('key_id') for r in all_data if (r.get('keyId') or r.get('key_id')) is not None)))
+        opts = [{'label': '请选择按键...', 'value': ''}, {'label': '全部按键', 'value': 'all'}] + \
+               [{'label': f"按键 {k}", 'value': str(k)} for k in key_ids]
+        
+        # 初始化扇区容器
+        out_styles, out_cols = [no_update] * num_slots, [no_update] * num_slots
+        out_opts, out_vals = [no_update] * num_slots, [no_update] * num_slots
+        out_states = [no_update] * num_slots
+        
+        # 定位目标 Slot
+        target = 0
+        if alg_name:
+            for i, alg in enumerate(active_algs):
+                if alg.metadata.algorithm_name == alg_name: target = i; break
+        
+        out_styles[target] = style
+        out_cols[target] = cols
+        out_opts[target] = opts
+        out_vals[target] = 'all'
+        out_states[target] = {'grade_key': actual_grade, 'nonce': dash.callback_context.triggered[0]['value']}
+        
+        return out_styles, out_cols, out_opts, out_vals, out_states
 
 def register_grade_detail_jump_callbacks(app, session_manager: SessionManager):
-    """注册评级统计跳转回调函数"""
-
-    # 评级统计曲线对比跳转到瀑布图按钮回调
+    """跳转逻辑"""
     @app.callback(
-        [Output('main-plot', 'figure', allow_duplicate=True),
-         Output('main-tabs', 'value', allow_duplicate=True),
+        [Output('url', 'pathname'),
          Output('grade-detail-curves-modal', 'style', allow_duplicate=True),
          Output('jump-source-plot-id', 'data', allow_duplicate=True)],
         [Input('jump-to-waterfall-btn-from-grade-detail', 'n_clicks')],
         [State('session-id', 'data'),
-         State('current-clicked-point-info', 'data')],
+         State('current-clicked-point-info', 'data'),
+         State('url', 'pathname')],
         prevent_initial_call=True
     )
-    def handle_jump_to_waterfall_from_grade_detail(n_clicks, session_id, point_info):
-        """处理评级统计曲线对比跳转到瀑布图按钮点击"""
-        from dash import callback_context
+    def jump_to_waterfall(n_clicks, session_id, info, current_pathname):
+        if not n_clicks or not info: return no_update, no_update, no_update
 
-        ctx = callback_context
-        if not ctx.triggered:
-            return no_update, no_update, no_update, no_update
+        # 如果已经在waterfall页面，直接返回不做操作
+        if current_pathname == '/waterfall':
+            return no_update, {'display': 'none'}, 'grade-detail-curves-modal'
 
-        trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
-        if trigger_id != 'jump-to-waterfall-btn-from-grade-detail':
-            return no_update, no_update, no_update, no_update
-
-        if not n_clicks or n_clicks == 0:
-            return no_update, no_update, no_update, no_update
-
-        if not point_info:
-            logger.warning("[WARNING] 评级统计: 没有存储的数据点信息，无法跳转")
-            return no_update, no_update, no_update, no_update
-
-        # 获取来源图表ID
-        source_plot_id = point_info.get('source_plot_id', 'grade-detail-curves-modal')
-
-        backend = session_manager.get_backend(session_id)
-        if not backend:
-            logger.warning("[WARNING] 评级统计: 没有找到backend")
-            return no_update, no_update, no_update, no_update
-
-        try:
-            algorithm_name = point_info.get('algorithm_name')
-            record_idx = point_info.get('record_idx')
-            replay_idx = point_info.get('replay_idx')
-            key_id = point_info.get('key_id')
-            available_data = point_info.get('available_data')  # 检查是否有单侧数据标记
-
-            # 对于评级统计，至少需要一个索引；对于错误表格，允许单侧数据
-            if record_idx is None and replay_idx is None:
-                logger.warning(f"[WARNING] 数据点信息不完整: {point_info}")
-                return no_update, no_update, no_update, no_update
-
-            logger.info(f"[PROCESS] 评级统计跳转到瀑布图: 算法={algorithm_name}, record_idx={record_idx}, replay_idx={replay_idx}, 按键={key_id}")
-
-            # 计算跳转点的时间信息 - 基于瀑布图中实际显示的数据点位置
-            center_time_ms = None
-            target_y_position = None
-
-            # 根据数据源类型查找音符数据
-            if point_info.get('source_plot_id', '').startswith('error-table'):
-                # 来自错误表格（丢锤/多锤）
-                available_data = point_info.get('available_data', 'record')
-                global_index = point_info.get('global_index')
-
-                if algorithm_name == 'single':
-                    # 单算法模式
-                    if available_data == 'record':
-                        valid_data = getattr(backend.analyzer, 'valid_record_data', [])
-                    else:
-                        valid_data = getattr(backend.analyzer, 'valid_replay_data', [])
-
-                    if valid_data and global_index < len(valid_data):
-                        note_data = valid_data[global_index]
-                        if hasattr(note_data, 'hammers') and note_data.hammers is not None and len(note_data.hammers.index) > 0:
-                            hammer_time = note_data.hammers.index[0] + getattr(note_data, 'offset', 0)
-                            center_time_ms = hammer_time / 10.0  # 转换为ms
-                            target_y_position = float(key_id)  # 基础Y位置
-                            logger.info(f"🔍 错误表格单算法: hammer_time={hammer_time}, center_time_ms={center_time_ms}")
-                else:
-                    # 多算法模式
-                    if len(backend.multi_algorithm_manager.get_active_algorithms()) > 1 if backend.multi_algorithm_manager else False:
-                        algorithm = backend.multi_algorithm_manager.get_algorithm(algorithm_name)
-                        if algorithm and algorithm.analyzer:
-                            if available_data == 'record':
-                                valid_data = getattr(algorithm.analyzer, 'valid_record_data', [])
-                            else:
-                                valid_data = getattr(algorithm.analyzer, 'valid_replay_data', [])
-
-                            if valid_data and global_index < len(valid_data):
-                                note_data = valid_data[global_index]
-                                if hasattr(note_data, 'hammers') and note_data.hammers is not None and len(note_data.hammers.index) > 0:
-                                    hammer_time = note_data.hammers.index[0] + getattr(note_data, 'offset', 0)
-                                    center_time_ms = hammer_time / 10.0  # 转换为ms
-                                    target_y_position = float(key_id)  # 基础Y位置
-                                    logger.info(f"🔍 错误表格多算法: hammer_time={hammer_time}, center_time_ms={center_time_ms}")
-            else:
-                # 来自评级统计表格（匹配对）
-                if algorithm_name:
-                    # 多算法模式
-                    if len(backend.multi_algorithm_manager.get_active_algorithms()) > 1 if backend.multi_algorithm_manager else False:
-                        algorithm = backend.multi_algorithm_manager.get_algorithm(algorithm_name)
-                        if algorithm and algorithm.analyzer and algorithm.analyzer.note_matcher:
-                            matched_pairs = algorithm.analyzer.matched_pairs
-                            logger.info(f"🔍 多算法模式: 找到 {len(matched_pairs)} 个匹配对")
-
-                            # 查找对应的匹配对
-                            for record_idx_in_pair, replay_idx_in_pair, record_note, replay_note in matched_pairs:
-                                if record_idx_in_pair == record_idx and replay_idx_in_pair == replay_idx:
-                                    # 计算瀑布图中实际显示的数据点时间位置
-                                    # 取录制音符第一个锤子的时间作为标注位置
-                                    if hasattr(record_note, 'hammers') and record_note.hammers is not None and len(record_note.hammers.index) > 0:
-                                        record_hammer_time = record_note.hammers.index[0] + getattr(record_note, 'offset', 0)
-                                        center_time_ms = record_hammer_time / 10.0  # 转换为ms
-                                        target_y_position = float(key_id)  # 基础Y位置
-                                        logger.info(f"🔍 找到匹配对: record_hammer_time={record_hammer_time}, center_time_ms={center_time_ms}")
-                                    break
-                else:
-                    # 单算法模式
-                    if backend.analyzer and backend.analyzer.note_matcher:
-                        matched_pairs = backend.analyzer.note_matcher.matched_pairs
-                        logger.info(f"🔍 单算法模式: 找到 {len(matched_pairs)} 个匹配对")
-
-                        # 查找对应的匹配对
-                        for record_idx_in_pair, replay_idx_in_pair, record_note, replay_note in matched_pairs:
-                            if record_idx_in_pair == record_idx and replay_idx_in_pair == replay_idx:
-                                # 计算瀑布图中实际显示的数据点时间位置
-                                # 取录制音符第一个锤子的时间作为标注位置
-                                if hasattr(record_note, 'hammers') and record_note.hammers is not None and len(record_note.hammers.index) > 0:
-                                    record_hammer_time = record_note.hammers.index[0] + getattr(record_note, 'offset', 0)
-                                    center_time_ms = record_hammer_time / 10.0  # 转换为ms
-                                    target_y_position = float(key_id)  # 基础Y位置
-                                    logger.info(f"🔍 找到匹配对: record_hammer_time={record_hammer_time}, center_time_ms={center_time_ms}")
-                                break
-
-            # 生成新的瀑布图
-            waterfall_fig = backend.generate_waterfall_plot()
-            if not waterfall_fig:
-                logger.warning(f"[WARNING] 评级统计: 瀑布图生成失败")
-                return no_update, no_update, no_update, no_update
-
-            # 在瀑布图中添加高亮标记（如果有时间信息）
-            if center_time_ms is not None and target_y_position is not None:
-                # 计算标记的y位置（使用预先计算的target_y_position，如果是多算法模式需要考虑偏移）
-                marker_y = target_y_position
-                if algorithm_name and backend.is_multi_algorithm_mode() and backend.multi_algorithm_manager:
-                    # 多算法模式：需要找到该算法对应的y偏移
-                    active_algorithms = backend.multi_algorithm_manager.get_active_algorithms()
-                    algorithm_y_range = 100  # 与瀑布图生成器保持一致
-                    algorithm_y_offset = 0
-                    for idx, alg in enumerate(active_algorithms):
-                        if alg.metadata.algorithm_name == algorithm_name:
-                            algorithm_y_offset = idx * algorithm_y_range
-                            break
-                    marker_y = target_y_position + algorithm_y_offset
-
-                # 添加垂直参考线标记跳转的数据点（贯穿整个y轴）
-                waterfall_fig.add_vline(
-                    x=center_time_ms,
-                    line_dash="dash",
-                    line_color="red",
-                    line_width=4,
-                    opacity=0.9,
-                    annotation_text=f"跳转点: 按键 {key_id}" + (f" (算法: {algorithm_name})" if algorithm_name else ""),
-                    annotation_position="top",
-                    annotation=dict(
-                        font=dict(size=16, color="red", family="Arial Black"),
-                        bgcolor="rgba(255, 255, 255, 0.9)",
-                        bordercolor="red",
-                        borderwidth=2,
-                        borderpad=4
-                    )
-                )
-
-                # 在按键位置添加一个醒目的标记点
-                waterfall_fig.add_trace(go.Scatter(
-                    x=[center_time_ms],
-                    y=[marker_y],
-                    mode='markers+text',
-                    marker=dict(
-                        symbol='star',
-                        size=20,
-                        color='red',
-                        line=dict(width=3, color='darkred')
-                    ),
-                    text=[f"按键 {key_id}"],
-                    textposition="top center",
-                    textfont=dict(size=16, color="red", family="Arial Black", weight="bold"),
-                    name='跳转标记',
-                    showlegend=False,
-                    hovertemplate=f'<b>[TARGET] 跳转点</b><br>按键: {key_id}<br>时间: {center_time_ms:.1f}ms' + (f'<br>算法: {algorithm_name}' if algorithm_name else '') + '<extra></extra>'
-                ))
-
-                logger.info(f"[OK] 已在瀑布图中添加跳转标记: 按键={key_id}, 时间={center_time_ms:.1f}ms, y位置={marker_y:.1f}")
-            else:
-                if center_time_ms is None:
-                    logger.error(f"[ERROR] 无法计算 center_time_ms: record_idx={record_idx}, replay_idx={replay_idx}, algorithm_name={algorithm_name}")
-                if key_id is None:
-                    logger.error(f"[ERROR] key_id 为 None: point_info={point_info}")
-
-            # 切换到瀑布图标签页
-            return waterfall_fig, "waterfall-tab", {'display': 'none'}, 'grade-detail-curves-modal'
-
-        except Exception as e:
-            logger.error(f"[ERROR] 评级统计跳转到瀑布图失败: {e}")
-            logger.error(traceback.format_exc())
-            return no_update, no_update, no_update, no_update
-
+        # 跳转到waterfall页面
+        return '/waterfall', {'display': 'none'}, 'grade-detail-curves-modal'
 
 def register_grade_detail_return_callbacks(app, session_manager: SessionManager):
-    """注册评级统计返回回调函数"""
-
-    # 控制返回评级统计按钮显示/隐藏
+    """返回逻辑"""
     @app.callback(
         Output('btn-return-to-grade-detail', 'style'),
-        [Input('jump-source-plot-id', 'data')],
+        Input('jump-source-plot-id', 'data'),
         prevent_initial_call=True
     )
-    def control_return_button_visibility(source_plot_id):
-        """控制返回评级统计按钮的显示/隐藏"""
-        if source_plot_id == 'grade-detail-curves-modal':
-            # 从评级统计跳转过来，显示返回按钮
-            return {'display': 'inline-block'}
-        else:
-            # 其他情况，隐藏返回按钮
-            return {'display': 'none'}
+    def update_btn(source):
+        return {'display': 'inline-block'} if source == 'grade-detail-curves-modal' else {'display': 'none'}
 
-    # 返回评级统计模态框按钮回调
     @app.callback(
         [Output('grade-detail-curves-modal', 'style', allow_duplicate=True),
          Output('main-tabs', 'value', allow_duplicate=True),
          Output('grade-detail-return-scroll-trigger', 'data'),
          Output('grade-detail-section-scroll-trigger', 'data')],
-        [Input('btn-return-to-grade-detail', 'n_clicks')],
-        [State('current-clicked-point-info', 'data')],
+        Input('btn-return-to-grade-detail', 'n_clicks'),
+        State('current-clicked-point-info', 'data'),
         prevent_initial_call=True
     )
-    def handle_return_to_grade_detail(n_clicks, point_info):
-        """处理返回评级统计模态框按钮点击"""
-        if n_clicks and n_clicks > 0:
-            logger.info(f"[PROCESS] 返回评级统计模态框")
+    def back(n, info):
+        if not n: return no_update, no_update, None, None
+        return _create_modal_style(True), "report-tab", info, {'scroll_to': 'grade_detail_section'}
 
-            # 准备滚动触发数据
-            scroll_data = None
-            section_scroll_data = {'scroll_to': 'grade_detail_section'}
-            if point_info and 'table_index' in point_info and 'row_index' in point_info:
-                scroll_data = {
-                    'table_index': point_info['table_index'],
-                    'row_index': point_info['row_index']
-                }
-                logger.info(f"[PROCESS] 准备滚动到表格 {point_info['table_index']} 的行 {point_info['row_index']}")
-
-            # 显示模态框，切换到报告标签页
-            return ({'display': 'block', 'position': 'fixed', 'top': '50%', 'left': '50%',
-                   'transform': 'translate(-50%, -50%)', 'zIndex': '1050', 'width': '90%',
-                   'maxWidth': '1200px', 'maxHeight': '90vh', 'overflowY': 'auto'},
-                   "report-tab",
-                   scroll_data,
-                   section_scroll_data)
-
-        return no_update, no_update, None, None
-
-
-# 在主注册函数中调用跳转回调注册
 def register_all_callbacks(app, session_manager: SessionManager):
-    """注册所有回调函数"""
+    """聚合注册所有评级详情相关的交互"""
     register_grade_detail_callbacks(app, session_manager)
     register_grade_detail_jump_callbacks(app, session_manager)
+    register_grade_detail_return_callbacks(app, session_manager)
+    
+    # 【核心：数据渲染与过滤逻辑】
+    # 使用 MATCH 模式，监听下拉框 value 和 状态 Store，输出到对应的表格 data
+    @app.callback(
+        Output({'type': 'grade-detail-datatable', 'index': dash.MATCH}, 'data'),
+        [Input({'type': 'grade-detail-key-filter', 'index': dash.MATCH}, 'value'),
+         Input({'type': 'grade-detail-state-store', 'index': dash.MATCH}, 'data')],
+        State('session-id', 'data'),
+        prevent_initial_call=True
+    )
+    def filter_by_key(key_filter, state, sid):
+        if not state or not state.get('grade_key'): return no_update
+        
+        grade_key = state['grade_key']
+        # 确定索引 (多算法 vs 单算法)
+        trigger_id = dash.callback_context.triggered[0]['prop_id']
+        target_idx = json.loads(trigger_id.split('.')[0])['index']
+        alg = None if target_idx == 'single' else target_idx
+        
+        backend = session_manager.get_backend(sid)
+        if not backend: return no_update
+
+        # 获取完整结果数据
+        if grade_key == 'major':
+            matcher = get_note_matcher_from_backend(backend, alg)
+            all_data = get_failed_matches_detail_data(matcher, alg)
+            filter_field = 'key_id'
+        else:
+            all_data = get_grade_detail_data(backend, grade_key, alg)
+            filter_field = 'keyId'
+        
+        # 执行过滤
+        if key_filter and key_filter != 'all' and key_filter != '':
+            return [r for r in all_data if str(r.get(filter_field)) == str(key_filter)]
+        return all_data

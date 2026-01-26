@@ -507,9 +507,26 @@ class PianoAnalysisBackend:
         """生成按键与锤速的散点图（委托给PlotService）"""
         return self.plot_service.generate_key_hammer_velocity_scatter_plot()
     
-    def generate_waterfall_plot(self) -> Any:
-        """生成瀑布图（委托给PlotService）"""
-        return self.plot_service.generate_waterfall_plot()
+    def generate_waterfall_plot(self, data_types: List[str] = None, key_ids: List[int] = None, time_filter=None, key_filter=None) -> Any:
+        """生成瀑布图（委托给PlotService）
+
+        Args:
+            data_types: 要显示的数据类型列表，默认显示所有类型
+            key_ids: 要显示的按键ID列表，默认显示所有按键
+            time_filter: 时间筛选条件
+            key_filter: 按键筛选条件
+        """
+        return self.plot_service.generate_waterfall_plot(data_types, key_ids, time_filter, key_filter)
+
+    def get_waterfall_key_statistics(self) -> Dict[str, Any]:
+        """获取瀑布图按键统计信息
+
+        Returns:
+            Dict[str, Any]: 包含按键统计信息的字典
+                - available_keys: List[Dict] 可用按键列表，每个包含key_id, total_count, exception_count等
+                - summary: Dict 总体统计信息
+        """
+        return self.plot_service.get_waterfall_key_statistics()
     
     def generate_watefall_conbine_plot(self, key_on: float, key_off: float, key_id: int) -> Any:
         """生成瀑布图对比图（委托给PlotService）"""
@@ -1064,12 +1081,12 @@ class PianoAnalysisBackend:
                     algorithm_results[algorithm_name] = result
                     logger.info(f"算法 '{display_name}' (内部: {algorithm_name}) 的按键-力度交互分析完成")
             
-                if not algorithm_results:
-                    logger.warning("⚠️ 没有成功分析的算法")
-                    return {
-                        'status': 'error',
-                        'message': '没有成功分析的算法'
-                    }
+            if not algorithm_results:
+                logger.warning("⚠️ 没有成功分析的算法")
+                return {
+                    'status': 'error',
+                    'message': '没有成功分析的算法'
+                }
                 
             # 统一返回格式（不再区分单算法/多算法模式）
             logger.info(f"按键-力度交互分析完成，共 {len(algorithm_results)} 个算法")

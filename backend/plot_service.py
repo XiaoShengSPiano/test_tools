@@ -213,9 +213,9 @@ class PlotService:
         生成按键-力度交互效应图
         
         显示不同按键在不同力度下的延时表现
-        x轴：按键ID
-        y轴：延时误差
-        不同颜色表示不同力度分组
+        x轴：log₁₀(播放锤速)
+        y轴：延时 (ms)
+        不同颜色表示不同算法/按键
         """
         active_algorithms = self.backend.get_active_algorithms()
 
@@ -228,8 +228,15 @@ class PlotService:
 
     # ==================== 瀑布图 ====================
     
-    def generate_waterfall_plot(self) -> Any:
-        """生成瀑布图（根据SPMID文件数量自动处理）"""
+    def generate_waterfall_plot(self, data_types: List[str] = None, key_ids: List[int] = None, time_filter=None, key_filter=None) -> Any:
+        """生成瀑布图（根据SPMID文件数量自动处理）
+
+        Args:
+            data_types: 要显示的数据类型列表，默认显示所有类型
+            key_ids: 要显示的按键ID列表，默认显示所有按键
+            time_filter: 时间筛选条件
+            key_filter: 按键筛选条件
+        """
         active_algorithms = self.backend.get_active_algorithms()
 
         if not active_algorithms:
@@ -240,13 +247,29 @@ class PlotService:
         algorithm_names = [alg.metadata.algorithm_name for alg in active_algorithms]
 
         # 使用多算法图表生成器，自动处理单/多文件
-        self.logger.info(f"处理 {len(active_algorithms)} 个SPMID文件")
+        self.logger.info(f"处理 {len(active_algorithms)} 个SPMID文件，数据类型: {data_types}，按键ID: {key_ids}")
         return self.multi_algorithm_plot_generator.generate_unified_waterfall_plot(
             self.backend,                # 后端实例
             analyzers,                   # 分析器列表
             algorithm_names,             # 算法名称列表
-            self.backend.time_filter,    # 时间过滤器
-            self.backend.key_filter.key_filter if self.backend.key_filter else None  # 按键过滤器
+            time_filter or self.backend.time_filter,    # 时间过滤器
+            key_filter or (self.backend.key_filter.key_filter if self.backend.key_filter else None),  # 按键过滤器
+            data_types,                 # 数据类型选择
+            key_ids                     # 按键ID选择
+        )
+
+    def get_waterfall_key_statistics(self) -> Dict[str, Any]:
+        """获取瀑布图按键统计信息"""
+        active_algorithms = self.backend.get_active_algorithms()
+
+        if not active_algorithms:
+            return {'available_keys': [], 'summary': {}}
+
+        analyzers = [alg.analyzer for alg in active_algorithms if alg.analyzer]
+        algorithm_names = [alg.metadata.algorithm_name for alg in active_algorithms]
+
+        return self.multi_algorithm_plot_generator.get_waterfall_key_statistics(
+            self.backend, analyzers, algorithm_names
         )
 
     def generate_watefall_conbine_plot(self, key_on: float, key_off: float, key_id: int) -> Tuple[Any, Any, Any]:
@@ -348,12 +371,33 @@ class PlotService:
 
         # 通过UUID查找对应的Note对象
         matched_pair = analyzer.note_matcher.find_matched_pair_by_uuid(record_index, replay_index)
+        
+        record_note = None
+        play_note = None
 
-        if matched_pair is None:
-            self.logger.warning(f"未找到匹配对 (算法={algorithm_name}): record_uuid={record_index}, replay_uuid={replay_index}")
-            return None, None, None
-
-        record_note, play_note, match_type, error_ms = matched_pair
+        if matched_pair:
+            record_note, play_note, match_type, error_ms = matched_pair
+        else:
+            # 如果在匹配对中没找到，尝试在错误列表中查找（支持丢锤/多锤的单侧显示）
+            if record_index is not None:
+                # 查找丢锤 (record_index valid, replay_index None)
+                for note in analyzer.drop_hammers:
+                    if str(note.uuid) == str(record_index):
+                        record_note = note
+                        self.logger.info(f"在丢锤列表中找到录制音符: {record_index}")
+                        break
+            
+            if replay_index is not None:
+                # 查找多锤 (record_index None, replay_index valid)
+                for note in analyzer.multi_hammers:
+                    if str(note.uuid) == str(replay_index):
+                        play_note = note
+                        self.logger.info(f"在多锤列表中找到播放音符: {replay_index}")
+                        break
+            
+            if record_note is None and play_note is None:
+                self.logger.warning(f"未找到匹配对或单侧音符 (算法={algorithm_name}): record_uuid={record_index}, replay_uuid={replay_index}")
+                return None, None, None
 
         # 计算该算法的平均延时
         mean_delays = {}
@@ -384,13 +428,14 @@ class PlotService:
                 except:
                     mean_delays[alg.metadata.algorithm_name] = 0.0
                 
-                # 在该算法的匹配对中查找匹配到同一个record_index的播放音符
-                alg_precision_pairs = alg.analyzer.note_matcher.precision_matched_pairs
-                for r_idx, p_idx, r_note, p_note in alg_precision_pairs:
-                    if r_idx == record_index:
-                        other_algorithm_notes.append((alg.metadata.algorithm_name, p_note))
-                        self.logger.info(f"找到算法 '{alg.metadata.algorithm_name}' 中匹配到 record_index={record_index} 的播放音符")
-                        break
+                # 在该算法的匹配对中查找匹配到同一个record_index (UUID) 的播放音符
+                if hasattr(alg.analyzer, 'matched_pairs'):
+                    alg_matched_pairs = alg.analyzer.matched_pairs
+                    for rec_note, rep_note, _, _ in alg_matched_pairs:
+                        if str(rec_note.uuid) == str(record_index):
+                            other_algorithm_notes.append((alg.metadata.algorithm_name, rep_note))
+                            self.logger.info(f"找到算法 '{alg.metadata.algorithm_name}' 中匹配到 record_uuid={record_index} 的播放音符")
+                            break
 
         # 使用plot_generator生成详细图表（包含其他算法的播放曲线）
         detail_figure1 = self.plot_generator.generate_note_comparison_plot(

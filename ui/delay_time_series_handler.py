@@ -6,7 +6,7 @@
 import logging
 import traceback
 from typing import Dict, List, Optional, Tuple, Any
-from dash import no_update
+from dash import no_update, dcc
 import dash
 from dash._callback_context import CallbackContext
 
@@ -48,13 +48,14 @@ class DelayTimeSeriesHandler:
             return current_style, [], no_update, no_update, no_update
 
         # 确定点击数据来源
-        if trigger_id == 'raw-delay-time-series-plot':
+        # 确定点击数据来源
+        if trigger_id == 'scatter-analysis-raw-delay-plot':
             delay_click_data = raw_click_data
-            source_plot_id = 'raw-delay-time-series-plot'
+            source_plot_id = 'scatter-analysis-raw-delay-plot'
             logger.info("[INFO] 点击来自原始延时图")
-        elif trigger_id == 'relative-delay-time-series-plot':
+        elif trigger_id == 'scatter-analysis-relative-delay-plot':
             delay_click_data = relative_click_data
-            source_plot_id = 'relative-delay-time-series-plot'
+            source_plot_id = 'scatter-analysis-relative-delay-plot'
             logger.info("[INFO] 点击来自相对延时图")
         else:
             logger.warning("[WARNING] 未知的触发源")
@@ -119,7 +120,7 @@ class DelayTimeSeriesHandler:
             }
 
         # 只有在点击了时间序列图时才处理
-        if trigger_id not in ['raw-delay-time-series-plot', 'relative-delay-time-series-plot'] or not ctx.triggered[0]['value']:
+        if trigger_id not in ['scatter-analysis-raw-delay-plot', 'scatter-analysis-relative-delay-plot'] or not ctx.triggered[0]['value']:
             return {'should_skip': True}
 
         logger.info(f"[TARGET] 检测到 {trigger_id} 点击")
@@ -178,24 +179,26 @@ class DelayTimeSeriesHandler:
             algorithm = backend.multi_algorithm_manager.get_algorithm(algorithm_name)
             if algorithm and algorithm.analyzer and hasattr(algorithm.analyzer, 'matched_pairs'):
                 matched_pairs = algorithm.analyzer.matched_pairs
-                for r_idx, p_idx, r_note, p_note in matched_pairs:
-                    if r_idx == record_index and p_idx == replay_index:
-                        record_note = r_note
-                        replay_note = p_note
+                for rec_note, rep_note, match_type, error_ms in matched_pairs:
+                    # 使用UUID进行比较（因为offset_data中使用UUID作为index）
+                    if str(rec_note.uuid) == str(record_index) and str(rep_note.uuid) == str(replay_index):
+                        record_note = rec_note
+                        replay_note = rep_note
                         final_algorithm_name = algorithm_name
-                        logger.info(f"[OK] 在多算法模式中找到匹配对")
+                        logger.info(f"[OK] 在多算法模式中找到匹配对 (UUID匹配)")
                         break
         else:
             # 单算法模式
             analyzer = backend._get_current_analyzer()
             if analyzer and hasattr(analyzer, 'matched_pairs'):
                 matched_pairs = analyzer.matched_pairs
-                for r_idx, p_idx, r_note, p_note in matched_pairs:
-                    if r_idx == record_index and p_idx == replay_index:
-                        record_note = r_note
-                        replay_note = p_note
+                for rec_note, rep_note, match_type, error_ms in matched_pairs:
+                    # 使用UUID进行比较
+                    if str(rec_note.uuid) == str(record_index) and str(rep_note.uuid) == str(replay_index):
+                        record_note = rec_note
+                        replay_note = rep_note
                         final_algorithm_name = None
-                        logger.info(f"[OK] 在单算法模式中找到匹配对")
+                        logger.info(f"[OK] 在单算法模式中找到匹配对 (UUID匹配)")
                         break
 
         if not record_note or not replay_note:
@@ -287,7 +290,6 @@ class DelayTimeSeriesHandler:
 
     def _prepare_return_data(self, match_result, point_data, chart_result, time_result, source_plot_id) -> Dict[str, Any]:
         """准备返回数据"""
-        import dash_core_components as dcc
 
         # 保存点击点信息，用于跳转到瀑布图
         point_info = {

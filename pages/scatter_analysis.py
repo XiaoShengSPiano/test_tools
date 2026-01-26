@@ -1,10 +1,11 @@
 """
 散点图分析页面
 """
-from dash import html, dcc, callback, Input, Output, State
+from dash import html, dcc, callback, Input, Output, State, no_update
 import dash_bootstrap_components as dbc
 from utils.logger import Logger
-from pages.scatter_helper_functions import _parse_customdata_by_type, _handle_scatter_click_logic
+from pages.scatter_helper_functions import _parse_customdata_by_type, _handle_scatter_click_logic, _handle_scatter_click_logic_enhanced
+from ui.delay_time_series_handler import delay_time_series_handler
 
 logger = Logger.get_logger()
 
@@ -134,7 +135,11 @@ def layout():
                     ], style={'display': 'flex', 'justifyContent': 'space-between', 'alignItems': 'center', 'marginBottom': '15px'}),
                     html.Div(id='scatter-analysis-modal-content'),
                     html.Div([
-                        dbc.Button("关闭", id="close-scatter-analysis-modal-btn", color="secondary", className="mt-3")
+                        dbc.Button("关闭", id="close-scatter-analysis-modal-btn", color="secondary", className="mt-3"),
+                        # 为Z-Score图表添加跳转到瀑布图的按钮（暂时隐藏）
+                        html.Div(id='scatter-analysis-jump-to-waterfall-container', style={'display': 'none'}, children=[
+                            dbc.Button("跳转到瀑布图", id="jump-to-waterfall-btn", color="primary", className="ms-2", size="sm")
+                        ])
                     ], style={'textAlign': 'right'})
                 ], className="modal-content-inner", style={
                     'backgroundColor': '#fff',
@@ -159,7 +164,10 @@ def layout():
             'backgroundColor': 'rgba(0,0,0,0.6)',
             'backdropFilter': 'blur(5px)'
         }),
-        
+
+        # 隐藏的存储组件 - 用于存储点击的点信息（支持Z-Score增强功能）
+        dcc.Store(id='scatter-analysis-clicked-point-info', data=None),
+
     ], fluid=True, className="mt-3")
 
 
@@ -274,26 +282,44 @@ def register_callbacks(app, session_manager):
         try:
             # 获取后端实例（不创建新的）
             backend = session_manager.get_backend(session_id)
-            logger.info(f"[DEBUG] scatter - session_manager.get_backend({session_id}) 返回: {backend}")
-            
+            logger.info(f"[DEBUG] scatter - session_manager.get_backend({session_id}) 返回: {type(backend) if backend else None}")
+
             if not backend:
                 logger.warning(f"[WARN] Backend尚未初始化 (session={session_id})")
                 return _create_no_backend_alert()
+
+            logger.info(f"[DEBUG] Backend类型: {type(backend)}, 包含plot_service: {hasattr(backend, 'plot_service')}")
+
+            # 检查backend是否包含必要的方法
+            if not hasattr(backend, 'generate_key_delay_zscore_scatter_plot'):
+                logger.error(f"[ERROR] Backend不包含generate_key_delay_zscore_scatter_plot方法")
+                return _create_error_alert("后端方法缺失")
             
             
             if analysis_type == 'key-delay':
                 figure = backend.generate_key_delay_scatter_plot()
             elif analysis_type == 'zscore':
-                figure = backend.generate_key_delay_zscore_scatter_plot()
+                logger.info("[DEBUG] 开始生成Z-Score散点图")
+                try:
+                    figure = backend.generate_key_delay_zscore_scatter_plot()
+                    logger.info(f"[DEBUG] Z-Score图表生成结果: {figure is not None}")
+                    if figure is None:
+                        logger.warning("[WARN] Z-Score图表生成返回None，可能没有激活的算法或数据未加载")
+                        return _create_error_alert("Z-Score图表生成失败：可能没有激活的算法或数据未正确加载")
+                except Exception as zscore_error:
+                    logger.error(f"[ERROR] Z-Score图表生成异常: {zscore_error}")
+                    import traceback
+                    traceback.print_exc()
+                    return _create_error_alert(f"Z-Score图表生成错误: {str(zscore_error)}")
             elif analysis_type == 'hammer-velocity':
                 # 锤速对比图（横轴：按键ID，纵轴：锤速差值）
                 from ui.velocity_comparison_handler import VelocityComparisonHandler
                 handler = VelocityComparisonHandler(session_manager)
                 figure = handler.handle_generate_hammer_velocity_comparison_plot(None, session_id)
             elif analysis_type == 'key-force':
-                figure = backend.generate_key_hammer_velocity_scatter_plot()
+                figure = backend.generate_key_force_interaction_plot()
             elif analysis_type == 'relative-delay':
-                figure = backend.generate_hammer_velocity_relative_delay_scatter_plot()
+                figure = backend.generate_relative_delay_distribution_plot()
             elif analysis_type == 'time-series':
                 # 延时时间序列图（返回两个图：原始延时和相对延时）
                 result = backend.generate_delay_time_series_plot()
@@ -320,11 +346,11 @@ def register_callbacks(app, session_manager):
                     figure = result  # 单算法模式
             
             if figure:
-                logger.info(f'鉁?鏁ｇ偣鍥剧敓鎴愭垚鍔? {analysis_type}')
+                logger.info(f'[OK] 散点图生成成功: {analysis_type}')
                 return dcc.Graph(id='scatter-analysis-dynamic-plot', figure=figure, style={'height': '700px'}, config={'displayModeBar': True, 'displaylogo': False, 'modeBarButtonsToRemove': ['lasso2d', 'select2d']})
             else:
-                logger.warning(f'鈿狅笍 鏁ｇ偣鍥剧敓鎴愯繑鍥濶one: {analysis_type}')
-                return _create_error_alert('鍥捐〃鐢熸垚澶辫触锛岃妫€鏌ユ暟鎹槸鍚﹀凡鍔犺浇')
+                logger.warning(f'[WARNING] 散点图生成失败，返回None: {analysis_type}')
+                return _create_error_alert('图表生成失败，请检查数据是否已加载')
             
         except Exception as e:
             logger.error(f"[ERROR] 加载散点图失败: {e}")
@@ -333,23 +359,95 @@ def register_callbacks(app, session_manager):
             return _create_error_alert(str(e))
 
     
-    # 鏁ｇ偣鍥剧偣鍑诲洖璋?- 鏄剧ず璇︾粏鏇茬嚎瀵规瘮
+    # 散点图点击回调 - 显示详细曲线对比
     @app.callback(
-        [Output('scatter-analysis-modal', 'style'), Output('scatter-analysis-modal-content', 'children')],
-        [Input('scatter-analysis-dynamic-plot', 'clickData'), Input('close-scatter-analysis-modal', 'n_clicks'), Input('close-scatter-analysis-modal-btn', 'n_clicks')],
-        [State('scatter-analysis-type-selector', 'value'), State('session-id', 'data'), State('scatter-analysis-modal', 'style')],
+        [Output('scatter-analysis-modal', 'style'),
+         Output('scatter-analysis-modal-content', 'children'),
+         Output('scatter-analysis-clicked-point-info', 'data'),
+         Output('scatter-analysis-jump-to-waterfall-container', 'style')],
+        [Input('scatter-analysis-dynamic-plot', 'clickData'),
+         Input('close-scatter-analysis-modal', 'n_clicks'),
+         Input('close-scatter-analysis-modal-btn', 'n_clicks')],
+        [State('scatter-analysis-type-selector', 'value'),
+         State('session-id', 'data'),
+         State('scatter-analysis-modal', 'style')],
         prevent_initial_call=True
     )
     def handle_scatter_plot_click(click_data, close_clicks, close_btn_clicks, analysis_type, session_id, current_style):
         from dash import no_update, callback_context
         ctx = callback_context
         if not ctx.triggered:
-            return no_update, no_update
+            return no_update, no_update, no_update, no_update
         trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
         if trigger_id in ['close-scatter-analysis-modal', 'close-scatter-analysis-modal-btn']:
-            logger.info('[OK] 鍏抽棴鏁ｇ偣鍥捐鎯呮ā鎬佹')
+            logger.info('[OK] 关闭散点图详情模态框')
             modal_style = {'display': 'none', 'position': 'fixed', 'zIndex': '1000', 'left': '0', 'top': '0', 'width': '100%', 'height': '100%', 'backgroundColor': 'rgba(0,0,0,0.6)', 'backdropFilter': 'blur(5px)'}
-            return modal_style, []
+            return modal_style, [], None, {'display': 'none'}
         if trigger_id == 'scatter-analysis-dynamic-plot' and click_data:
-            return _handle_scatter_click_logic(click_data, analysis_type, session_id, session_manager)
+            return _handle_scatter_click_logic_enhanced(click_data, analysis_type, session_id, session_manager)
+        return no_update, no_update, no_update, no_update
+    # 分离时间序列图表的点击处理和关闭按钮的处理
+    # 1. 处理时间序列图表的点击（只在组件存在时触发）
+    @app.callback(
+        [Output('key-curves-modal', 'style', allow_duplicate=True),
+         Output('key-curves-comparison-container', 'children', allow_duplicate=True),
+         Output('current-clicked-point-info', 'data', allow_duplicate=True),
+         Output('scatter-analysis-raw-delay-plot', 'clickData', allow_duplicate=True),
+         Output('scatter-analysis-relative-delay-plot', 'clickData', allow_duplicate=True)],
+        [Input('scatter-analysis-raw-delay-plot', 'clickData'),
+         Input('scatter-analysis-relative-delay-plot', 'clickData')],
+        [State('scatter-analysis-type-selector', 'value'),
+         State('session-id', 'data'),
+         State('key-curves-modal', 'style')],
+        prevent_initial_call=True
+    )
+    def handle_delay_time_series_plot_click(raw_click_data, relative_click_data, analysis_type, session_id, current_style):
+        """处理延时时间序列图点击（多算法模式），显示音符分析曲线（悬浮窗）"""
+        from dash import callback_context
+        
+        try:
+            # 检查触发源
+            ctx = callback_context
+            if not ctx.triggered:
+                return no_update, no_update, no_update, no_update, no_update
+            
+            # 检查analysis_type是否存在（可能在非散点图页面时为None）
+            if analysis_type is None or analysis_type != 'time-series':
+                return no_update, no_update, no_update, no_update, no_update
+
+            # 确保 handler 拥有最新的 session_manager
+            delay_time_series_handler.set_session_manager(session_manager)
+            # 传递None作为关闭按钮的点击次数（因为这是图表点击，不是关闭）
+            return delay_time_series_handler.handle_delay_time_series_click_multi(
+                raw_click_data, relative_click_data, None, None, session_id, current_style
+            )
+        except Exception as e:
+            logger.error(f"[ERROR] 处理时间序列图点击失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return no_update, no_update, no_update, no_update, no_update
+    
+    # 2. 处理关闭按钮（通用回调，不依赖特定页面的组件）
+    @app.callback(
+        [Output('key-curves-modal', 'style', allow_duplicate=True),
+         Output('key-curves-comparison-container', 'children', allow_duplicate=True)],
+        [Input('close-key-curves-modal', 'n_clicks'),
+         Input('close-key-curves-modal-btn', 'n_clicks')],
+        [State('key-curves-modal', 'style')],
+        prevent_initial_call=True
+    )
+    def handle_key_curves_modal_close(close_modal_clicks, close_btn_clicks, current_style):
+        """处理按键曲线模态框关闭（通用回调，适用于所有页面）"""
+        from dash import callback_context
+        
+        ctx = callback_context
+        if not ctx.triggered:
+            return no_update, no_update
+        
+        trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
+        
+        # 如果点击了关闭按钮，隐藏模态框
+        if trigger_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
+            return {'display': 'none'}, []
+        
         return no_update, no_update

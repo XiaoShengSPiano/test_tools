@@ -42,7 +42,7 @@ import pandas as pd
 import numpy as np
 from .spmid_reader import Note
 from .delay_metrics import DelayMetrics
-from typing import List, Tuple, Dict, Union, Optional
+from typing import List, Tuple, Dict, Union, Optional, Any
 from utils.logger import Logger
 from enum import Enum
 from collections import defaultdict
@@ -1313,6 +1313,65 @@ class NoteMatcher:
                 hammer_velocity = replay_note.get_first_hammer_velocity()
                 if hammer_velocity and hammer_velocity > 0:
                     self.multi_hammers.append(replay_note)
+                    
+    def get_offset_alignment_data(self) -> List[Dict[str, Union[int, float]]]:
+        """
+        获取所有匹配对的偏移对齐数据 - 包含所有成功匹配
+        
+        Returns:
+            List[Dict[str, Union[int, float]]]: 偏移对齐数据列表
+        """
+        offset_data = []
+        for rec_note, rep_note, match_type, keyon_error_ms in self.matched_pairs:
+            record_note = rec_note
+            replay_note = rep_note
+            
+            # 计算录制和播放音符的时间
+            record_keyon, record_keyoff = self._calculate_note_times(record_note)
+            replay_keyon, replay_keyoff = self._calculate_note_times(replay_note)
+
+            # 获取锤速信息
+            record_velocity = self._get_velocity_from_note(record_note)
+            replay_velocity = self._get_velocity_from_note(replay_note)
+
+            # 计算原始偏移量
+            keyon_offset = replay_keyon - record_keyon
+            
+            record_duration = record_keyoff - record_keyon
+            replay_duration = replay_keyoff - replay_keyon
+            duration_diff = replay_duration - record_duration
+            
+            # 计算相对延时 (需要在外部计算，这里先给原始值)
+            # 在DelayAnalysis中会重新计算相对延时，这里只需提供原始数据
+            # 为保持格式一致，先给一个占位值
+            relative_delay = keyon_offset / 10.0
+            
+            # 计算持续时间偏移
+            duration_offset = replay_duration - record_duration
+
+            offset_data.append({
+                'record_index': record_note.offset,  # 使用offset作为唯一标识
+                'replay_index': replay_note.offset,
+                'record_id': record_note.id,
+                'replay_id': replay_note.id,
+                'record_keyon': record_keyon,
+                'replay_keyon': replay_keyon,
+                'record_velocity': record_velocity,
+                'replay_velocity': replay_velocity,
+                'velocity_diff': (replay_velocity - record_velocity) if record_velocity is not None and replay_velocity is not None else None,
+                'keyon_offset': keyon_offset,
+                'corrected_offset': keyon_offset,
+                'relative_delay': relative_delay,
+                'record_keyoff': record_keyoff,
+                'replay_keyoff': replay_keyoff,
+                'duration_offset': duration_offset,
+                'average_offset': abs(keyon_offset),
+                'record_duration': record_duration,
+                'replay_duration': replay_duration,
+                'duration_diff': duration_diff
+            })
+
+        return offset_data
 
 
     def get_precision_offset_alignment_data(self) -> List[Dict[str, Union[int, float]]]:
@@ -1430,17 +1489,6 @@ class NoteMatcher:
         
         # 调试：验证统计数据一致性
         stats_sum = sum(stats.values())
-        logger.debug(f"📊 [NoteMatcher] 评级统计详情:")
-        logger.debug(f"   - excellent_matches (correct): {self.match_statistics.excellent_matches}")
-        logger.debug(f"   - good_matches (minor): {self.match_statistics.good_matches}")
-        logger.debug(f"   - fair_matches (moderate): {self.match_statistics.fair_matches}")
-        logger.debug(f"   - poor_matches (large): {self.match_statistics.poor_matches}")
-        logger.debug(f"   - severe_matches (severe): {self.match_statistics.severe_matches}")
-        logger.debug(f"   - 统计总和: {stats_sum}")
-        logger.debug(f"   - matched_pairs 数量: {total_successful_matches}")
-        
-        if stats_sum != total_successful_matches:
-            logger.warning(f"⚠️ [NoteMatcher] 统计不一致！stats_sum={stats_sum} != matched_pairs={total_successful_matches}")
 
         # 计算百分比（基于成功的匹配对总数）
         result = {}
@@ -1712,9 +1760,29 @@ class NoteMatcher:
     def get_mean_error(self) -> float:
         """
         获取已匹配按键对的平均误差（ME，带符号）
-        
+
         Returns:
             float: 平均误差ME（单位：0.1ms）
         """
         return self._get_delay_metrics().get_mean_error()
+
+    def get_all_display_data(self) -> Dict[str, Any]:
+        """
+        获取所有用于显示的数据（统一接口）
+
+        提供统一的瀑布图显示数据访问接口，避免各个模块重复的数据收集逻辑
+
+        Returns:
+            Dict[str, Any]: 包含所有显示相关数据的字典
+                - matched_pairs: List[Tuple[Note, Note, MatchType, float]]
+                - drop_hammers: List[Note]
+                - multi_hammers: List[Note]
+                - abnormal_matches: List[Tuple[Note, Note]]
+        """
+        return {
+            'matched_pairs': self.get_matched_pairs_with_grade(),
+            'drop_hammers': self.drop_hammers.copy(),
+            'multi_hammers': self.multi_hammers.copy(),
+            'abnormal_matches': self.abnormal_matches.copy()
+        }
 

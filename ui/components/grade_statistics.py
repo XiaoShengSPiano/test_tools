@@ -44,13 +44,46 @@ def create_grade_detail_table_placeholder(table_id='single'):
     Returns:
         html.Div: 表格占位符
     """
-    from dash import dash_table
+    from dash import dash_table, dcc
     
     return html.Div(
         id={'type': 'grade-detail-table', 'index': table_id},
         style={'display': 'none', 'marginTop': '20px'},
         children=[
+            # 存储当前激活的评级类型，用于按键过滤联动
+            dcc.Store(id={'type': 'grade-detail-state-store', 'index': table_id}, data={'grade_key': None}),
+            
             html.H5("详细数据", className="mb-3"),
+            
+            # 按键筛选器区域
+            html.Div(
+                id={'type': 'grade-detail-key-filter-area', 'index': table_id},
+                style={'marginBottom': '15px'},
+                children=[
+                    dbc.Row([
+                        dbc.Col([
+                            html.Label("按键筛选:", className="form-label fw-bold me-2"),
+                            dcc.Dropdown(
+                                id={'type': 'grade-detail-key-filter', 'index': table_id},
+                                options=[
+                                    {'label': '请选择按键...', 'value': ''},
+                                    {'label': '全部按键', 'value': 'all'}
+                                ],
+                                value='',
+                                clearable=False,
+                                style={'width': '200px', 'display': 'inline-block'}
+                            )
+                        ], width='auto'),
+                        dbc.Col([
+                            html.Small(
+                                "选择特定按键查看该类别的详细信息",
+                                className="text-muted"
+                            )
+                        ], width=True)
+                    ], className="align-items-center")
+                ]
+            ),
+            
             dash_table.DataTable(
                 id={'type': 'grade-detail-datatable', 'index': table_id},
                 columns=[],
@@ -64,16 +97,77 @@ def create_grade_detail_table_placeholder(table_id='single'):
                 },
                 style_cell={
                     'textAlign': 'center',
-                    'fontSize': '14px',
+                    'fontSize': '12px',
                     'fontFamily': 'Arial, sans-serif',
-                    'padding': '8px',
-                    'minWidth': '80px'
+                    'padding': '6px 3px',
+                    'minWidth': '85px',
+                    'maxWidth': '130px',
+                    'whiteSpace': 'normal',
+                    'cursor': 'pointer'
                 },
                 style_header={
                     'backgroundColor': '#f8f9fa',
                     'fontWeight': 'bold',
-                    'borderBottom': '2px solid #dee2e6'
-                }
+                    'borderBottom': '2px solid #dee2e6',
+                    'whiteSpace': 'normal',
+                    'height': 'auto',
+                    'lineHeight': '1.2',
+                    'fontSize': '11px',
+                    'padding': '6px 3px',
+                    'textAlign': 'center'
+                },
+                style_data_conditional=[
+                    # 为差异列设置更大的宽度
+                    {
+                        'if': {'column_id': 'keyon_diff'},
+                        'minWidth': '140px',
+                        'width': '160px'
+                    },
+                    {
+                        'if': {'column_id': 'duration_diff'},
+                        'minWidth': '140px',
+                        'width': '160px'
+                    },
+                    {
+                        'if': {'column_id': 'hammer_time_diff'},
+                        'minWidth': '140px',
+                        'width': '160px'
+                    },
+                    # 为其他包含(ms)的列设置中等宽度
+                    {
+                        'if': {'column_id': ['keyOn', 'keyOff', 'hammer_times', 'duration']},
+                        'minWidth': '110px',
+                        'width': '125px'
+                    },
+                    # 录制行 - 纯白色
+                    {
+                        'if': {'filter_query': '{data_type} = "录制"'},
+                        'backgroundColor': '#FFFFFF',
+                        'color': 'black'
+                    },
+                    {
+                        'if': {'filter_query': '{row_type} = "录制"'},
+                        'backgroundColor': '#FFFFFF',
+                        'color': 'black'
+                    },
+                    # 播放行 - 淡蓝色
+                    {
+                        'if': {'filter_query': '{data_type} = "播放"'},
+                        'backgroundColor': '#E6F7FF',
+                        'color': 'black'
+                    },
+                    {
+                        'if': {'filter_query': '{row_type} = "播放"'},
+                        'backgroundColor': '#E6F7FF',
+                        'color': 'black'
+                    },
+                    # 悬停样式
+                    {
+                        'if': {'state': 'active'},
+                        'backgroundColor': 'rgba(0, 116, 217, 0.3)',
+                        'border': '1px solid rgb(0, 116, 217)'
+                    }
+                ]
             )
         ]
     )

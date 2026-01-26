@@ -461,7 +461,7 @@ class DelayAnalysis:
                 return self._create_empty_interaction_result("分析器不存在")
 
             matched_pairs = self.analyzer.note_matcher.get_matched_pairs()
-            offset_data = self.analyzer.note_matcher.get_precision_offset_alignment_data()
+            offset_data = self.analyzer.note_matcher.get_offset_alignment_data()
             
             if not matched_pairs or not offset_data:
                 logger.warning("⚠️ 没有匹配数据，无法进行分析")
@@ -527,20 +527,28 @@ class DelayAnalysis:
         
         result = []
         
-        for record_idx, replay_idx, record_note, replay_note in matched_pairs:
+        for record_note, replay_note in matched_pairs:
+            # Lookup needs offsets because NoteMatcher.get_offset_alignment_data uses offsets
+            lookup_record_idx = record_note.offset
+            lookup_replay_idx = replay_note.offset
+            
+            # Result needs UUIDs as per user request
+            record_uuid = record_note.uuid
+            replay_uuid = replay_note.uuid
+
             # 获取按键ID
             key_id = record_note.id
             
             # 提取播放音符的锤速（第一个锤速值）
-            replay_velocity = self._extract_first_hammer_velocity(replay_note)
+            replay_velocity = replay_note.first_hammer_velocity
             
             if replay_velocity is None or replay_velocity <= 0:
                 continue
             
             # 获取延时
             keyon_offset = None
-            if (record_idx, replay_idx) in offset_map:
-                keyon_offset = offset_map[(record_idx, replay_idx)].get('keyon_offset', 0)
+            if (lookup_record_idx, lookup_replay_idx) in offset_map:
+                keyon_offset = offset_map[(lookup_record_idx, lookup_replay_idx)].get('keyon_offset', 0)
             else:
                 # 备用方案：直接计算
                 try:
@@ -553,41 +561,9 @@ class DelayAnalysis:
             if keyon_offset is not None:
                 # 转换为ms单位（带符号）
                 delay_ms = keyon_offset / 10.0
-                result.append((key_id, float(replay_velocity), delay_ms, record_idx, replay_idx))
+                result.append((key_id, float(replay_velocity), delay_ms, record_uuid, replay_uuid))
         
         return result
-    
-    def _extract_first_hammer_velocity(self, note) -> Optional[float]:
-        """
-        提取音符的第一个锤速值
-        
-        Args:
-            note: 音符对象
-            
-        Returns:
-            Optional[float]: 第一个锤速值，如果提取失败则返回None
-        """
-        try:
-            if not hasattr(note, 'hammers') or note.hammers is None:
-                return None
-            
-            if hasattr(note.hammers, 'empty') and note.hammers.empty:
-                return None
-            
-            if len(note.hammers) == 0:
-                return None
-            
-            # 获取时间上最早的锤速值
-            min_timestamp = note.hammers.index.min()
-            first_velocity_raw = note.hammers.loc[min_timestamp]
-            
-            if isinstance(first_velocity_raw, pd.Series):
-                return first_velocity_raw.iloc[0]
-            else:
-                return first_velocity_raw
-                
-        except Exception as e:
-            return None
     
     def _generate_interaction_plot_data(self, key_ids: List[int], replay_velocities: List[float], 
                                        delays: List[float], record_indices: List[int] = None,

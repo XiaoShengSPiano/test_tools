@@ -96,24 +96,24 @@ class ScatterHandlerBase:
             logger.warning(f"无法获取分析器")
             return None
         
-        # 获取precision_matched_pairs - 处理单算法和多算法模式的差异
-        if hasattr(analyzer, 'precision_matched_pairs'):
-            # 多算法模式：analyzer是AlgorithmDataset对象
-            precision_matched_pairs = analyzer.precision_matched_pairs
-        elif hasattr(analyzer, 'note_matcher') and hasattr(analyzer.note_matcher, 'precision_matched_pairs'):
-            # 单算法模式：analyzer是SPMIDAnalyzer对象
-            precision_matched_pairs = analyzer.note_matcher.precision_matched_pairs
+        # 获取匹配对 (matched_pairs) - 处理单算法和多算法模式的差异
+        if hasattr(analyzer, 'matched_pairs'):
+            # SPMIDAnalyzer 或 AlgorithmDataset (如果有该属性)
+            matched_pairs = analyzer.matched_pairs
+        elif hasattr(analyzer, 'note_matcher') and hasattr(analyzer.note_matcher, 'matched_pairs'):
+            # 常见情况：从 note_matcher 获取
+            matched_pairs = analyzer.note_matcher.matched_pairs
         else:
-            logger.warning(f"无法获取precision_matched_pairs")
+            logger.warning(f"无法获取 matched_pairs")
             return None
         
-        if not precision_matched_pairs:
-            logger.warning(f"precision_matched_pairs为空")
+        if not matched_pairs:
+            logger.warning(f"matched_pairs 为空")
             return None
         
-        # 从precision_matched_pairs中查找对应的Note对象
+        # 从 matched_pairs 中查找对应的 Note 对象
         record_note, replay_note = self._find_notes_in_precision_pairs(
-            precision_matched_pairs, record_index, replay_index
+            matched_pairs, record_index, replay_index
         )
         
         if not record_note or not replay_note:
@@ -125,11 +125,7 @@ class ScatterHandlerBase:
             logger.warning(f"[WARNING] Note对象没有key_on_ms数据: record={record_note.key_on_ms}, replay={replay_note.key_on_ms}")
             return None
         
-        # key_on_ms单位是ms，_calculate_center_time_ms期望输入0.1ms单位
-        record_keyon_01ms = record_note.key_on_ms * 10.0
-        replay_keyon_01ms = replay_note.key_on_ms * 10.0
-        
-        return self._calculate_center_time_ms(record_keyon_01ms, replay_keyon_01ms)
+        return (record_note.key_on_ms + replay_note.key_on_ms) / 2.0
     
     
     # ==================== 音符数据查找相关 ====================
@@ -152,34 +148,35 @@ class ScatterHandlerBase:
         if not analyzer:
             return None, None
         
-        # 获取precision_matched_pairs（统一从note_matcher获取）
+        # 获取匹配对（统一从note_matcher获取）
         if not analyzer.note_matcher:
             logger.warning(f"[WARNING] 算法 {algorithm_name} 缺少note_matcher")
             return None, None
         
-        precision_matched_pairs = analyzer.note_matcher.precision_matched_pairs
+        matched_pairs = analyzer.note_matcher.matched_pairs
         
-        if not precision_matched_pairs:
-            logger.warning(f"[WARNING] 算法 {algorithm_name} 的precision_matched_pairs为空")
+        if not matched_pairs:
+            logger.warning(f"[WARNING] 算法 {algorithm_name} 的 matched_pairs 为空")
             return None, None
         
-        return self._find_notes_in_precision_pairs(precision_matched_pairs, record_index, replay_index)
+        return self._find_notes_in_precision_pairs(matched_pairs, record_index, replay_index)
     
-    def _find_notes_in_precision_pairs(self, precision_matched_pairs, record_index: int, replay_index: int):
+    def _find_notes_in_precision_pairs(self, precision_matched_pairs, record_index: Any, replay_index: Any):
         """
-        在精确匹配对中查找指定索引的音符对象
+        在精确匹配对中查找指定索引/UUID的音符对象
         
         Args:
-            precision_matched_pairs: 精确匹配对列表
-            record_index: 录制音符索引
-            replay_index: 播放音符索引
+            precision_matched_pairs: 精确匹配对列表 (record_note, replay_note, match_type, keyon_error_ms)
+            record_index: 录制音符索引或UUID
+            replay_index: 播放音符索引或UUID
             
         Returns:
             Tuple[record_note, replay_note]: 音符对象，未找到返回(None, None)
         """
-        for r_idx, p_idx, r_note, p_note in precision_matched_pairs:
-            if r_idx == record_index and p_idx == replay_index:
-                return r_note, p_note
+        for rec_note, rep_note, match_type, error_ms in precision_matched_pairs:
+            # 比较UUID（支持字符串比较，确保UUID一致）
+            if str(rec_note.uuid) == str(record_index) and str(rep_note.uuid) == str(replay_index):
+                return rec_note, rep_note
         return None, None
     
     # ==================== 分析器管理相关 ====================
@@ -269,8 +266,8 @@ class ScatterHandlerBase:
                 logger.warning(f"[WARNING] {plot_name}点击数据customdata格式不正确: {customdata}")
                 return None
             
-            record_index = int(customdata[0])
-            replay_index = int(customdata[1])
+            record_index = customdata[0]
+            replay_index = customdata[1]
             key_id = int(customdata[2]) if customdata[2] is not None else None
             algorithm_name = customdata[4] if len(customdata) > 4 else None
             

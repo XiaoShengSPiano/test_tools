@@ -5,9 +5,12 @@
 绘图和图像生成模块
 负责瀑布图生成、音符对比图、错误音符图像等
 """
-
+import dash
+from dash import dcc
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
+import matplotlib.cm as cm
+import matplotlib.colors as mcolors
 import base64
 import io
 import math
@@ -394,9 +397,6 @@ class PlotGenerator:
     
     def _generate_key_colors(self, n_keys):
         """为按键生成颜色"""
-        import matplotlib.cm as cm
-        import matplotlib.colors as mcolors
-        
         if n_keys <= 20:
             colors = cm.get_cmap('tab20')(np.linspace(0, 1, n_keys))
         else:
@@ -412,8 +412,15 @@ class PlotGenerator:
         # 生成横轴刻度
         tick_positions, tick_texts = self._generate_log_ticks(all_velocities)
 
-        # 生成Y轴配置（相对延时使用固定配置）
-        y_axis_config = self._generate_adaptive_y_axis_config(None)
+        # 生成Y轴配置（使用采集的延时分布）
+        all_delays = []
+        for alg_result in algorithm_results.values():
+            interaction_data = alg_result.get('interaction_plot_data', {})
+            key_data = interaction_data.get('key_data', {})
+            for data in key_data.values():
+                all_delays.extend(data.get('absolute_delays', []))
+        
+        y_axis_config = self._generate_adaptive_y_axis_config(all_delays)
 
         fig.update_layout(
             xaxis_title='log₁₀(播放锤速)',
@@ -453,11 +460,33 @@ class PlotGenerator:
         )
 
     def _generate_adaptive_y_axis_config(self, delays):
-        """生成Y轴配置 - 相对延时使用合理的固定范围"""
-        # 相对延时一般都在0附近，使用 ±10ms 范围，比原来的 ±50ms 更合理
+        """生成Y轴配置 - 自动根据延时范围调整"""
+        if not delays:
+            return {
+                'range': [0, 100],
+                'dtick': 10,
+                'tickformat': '.1f'
+            }
+        
+        y_min = min(delays)
+        y_max = max(delays)
+        
+        # 增加一些填充
+        padding = (y_max - y_min) * 0.1 if y_max > y_min else 10
+        y_range = [y_min - padding, y_max + padding]
+        
+        # 确保刻度间隔合理
+        diff = y_max - y_min
+        if diff < 10:
+            dtick = 2
+        elif diff < 50:
+            dtick = 5
+        else:
+            dtick = 10
+            
         return {
-            'range': [-10, 10],
-            'dtick': 2,  # 2ms刻度间隔
+            'range': y_range,
+            'dtick': dtick,
             'tickformat': '.1f'
         }
 
@@ -583,13 +612,13 @@ class PlotGenerator:
         replay_indices = data.get('replay_indices', [])
 
         if len(record_indices) == len(replay_vels) and len(replay_indices) == len(replay_vels):
-            # 如果有对应的索引信息，使用它
-            customdata = [[key_id, algorithm_name if algorithm_name else '', rv, rd, ad, record_indices[i], replay_indices[i]]
+            # 构建标准顺序的customdata: [record_index, replay_index, key_id, absolute_delay, algorithm_name, replay_velocity, relative_delay]
+            customdata = [[record_indices[i], replay_indices[i], key_id, ad, algorithm_name if algorithm_name else '', rv, rd]
                          for i, (rv, rd, ad) in enumerate(zip(replay_vels, rel_delays, abs_delays))]
         else:
             # 如果没有索引信息，填充None
             logger.warning(f"⚠️ 按键 {key_id} 缺少索引信息: record_indices={len(record_indices)}, replay_indices={len(replay_indices)}, data_points={len(replay_vels)}")
-            customdata = [[key_id, algorithm_name if algorithm_name else '', rv, rd, ad, None, None]
+            customdata = [[None, None, key_id, ad, algorithm_name if algorithm_name else '', rv, rd]
                      for rv, rd, ad in zip(replay_vels, rel_delays, abs_delays)]
         
         # 确定颜色和图例
@@ -604,7 +633,7 @@ class PlotGenerator:
         
         fig.add_trace(go.Scatter(
             x=log10_vels,
-            y=rel_delays,
+            y=relative_delays,
             mode='markers',
             name=name,
             marker=dict(
@@ -617,12 +646,13 @@ class PlotGenerator:
             showlegend=showlegend,
             customdata=customdata,
             visible=True,  # 统一默认显示
+            meta=dict(key_id=key_id),  # 添加元数据用于筛选
             hovertemplate=hover_prefix +
                          f'<b>按键 {key_id}</b><br>' +
                          '<b>log₁₀(播放锤速)</b>: %{x:.2f}<br>' +
-                         '<b>播放锤速</b>: %{customdata[2]:.0f}<br>' +
+                         '<b>播放锤速</b>: %{customdata[5]:.0f}<br>' +
                          '<b>相对延时</b>: %{y:.2f}ms<br>' +
-                         '<b>原始延时</b>: %{customdata[4]:.2f}ms<br>' +
+                         '<b>绝对延时</b>: %{customdata[0]:.2f}ms<br>' +
                          f'<i>平均延时: {mean_delay:.2f}ms</i><extra></extra>'
         ))
     
@@ -639,8 +669,7 @@ class PlotGenerator:
             Any: Plotly图表对象
         """
         try:
-            import matplotlib.cm as cm
-            import matplotlib.colors as mcolors
+
             
             if analysis_result.get('status') != 'success':
                 return self._create_empty_plot("分析失败或数据不足")
@@ -794,9 +823,10 @@ class PlotGenerator:
             # 锤子数据在两个子图（不偏移）
             for row in [1, 2]:
                 legend_name = "legend" if row == 1 else "legend2"
-                self._add_hammer_trace(fig, play_note, 'red', f'{alg_prefix}回放锤子', 
-                                      legend_name, alg_group, row, 'circle', 8, 
+                self._add_hammer_trace(fig, play_note, 'red', f'{alg_prefix}回放锤子',
+                                      legend_name, alg_group, row, 'circle', 8,
                                       algorithm_name if algorithm_name else None)
+
         except Exception as e:
             logger.warning(f"⚠️ 绘制回放数据时出错: {e}")
     

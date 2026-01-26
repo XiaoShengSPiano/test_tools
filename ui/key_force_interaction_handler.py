@@ -96,14 +96,14 @@ class KeyForceInteractionHandler(ScatterHandlerBase):
             
             customdata = parsed_data['customdata']
             
-            # 按键-力度交互效应图的customdata格式: [key_id, algorithm_name, replay_velocity, relative_delay, absolute_delay, record_index, replay_index]
-            key_id = customdata[0]
-            algorithm_display_name = customdata[1] if customdata[1] else None
-            replay_velocity = customdata[2]
-            relative_delay = customdata[3]
-            absolute_delay = customdata[4]
-            record_idx = customdata[5]
-            replay_idx = customdata[6]
+            # 按键-力度交互效应图的customdata格式: [record_index, replay_index, key_id, absolute_delay, algorithm_name, replay_velocity, relative_delay]
+            record_idx = customdata[0]
+            replay_idx = customdata[1]
+            key_id = customdata[2]
+            absolute_delay = customdata[3]
+            algorithm_display_name = customdata[4] if customdata[4] else None
+            replay_velocity = customdata[5]
+            relative_delay = customdata[6]
             
             if record_idx is None or replay_idx is None:
                 logger.warning(f"[WARNING] 按键-力度交互效应图点击 - 缺少索引信息: record_idx={record_idx}, replay_idx={replay_idx}")

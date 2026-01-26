@@ -156,13 +156,8 @@ class DTWCurveAligner:
             如果提取失败则返回None
         """
         try:
-            if not hasattr(note, 'after_touch') or note.after_touch is None or note.after_touch.empty:
-                logger.warning("⚠️ 音符没有after_touch数据")
-                return None
-            
             # 提取时间和值
-            # after_touch.index是相对时间（0.1ms单位），note.offset是绝对偏移（0.1ms单位）
-            times = (note.after_touch.index + note.offset) / 10.0  # 转换为ms
+            times = note.key_on_ms 
             values = note.after_touch.values
             
             # 转换为numpy数组

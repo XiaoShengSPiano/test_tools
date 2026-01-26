@@ -25,11 +25,11 @@ class Note:
     after_touch: pd.Series
 
     # 时间属性 - 在初始化后计算
-    key_on_ms: float = None     # 按键开始时间（毫秒）
-    key_off_ms: float = None    # 按键结束时间（毫秒）
-    duration_ms: float = None   # 持续时间（毫秒）
-    first_hammer_velocity: int = None   # 第一个锤速值
-    first_hammer_time: float = None    # 第一个锤击时间
+    key_on_ms: float = 0.0     # 按键开始时间（毫秒）
+    key_off_ms: float = 0.0    # 按键结束时间（毫秒）
+    duration_ms: float = 0.0   # 持续时间（毫秒）
+    first_hammer_velocity: int = 0   # 第一个锤速值
+    first_hammer_time: float = 0.0    # 第一个锤击时间
 
     # 拆分元数据 - 用于标识拆分后的音符
     split_parent_idx: int = None   # 父索引（原始数据的索引）
@@ -51,25 +51,26 @@ class Note:
             self.duration_ms = self.key_off_ms - self.key_on_ms
         else:
             # 如果没有after_touch数据，设为None
-            self.key_on_ms = None
-            self.key_off_ms = None
-            self.duration_ms = None
+            self.key_on_ms = 0.0
+            self.key_off_ms = 0.0
+            self.duration_ms = 0.0
 
-    def get_first_hammer_velocity(self):
+        if self.hammers is not None and not self.hammers.empty:
+            # 第一个锤速值
+            self.first_hammer_velocity = int(self.hammers.values[0])
+            # 第一个锤击时间
+            self.first_hammer_time = (self.hammers.index[0] + self.offset) / 10.0
+        else:
+            self.first_hammer_velocity = 0
+            self.first_hammer_time = 0.0
+
+    def get_first_hammer_velocity(self) -> int:
         """获取第一个锤速值"""
-        if self.hammers is not None and not self.hammers.empty:
-            # 返回第一个hammer的velocity值，确保为有符号整数以避免溢出
-            return int(self.hammers.values[0])
-        else:
-            return None
+        return self.first_hammer_velocity
     
-    def get_first_hammer_time(self):
+    def get_first_hammer_time(self) -> float:
         """获取第一个锤击时间（包含offset）"""
-        if self.hammers is not None and not self.hammers.empty:
-            # 返回第一个hammer的时间（index + offset）/ 10.0 转换为ms
-            return (self.hammers.index[0] + self.offset) / 10.0
-        else:
-            return None
+        return self.first_hammer_time
 
 
 # =============================================================================

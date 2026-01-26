@@ -39,7 +39,6 @@ class KeyFilter:
         keys = set()
         if notes_data:
             for note in notes_data:
-                if hasattr(note, 'id'):
                     keys.add(note.id)
         return keys
     

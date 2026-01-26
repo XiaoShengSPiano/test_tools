@@ -30,6 +30,7 @@ from ui.hammer_velocity_scatter_handler import HammerVelocityScatterHandler
 from ui.key_delay_scatter_handler import KeyDelayScatterHandler
 from ui.velocity_comparison_handler import VelocityComparisonHandler
 from ui.key_force_interaction_handler import KeyForceInteractionHandler
+from ui.delay_time_series_handler import DelayTimeSeriesHandler
 
 
 logger = Logger.get_logger()
@@ -43,6 +44,7 @@ def register_scatter_callbacks(app, session_mgr: SessionManager):
     key_delay_handler = KeyDelayScatterHandler(session_mgr)
     velocity_comparison_handler = VelocityComparisonHandler(session_mgr)
     key_force_handler = KeyForceInteractionHandler(session_mgr)
+    delay_time_series_handler = DelayTimeSeriesHandler(session_mgr)
     
     # ==================== Z-Score散点图回调 ====================
     
@@ -266,6 +268,26 @@ def register_scatter_callbacks(app, session_mgr: SessionManager):
     
     # 注册按键-力度交互效应图回调
     register_key_force_interaction_callbacks(app, session_mgr)
+    
+    # ==================== 延时时间序列图回调 ====================
+
+    @app.callback(
+        [Output('key-curves-modal', 'style', allow_duplicate=True),
+         Output('key-curves-comparison-container', 'children', allow_duplicate=True),
+         Output('current-clicked-point-info', 'data', allow_duplicate=True),
+         Output('raw-delay-time-series-plot', 'clickData', allow_duplicate=True),
+         Output('relative-delay-time-series-plot', 'clickData', allow_duplicate=True)],
+        [Input('raw-delay-time-series-plot', 'clickData'),
+         Input('relative-delay-time-series-plot', 'clickData'),
+         Input('close-key-curves-modal', 'n_clicks'),
+         Input('close-key-curves-modal-btn', 'n_clicks')],
+        [State('session-id', 'data'),
+         State('key-curves-modal', 'style')],
+        prevent_initial_call=True
+    )
+    def handle_delay_time_series_click_multi(raw_click_data, relative_click_data, close_modal_clicks, close_btn_clicks, session_id, current_style):
+        """处理延时时间序列图点击（多算法模式），显示音符分析曲线（悬浮窗）"""
+        return delay_time_series_handler.handle_delay_time_series_click_multi(raw_click_data, relative_click_data, close_modal_clicks, close_btn_clicks, session_id, current_style)
 
 
 # ==================== 按键-力度交互效应图相关独立函数 ====================
@@ -340,10 +362,10 @@ def _update_data_trace_visibility(data_list: List, selected_keys: List[int]):
                             if not isinstance(first_point, list):
                                 first_point = list(first_point)
                             
-                            # customdata格式: [key_id, algorithm_name, ...]
-                            if len(first_point) >= 2:
-                                key_id = int(first_point[0])
-                                algorithm_name = first_point[1] if first_point[1] else None
+                            # customdata格式: [record_index, replay_index, key_id, absolute_delay, algorithm_name, ...]
+                            if len(first_point) >= 5:
+                                key_id = int(first_point[2])
+                                algorithm_name = first_point[4] if first_point[4] else None
             except Exception as e:
                 logger.debug(f"[TRACE] 提取按键ID失败: {e}")
         
@@ -436,9 +458,9 @@ def update_key_selector_options(figure):
                             if not isinstance(first_point, list):
                                 first_point = list(first_point)
                             
-                            # customdata格式: [key_id, algorithm_name, replay_velocity, relative_delay, absolute_delay, record_index, replay_index]
-                            if len(first_point) >= 1:
-                                key_id = int(first_point[0])
+                            # customdata格式: [record_index, replay_index, key_id, absolute_delay, algorithm_name, replay_velocity, relative_delay]
+                            if len(first_point) >= 3:
+                                key_id = int(first_point[2])
                                 key_ids.add(key_id)
             except Exception as e:
                 logger.debug(f"[TRACE] 从trace提取按键ID失败: {e}")

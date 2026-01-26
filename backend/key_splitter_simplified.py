@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class KeySplitter:
-    """按键拆分器 - 简化版"""
+    """按键拆分器"""
     
     def analyze_split_possibility(self, short_note, long_note,
                                   short_duration: float,
@@ -258,7 +258,7 @@ class KeySplitter:
     def _extract_aftertouch(self, note) -> Tuple[List[float], List[float]]:
         """提取aftertouch数据"""
         try:
-            if not hasattr(note, 'after_touch') or note.after_touch is None or len(note.after_touch) == 0:
+            if note.after_touch is None or len(note.after_touch) == 0:
                 return [], []
             
             times = [(t + note.offset) / 10.0 for t in note.after_touch.index]

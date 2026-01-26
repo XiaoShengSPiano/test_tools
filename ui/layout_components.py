@@ -682,9 +682,7 @@ def create_main_layout():
                             'overflowY': 'auto'
                         })
                     ], className="modal-content", style={
-                        'position': 'relative',
                         'backgroundColor': '#fff',
-                        'margin': '5% auto',
                         'padding': '0',
                         'border': '1px solid #888',
                         'width': '90%',
@@ -705,7 +703,9 @@ def create_main_layout():
                 'width': '100%',
                 'height': '100%',
                 'backgroundColor': 'rgba(0,0,0,0.6)',
-                'backdropFilter': 'blur(5px)'
+                'backdropFilter': 'blur(5px)',
+                'alignItems': 'center',
+                'justifyContent': 'center'
             }),
 
             # 按键曲线对比模态框（悬浮窗）
@@ -777,14 +777,13 @@ def create_main_layout():
                         })
                     ], className="modal-content", style={
                         'backgroundColor': 'white',
-                        'margin': '0.5% auto',  # 减少顶部margin：从1%改为0.5%
                         'padding': '0',
                         'border': 'none',
                         'width': '95%',
                         'maxWidth': '1600px',
                         'borderRadius': '10px',
                         'boxShadow': '0 4px 20px rgba(0,0,0,0.3)',
-                        'maxHeight': '98vh',
+                        'maxHeight': '95vh',
                         'overflow': 'hidden'
                     })
                 ], id="key-curves-modal", className="modal", style={
@@ -796,7 +795,10 @@ def create_main_layout():
                     'width': '100%',
                     'height': '100%',
                     'backgroundColor': 'rgba(0,0,0,0.6)',
-                    'backdropFilter': 'blur(5px)'
+                    'backdropFilter': 'blur(5px)',
+                    'overflow': 'auto',  # 确保可以滚动
+                    'alignItems': 'center',
+                    'justifyContent': 'center'
                 })
             ]),
             # 瀑布图专用曲线对比模态框（避免与其他功能冲突）
@@ -861,14 +863,13 @@ def create_main_layout():
                         })
                     ], className="modal-content", style={
                         'backgroundColor': 'white',
-                        'margin': '0.5% auto',
                         'padding': '0',
                         'border': 'none',
                         'width': '95%',
                         'maxWidth': '1600px',
                         'borderRadius': '10px',
                         'boxShadow': '0 4px 20px rgba(0,0,0,0.3)',
-                        'maxHeight': '98vh',
+                        'maxHeight': '95vh',
                         'overflow': 'hidden'
                     })
                 ], id="waterfall-curves-modal", className="modal", style={
@@ -880,7 +881,9 @@ def create_main_layout():
                     'width': '100%',
                     'height': '100%',
                     'backgroundColor': 'rgba(0,0,0,0.6)',
-                    'backdropFilter': 'blur(5px)'
+                    'backdropFilter': 'blur(5px)',
+                    'alignItems': 'center',
+                    'justifyContent': 'center'
                 })
             ])
         ])

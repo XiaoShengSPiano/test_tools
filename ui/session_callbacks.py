@@ -30,10 +30,7 @@ def register_session_callbacks(app, session_manager: SessionManager, history_man
             session_id = session_data
 
         # 多算法模式始终启用
-        logger.info(f"[DEBUG] session_callbacks - session_manager地址: {id(session_manager)}")
         session_id, backend = session_manager.get_or_create_backend(session_id)
-        logger.info(f"[DEBUG] session_callbacks - 创建的backend: {backend}")
-        logger.info(f"[DEBUG] session_callbacks - session_manager.backends: {list(session_manager.backends.keys())}")
         if backend:
             # multi_algorithm_manager 在初始化时已创建
             logger.info("[OK] 多算法模式已就绪")

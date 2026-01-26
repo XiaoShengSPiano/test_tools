@@ -421,6 +421,39 @@ def layout():
         ),
 
         # 隐藏的数据存储
-        dcc.Store(id='track-comparison-store', data={'selected_tracks': [], 'baseline_id': None})
-        
+        dcc.Store(id='track-comparison-store', data={'selected_tracks': [], 'baseline_id': None}),
+
+        # 按键曲线图悬浮窗
+        dbc.Modal(
+            [
+                dbc.ModalHeader(
+                    dbc.ModalTitle([
+                        html.I(className="bi bi-graph-up me-2"),
+                        "按键曲线对比图"
+                    ])
+                ),
+                dbc.ModalBody([
+                    html.Div(
+                        id='key-curve-chart-container',
+                        children=[
+                            html.Div(
+                                "点击表格行查看按键曲线图...",
+                                className="text-center text-muted py-5"
+                            )
+                        ]
+                    )
+                ]),
+                dbc.ModalFooter(
+                    dbc.Button(
+                        "关闭",
+                        id="close-curve-modal",
+                        className="ms-auto"
+                    )
+                ),
+            ],
+            id="key-curve-modal",
+            size="xl",
+            is_open=False,
+        )
+
     ], fluid=True, className="py-4")
