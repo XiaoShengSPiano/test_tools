@@ -85,7 +85,7 @@ class VelocityComparisonHandler(ScatterHandlerBase):
         close_btn_clicks: Optional[int],
         session_id: str,
         current_style: Dict[str, Any]
-    ) -> Tuple[Dict[str, Any], List[Union[html.Div, dcc.Graph]], Union[Figure, NoUpdate], Dict[str, Any], Optional[Dict[str, Any]]]:
+    ) -> Tuple[Dict[str, Any], List[Union[html.Div, dcc.Graph]], Dict[str, Any], Optional[Dict[str, Any]]]:
         """处理锤速对比图点击，显示对应按键的曲线对比（悬浮窗）"""
         from dash import callback_context
         
@@ -93,43 +93,58 @@ class VelocityComparisonHandler(ScatterHandlerBase):
         ctx = callback_context
         if not ctx.triggered:
             logger.warning("[WARNING] 锤速对比图点击回调：没有触发源")
-            return current_style, [], no_update, no_update, no_update
+            return current_style, [], no_update, no_update
         
         trigger_prop = ctx.triggered[0]['prop_id']
-        trigger_id = trigger_prop.split('.')[0]
-        logger.debug(f"[DEBUG] 锤速对比图点击回调触发：prop_id={trigger_prop}, trigger_id={trigger_id}, click_data={click_data is not None}, close_modal_clicks={close_modal_clicks}, close_btn_clicks={close_btn_clicks}")
+        trigger_id_raw = trigger_prop.split('.')[0]
         
-        # 如果点击了关闭按钮，隐藏模态框
-        if trigger_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
-            return self._handle_modal_close_trigger()
+        # 1. 解析 Plot ID
+        plot_id = trigger_id_raw
+        if trigger_id_raw.startswith('{'):
+            try:
+                import json
+                plot_id = json.loads(trigger_id_raw).get('id', trigger_id_raw)
+            except Exception:
+                pass
+        
+        logger.debug(f"[DEBUG] 锤速对比图点击回调触发：prop_id={trigger_prop}, plot_id={plot_id}")
+        
+        # 如果点击了关闭按钮，只有当模态框是由本回调打开时才处理
+        if plot_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
+            if current_style and current_style.get('display') == 'block' and click_data is not None:
+                new_style = current_style.copy()
+                new_style['display'] = 'none'
+                return new_style, [], no_update, None
+            return current_style, [], no_update, no_update
         
         # 如果是锤速对比图点击
-        if trigger_id == 'hammer-velocity-comparison-plot':
-            if not click_data or 'points' not in click_data or not click_data['points']:
-                logger.warning("[WARNING] 锤速对比图点击 - click_data无效")
-                return current_style, [], no_update, no_update, no_update
+        if plot_id == 'hammer-velocity-comparison-plot':
+            if not click_data or 'points' not in click_data:
+                logger.warning("[WARNING] 锤速对比图点击数据为空")
+                return current_style, [], no_update, no_update
+            
             return self._handle_hammer_velocity_comparison_click_logic(click_data, session_id, current_style)
         
         # 其他情况，保持当前状态
-        return current_style, [], no_update, no_update, no_update
+        return current_style, [], no_update, no_update
     
     # ==================== 私有方法 ====================
     
-    def _handle_modal_close_trigger(self) -> Tuple[Dict[str, Any], List[Union[html.Div, dcc.Graph]], Union[Figure, NoUpdate], Dict[str, Any], Optional[Dict[str, Any]]]:
+    def _handle_modal_close_trigger(self) -> Tuple[Dict[str, Any], List[Union[html.Div, dcc.Graph]], Dict[str, Any], Optional[Dict[str, Any]]]:
         """处理模态框关闭触发"""
-        return {'display': 'none'}, [], no_update, no_update, no_update
+        return {'display': 'none'}, [], no_update, no_update
     
     def _handle_hammer_velocity_comparison_click_logic(self, click_data, session_id, current_style):
         """处理锤速对比图点击的具体逻辑"""
         backend = self.session_manager.get_backend(session_id)
         if not backend:
-            return current_style, [], no_update, no_update, no_update
+            return current_style, [], no_update, no_update
         
         try:
             # 解析点击数据 - 锤速对比图需要至少8个元素的customdata
             parsed_data = self._parse_plot_click_data(click_data, "锤速对比图", 8)
             if not parsed_data:
-                return current_style, [], no_update, no_update, no_update
+                return current_style, [], no_update, no_update
             
             customdata = parsed_data['customdata']
             
@@ -176,11 +191,10 @@ class VelocityComparisonHandler(ScatterHandlerBase):
                 'backgroundColor': 'rgba(0,0,0,0.6)',
                 'backdropFilter': 'blur(5px)'
             }
-            
             return modal_style, [dcc.Graph(
                 figure=detail_figure_combined,
                 style={'height': '800px'}
-            )], no_update, point_info, no_update
+            )], point_info, no_update
             
         except Exception as e:
             logger.error(f"[ERROR] 处理锤速对比图点击失败: {e}")
@@ -197,8 +211,8 @@ class VelocityComparisonHandler(ScatterHandlerBase):
                 'backdropFilter': 'blur(5px)'
             }
             return modal_style, [html.Div([
-                html.P(f"处理点击失败: {str(e)}", className="text-danger text-center")
-            ])], no_update, no_update, no_update
+                html.P(f"无法生成详细图表", className="text-danger text-center")
+            ])], no_update, no_update
     
     def _parse_plot_click_data(self, click_data: Dict[str, Any], plot_name: str, expected_customdata_length: int) -> Optional[Dict[str, Any]]:
         """
@@ -526,7 +540,7 @@ class VelocityComparisonHandler(ScatterHandlerBase):
                 
                 plot_data = self._prepare_velocity_plot_data(data)
                 
-                fig.add_trace(go.Scatter(
+                fig.add_trace(go.Scattergl(
                     x=plot_data['x_values'],
                     y=plot_data['y_values'],
                     mode='markers',

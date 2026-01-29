@@ -93,7 +93,7 @@ def _create_enhanced_modal_response(detail_figure_combined: Any, point_info: Dic
     Args:
         detail_figure_combined: 组合详细图表
         point_info: 点信息
-        center_time_ms: 中心时间（用于跳转功能）
+        center_time_ms: 中心时间
 
     Returns:
         Tuple[Dict[str, Any], Any, Dict[str, Any]]: (模态框样式, 图表组件, 点信息)
@@ -232,7 +232,7 @@ def _handle_zscore_scatter_click(raw_customdata, backend):
     click_data = _extract_zscore_customdata(raw_customdata)
     if not click_data:
         logger.warning("[WARNING] Z-Score点击数据提取失败")
-        return no_update, no_update, no_update, no_update
+        return no_update, no_update, no_update
 
     record_index = click_data['record_index']
     replay_index = click_data['replay_index']
@@ -280,20 +280,17 @@ def _handle_zscore_scatter_click(raw_customdata, backend):
 
             modal_content = dcc.Graph(figure=detail_figure_combined, style={'height': '700px'})
 
-            # 显示跳转按钮（因为Z-Score有时间信息）
-            jump_button_style = {'display': 'inline-block'} if center_time_ms is not None else {'display': 'none'}
 
-            logger.info("✅ Z-Score散点图详情模态框已打开（增强版）")
-            return modal_style, modal_content, point_info, jump_button_style
+            return modal_style, modal_content, point_info
         else:
             logger.warning("[WARNING] Z-Score图表生成失败")
-            return no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update
 
     except Exception as e:
         logger.error(f"❌ 处理Z-Score散点图点击失败: {e}")
         import traceback
         traceback.print_exc()
-        return no_update, no_update, no_update, no_update
+        return no_update, no_update, no_update
 
 
 def _handle_scatter_click_logic_enhanced(click_data, analysis_type, session_id, session_manager):
@@ -305,19 +302,19 @@ def _handle_scatter_click_logic_enhanced(click_data, analysis_type, session_id, 
 
     if not click_data or 'points' not in click_data or len(click_data['points']) == 0:
         logger.warning("[WARNING] 散点图点击 - 无效的点击数据")
-        return no_update, no_update, no_update, no_update
+        return no_update, no_update, no_update
 
     point = click_data['points'][0]
     if not point.get('customdata'):
         logger.warning("[WARNING] 散点图点击 - 点没有customdata")
-        return no_update, no_update, no_update, no_update
+        return no_update, no_update, no_update
 
     raw_customdata = point['customdata']
 
     backend = session_manager.get_backend(session_id)
     if not backend:
         logger.warning("[WARNING] 没有找到backend")
-        return no_update, no_update, no_update, no_update
+        return no_update, no_update, no_update
 
     try:
         # 特殊处理Z-Score散点图
@@ -329,11 +326,11 @@ def _handle_scatter_click_logic_enhanced(click_data, analysis_type, session_id, 
 
         if not isinstance(customdata, list):
             logger.warning(f"[WARNING] 散点图点击 - customdata不是列表: {type(customdata)}")
-            return no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update
 
         click_info = _parse_customdata_by_type(customdata, analysis_type)
         if not click_info:
-            return no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update
 
         record_index = click_info['record_index']
         replay_index = click_info['replay_index']
@@ -353,12 +350,21 @@ def _handle_scatter_click_logic_enhanced(click_data, analysis_type, session_id, 
             modal_style = {'display': 'block', 'position': 'fixed', 'zIndex': '1000', 'left': '0', 'top': '0',
                           'width': '100%', 'height': '100%', 'backgroundColor': 'rgba(0,0,0,0.6)', 'backdropFilter': 'blur(5px)'}
             modal_content = dcc.Graph(figure=detail_figure_combined, style={'height': '700px'})
+            
+            # 存储点击的点信息
+            point_info = {
+                'algorithm_name': algorithm_name,
+                'record_idx': record_index,
+                'replay_idx': replay_index,
+                'key_id': key_id
+            }
+            
             logger.info("✅ 散点图详情模态框已打开")
-            return modal_style, modal_content, None, {'display': 'none'}  # 其他类型不显示跳转按钮
+            return modal_style, modal_content, point_info
         else:
             logger.warning("[WARNING] 图表生成失败")
-            return no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update
     except Exception as e:
         logger.error(f"❌ 处理散点图点击失败: {e}")
         traceback.print_exc()
-        return no_update, no_update, no_update, no_update
+        return no_update, no_update, no_update

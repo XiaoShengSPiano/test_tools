@@ -32,38 +32,48 @@ class KeyForceInteractionHandler(ScatterHandlerBase):
         close_btn_clicks: Optional[int],
         session_id: str,
         current_style: Dict[str, Any]
-    ) -> Tuple[Dict[str, Any], List[Union[html.Div, dcc.Graph]], Union[Figure, NoUpdate], Dict[str, Any], Optional[Dict[str, Any]]]:
+    ) -> Tuple[Dict[str, Any], List[Union[html.Div, dcc.Graph]], Dict[str, Any], Optional[Dict[str, Any]]]:
         """处理按键-力度交互效应图点击，显示对应按键的曲线对比（悬浮窗）"""
         # 检测触发源
         ctx = callback_context
         if not ctx.triggered:
             logger.debug("[WARNING] 按键-力度交互效应图点击回调：没有触发源")
-            return current_style, [], no_update, no_update, no_update
+            return current_style, [], no_update, no_update
         
         trigger_prop = ctx.triggered[0]['prop_id']
-        trigger_id = trigger_prop.split('.')[0]
-        logger.info(f"[INFO] 按键-力度交互效应图点击回调触发：prop_id={trigger_prop}, trigger_id={trigger_id}, click_data={click_data is not None}, close_modal_clicks={close_modal_clicks}, close_btn_clicks={close_btn_clicks}")
+        trigger_id_raw = trigger_prop.split('.')[0]
+        
+        # 1. 解析 Plot ID
+        plot_id = trigger_id_raw
+        if trigger_id_raw.startswith('{'):
+            try:
+                import json
+                plot_id = json.loads(trigger_id_raw).get('id', trigger_id_raw)
+            except Exception:
+                pass
+                
+        logger.info(f"[INFO] 按键-力度交互效应图点击回调触发：prop_id={trigger_prop}, plot_id={plot_id}")
         
         # 如果点击了关闭按钮，只有当模态框是由本回调打开时才处理
-        if trigger_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
+        if plot_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
             if current_style and current_style.get('display') == 'block' and click_data is not None:
                 result = self._handle_modal_close_trigger()
-                return result[0], result[1], result[2], result[3], result[4]
-            return no_update, no_update, no_update, no_update, no_update
+                return result[0], result[1], result[2], result[3]
+            return no_update, no_update, no_update, no_update
         
         # 如果是按键-力度交互效应图点击
-        if trigger_id == 'key-force-interaction-plot':
+        if plot_id == 'key-force-interaction-plot':
             if not click_data or 'points' not in click_data or not click_data['points']:
                 logger.warning("[WARNING] 按键-力度交互效应图点击 - click_data无效")
-                return current_style, [], no_update, no_update, no_update
+                return current_style, [], no_update, no_update
             return self._handle_key_force_interaction_plot_click_logic(click_data, session_id, current_style)
         
         # 默认返回
-        return current_style, [], no_update, no_update, no_update
+        return current_style, [], no_update, no_update
     
     # ==================== 私有方法 ====================
     
-    def _handle_modal_close_trigger(self) -> Tuple[Dict[str, Any], List[Union[html.Div, dcc.Graph]], Union[Figure, NoUpdate], Dict[str, Any], Optional[Dict[str, Any]]]:
+    def _handle_modal_close_trigger(self) -> Tuple[Dict[str, Any], List[Union[html.Div, dcc.Graph]], Dict[str, Any], Optional[Dict[str, Any]]]:
         """处理模态框关闭按钮的通用逻辑"""
         logger.info("[OK] 关闭按键曲线对比模态框")
         modal_style = {
@@ -77,7 +87,7 @@ class KeyForceInteractionHandler(ScatterHandlerBase):
             'backgroundColor': 'rgba(0,0,0,0.6)',
             'backdropFilter': 'blur(5px)'
         }
-        return modal_style, [], no_update, no_update, no_update
+        return modal_style, [], no_update, no_update
     
     def _handle_key_force_interaction_plot_click_logic(self, click_data, session_id, current_style):
         """处理按键-力度交互效应图点击的具体逻辑"""
@@ -86,13 +96,13 @@ class KeyForceInteractionHandler(ScatterHandlerBase):
         backend = self.session_manager.get_backend(session_id)
         if not backend:
             logger.warning("[WARNING] 没有找到backend")
-            return current_style, [], no_update, no_update, no_update
+            return current_style, [], no_update, no_update
         
         try:
             # 解析点击数据 - 按键-力度交互效应图需要至少7个元素的customdata
             parsed_data = self._parse_plot_click_data(click_data, "按键-力度交互效应图", 7)
             if not parsed_data:
-                return current_style, [], no_update, no_update, no_update
+                return current_style, [], no_update, no_update
             
             customdata = parsed_data['customdata']
             
@@ -107,7 +117,7 @@ class KeyForceInteractionHandler(ScatterHandlerBase):
             
             if record_idx is None or replay_idx is None:
                 logger.warning(f"[WARNING] 按键-力度交互效应图点击 - 缺少索引信息: record_idx={record_idx}, replay_idx={replay_idx}")
-                return current_style, [], no_update, no_update, no_update
+                return current_style, [], no_update, no_update
             
             logger.info(f"🖱️ 按键-力度交互效应图点击: 算法={algorithm_display_name}, 按键={key_id}, 锤速={replay_velocity}, record_idx={record_idx}, replay_idx={replay_idx}")
             
@@ -118,7 +128,7 @@ class KeyForceInteractionHandler(ScatterHandlerBase):
                 'replay_index': replay_idx
             })
             
-            # 计算中心时间用于瀑布图跳转
+            # 计算中心时间
             center_time_ms = self._calculate_key_force_center_time(backend, {
                 'algorithm_name': algorithm_display_name,
                 'record_index': record_idx,
@@ -151,7 +161,7 @@ class KeyForceInteractionHandler(ScatterHandlerBase):
                 return modal_style, [dcc.Graph(
                     figure=detail_figure_combined,
                     style={'height': '800px'}
-                )], no_update, point_info, no_update
+                )], point_info, no_update
             else:
                 logger.warning("[WARNING] 按键-力度交互效应图点击回调 - 图表生成失败，部分图表为None")
                 modal_style = {
@@ -167,7 +177,7 @@ class KeyForceInteractionHandler(ScatterHandlerBase):
                 }
                 return modal_style, [html.Div([
                     html.P(f"无法生成详细图表", className="text-danger text-center")
-                ])], no_update, no_update, no_update
+                ])], no_update, no_update
                 
         except Exception as e:
             logger.error(f"[ERROR] 处理按键-力度交互效应图点击失败: {e}")
@@ -185,7 +195,7 @@ class KeyForceInteractionHandler(ScatterHandlerBase):
             }
             return modal_style, [html.Div([
                 html.P(f"处理点击失败: {str(e)}", className="text-danger text-center")
-            ])], no_update, no_update, no_update
+            ])], no_update, no_update
     
     def _calculate_key_force_center_time(self, backend: PianoAnalysisBackend, click_data: Dict[str, Any]) -> Optional[float]:
         """

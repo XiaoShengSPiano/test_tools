@@ -418,7 +418,7 @@ class PlotGenerator:
             interaction_data = alg_result.get('interaction_plot_data', {})
             key_data = interaction_data.get('key_data', {})
             for data in key_data.values():
-                all_delays.extend(data.get('absolute_delays', []))
+                all_delays.extend(data.get('delays', []))  # 使用相对延时来对齐Y轴
         
         y_axis_config = self._generate_adaptive_y_axis_config(all_delays)
 
@@ -500,7 +500,8 @@ class PlotGenerator:
                 key_data = interaction_data.get('key_data', {})
                 for data in key_data.values():
                     velocities = data.get('forces', [])  # 这里的forces实际是播放锤速
-                all_velocities.extend([v for v in velocities if v > 0])
+                    if velocities:
+                        all_velocities.extend([v for v in velocities if v > 0])
         
         return all_velocities
     
@@ -559,19 +560,28 @@ class PlotGenerator:
             show_legend_for_algorithm = alg_display_name not in legend_added_algorithms
             if show_legend_for_algorithm:
                 legend_added_algorithms.add(alg_display_name)
+            
+            # 记录此算法是否已显示图注，确保每个算法至少有一个图注项
+            algorithm_legend_displayed = False
 
             for key_idx, key_id in enumerate(all_keys):
                 if key_id not in key_data:
                     continue
                 
+                # 确定是否需要为此 trace 显示图注
+                show_legend_now = False
+                if show_legend_for_algorithm and not algorithm_legend_displayed:
+                    show_legend_now = True
+                    algorithm_legend_displayed = True
+
                 # 提取数据并添加trace（传入内部名称用于customdata）
                 self._add_single_trace(
                     fig, key_data[key_id], key_id,
                     alg_internal_name, alg_color,
                     key_idx, key_colors,
-                    show_legend_for_algorithm if key_idx == 0 else False,  # 只为每个算法的第一个按键显示图注
+                    show_legend_now,
                     alg_display_name  # 传入显示名称用于图例
-            )
+                )
     
     def _add_single_trace(self, fig, data, key_id, algorithm_name, algorithm_color, key_idx, key_colors, show_legend=None, display_name=None):
         """添加单个散点trace
@@ -631,9 +641,9 @@ class PlotGenerator:
         hover_prefix = f'<b>{legend_display_name}</b><br>'
         marker_size = 8
         
-        fig.add_trace(go.Scatter(
+        fig.add_trace(go.Scattergl(
             x=log10_vels,
-            y=relative_delays,
+            y=rel_delays,
             mode='markers',
             name=name,
             marker=dict(
@@ -652,7 +662,7 @@ class PlotGenerator:
                          '<b>log₁₀(播放锤速)</b>: %{x:.2f}<br>' +
                          '<b>播放锤速</b>: %{customdata[5]:.0f}<br>' +
                          '<b>相对延时</b>: %{y:.2f}ms<br>' +
-                         '<b>绝对延时</b>: %{customdata[0]:.2f}ms<br>' +
+                         '<b>绝对延时</b>: %{customdata[3]:.2f}ms<br>' +
                          f'<i>平均延时: {mean_delay:.2f}ms</i><extra></extra>'
         ))
     
@@ -736,7 +746,7 @@ class PlotGenerator:
             hovertemplate = f'{name}时间: %{{x:.2f}} ms<br>触后压力: %{{y}}<extra></extra>'
         
         fig.add_trace(
-            go.Scatter(
+            go.Scattergl(
                 x=x_data, y=values, mode='lines', name=name,
                 line=dict(color=color, width=3 if '录制' in name or '回放' in name else 2, 
                          dash='solid' if '录制' in name or not is_adjusted else 'dash'),
@@ -775,7 +785,7 @@ class PlotGenerator:
             hovertemplate = '<br>'.join(hover_parts) + '<extra></extra>'
 
         fig.add_trace(
-            go.Scatter(
+            go.Scattergl(
                 x=filtered_time, y=filtered_values, mode='markers', name=name,
                 marker=dict(color=color, size=size, symbol=symbol),
                 showlegend=True, legend=legend_name, legendgroup=legendgroup,

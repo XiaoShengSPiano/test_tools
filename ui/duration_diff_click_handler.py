@@ -404,6 +404,3 @@ class DurationDiffClickHandler:
             )
         ]
 
-
-print("Duration difference click handler loaded successfully")
-

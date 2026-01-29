@@ -514,6 +514,3 @@ def get_duration_diff_pairs_from_backend(backend, active_algorithms) -> list:
         logger.error(f"获取持续时间差异数据失败: {e}")
         return []
 
-
-print("Duration difference curves plotter loaded successfully")
-

@@ -71,10 +71,16 @@ class Note:
     def get_first_hammer_time(self) -> float:
         """获取第一个锤击时间（包含offset）"""
         return self.first_hammer_time
-
+    
+    def get_after_touch_timestamps_avg(self) -> float:
+        """获取触后时间戳平均值"""
+        if self.after_touch is None or self.after_touch.empty:
+            return 0.0
+        return np.mean(self.after_touch.index)
 
 # =============================================================================
 # 优化版 Note 类（轻量级，使用 NumPy）
+
 # =============================================================================
 
 @dataclass

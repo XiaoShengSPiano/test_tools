@@ -49,7 +49,7 @@ def _validate_backend_and_data(session_manager, session_id: str, store_data: dic
         return False, _create_error_span("会话无效")
     
     # 验证存储数据
-    if not store_data or 'contents' not in store_data or 'filenames' not in store_data:
+    if not store_data or 'filenames' not in store_data:
         return False, _create_error_span("文件数据无效")
     
     return True, None
@@ -143,23 +143,34 @@ def register_file_upload_callbacks(app, session_manager: SessionManager):
         try:
             upload_handler = MultiFileUploadHandler()
             file_id = button_id['index']
+            
+            # 从 store_data 中查找文件名（store 现在只存元数据，不存大内容）
+            upload_handler = MultiFileUploadHandler()
             file_data = upload_handler.get_file_data_by_id(file_id, store_data)
-           
             if not file_data:
-                return _create_error_span("文件数据无效")
-
-            content, filename = file_data
+                return _create_error_span("找不到文件信息")
+            
+            _, filename = file_data # 注意：store 中的 content 现在可能是 None
             algorithm_name = algorithm_name.strip()
 
-            # ============ 步骤2: Base64解码 ============
-
-            decoded_bytes = FileUploadService.decode_base64_file_content(content)
-           
-            if decoded_bytes is None:
-                return _create_error_span("文件解码失败")
+            # [优化] 优先从后端缓存中获取二进制数据
+            decoded_bytes = backend.get_cached_temp_file(file_id)
             
-            # ============ 步骤3: 添加算法（后端处理） ============
+            if decoded_bytes:
+                logger.info(f"[OK] 从后端缓存获取到文件数据 (ID: {file_id}), 大小: {len(decoded_bytes)} 字节")
+            else:
+                # 如果缓存中没有，尝试从 Store 中获取（兼容模式）
+                logger.warning(f"[WARN] 后端缓存未命中 (ID: {file_id})，尝试从 Store 获取")
+                content, _ = file_data
+                if not content:
+                    return _create_error_span("缓存已失效且 Store 中无内容，请重新上传")
+                
+                decoded_bytes = FileUploadService.decode_base64_file_content(content)
+                if decoded_bytes is None:
+                    return _create_error_span("文件解码失败")
 
+            # ============ 步骤3: 添加算法（后端处理：SPMID 解析 + 分析） ============
+            t0 = time.perf_counter()
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             success, error_msg = loop.run_until_complete(

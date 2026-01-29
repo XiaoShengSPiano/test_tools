@@ -4,6 +4,9 @@
 """
 from dash import html, dash_table
 import dash_bootstrap_components as dbc
+from utils.logger import Logger
+
+logger = Logger.get_logger()
 
 
 def create_error_statistics_section(backend, active_algorithms):
@@ -23,7 +26,7 @@ def create_error_statistics_section(backend, active_algorithms):
     for algorithm in active_algorithms:
         if not algorithm.analyzer:
             continue
-        
+
         algorithm_name = algorithm.metadata.algorithm_name
         
         # 通过backend获取错误统计（统一数据获取路径）
@@ -33,7 +36,7 @@ def create_error_statistics_section(backend, active_algorithms):
         
         # 创建单个算法的错误统计卡片和占位符
         components = create_single_algorithm_error_card(
-            algorithm_name, 
+            algorithm_name,
             error_stats,
             algorithm
         )

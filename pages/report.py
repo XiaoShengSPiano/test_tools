@@ -100,7 +100,6 @@ def load_report_content(session_id, session_manager):
     Returns:
         报告内容组件
     """
-    logger.info(f"[DEBUG] load_report_content 被调用, session_id={session_id}")
     
     if not session_id:
         # 无session时显示提示
@@ -116,7 +115,6 @@ def load_report_content(session_id, session_manager):
         # 获取后端实例（不创建新的，避免多实例问题）
 
         backend = session_manager.get_backend(session_id)
-        logger.info(f"[DEBUG] pages/report.py - backend: {backend}")
         
         if not backend:
             # Backend不存在时，等待session初始化
@@ -149,9 +147,25 @@ def load_report_content(session_id, session_manager):
         error_sections = [html.H3("⚠️ 2. 错误统计", className="mt-5 mb-3 text-primary")]
         delay_sections = [html.H3("⏱️ 3. 延时误差统计指标", className="mt-5 mb-3 text-primary")]
         grade_sections = [html.H3("📊 4. 匹配质量评级统计", className="mt-5 mb-3 text-primary")]
+        alignment_sections = [
+            html.H3("📈 5. 按键延时分析条形图", className="mt-5 mb-3 text-primary"),
+            html.Div([
+                dbc.Button([
+                    html.I(className="fas fa-chart-bar me-2"),
+                    "加载延时分析图表"
+                ], id='load-alignment-plots-btn', color="primary", className="mb-4 shadow-sm"),
+                html.Small(" (点击加载可能需要数秒时间)", className="text-muted ms-2 align-middle")
+            ]),
+            dcc.Loading(
+                id="alignment-plots-loading",
+                type="circle",
+                children=html.Div(id='alignment-plots-container')
+            )
+        ]
         
         has_delay_data = False
         has_grade_data = False
+        has_alignment_data = True  # 始终显示容器和按钮
 
         # 为每个活跃算法收集各项指标
         for algorithm in active_algorithms:
@@ -195,6 +209,9 @@ def load_report_content(session_id, session_manager):
             except Exception as e:
                 logger.warning(f"获取评级统计失败: {e}")
 
+        # 5. 生成偏移对齐条形图 (不再在主加载函数中生成，改为回调按需加载)
+        # 容器已在 alignment_sections 中初始化
+
         # 组合最终报告组件
         report_components = overview_sections + error_sections
         
@@ -203,6 +220,9 @@ def load_report_content(session_id, session_manager):
         
         if has_grade_data:
             report_components.extend(grade_sections)
+            
+        if has_alignment_data:
+            report_components.extend(alignment_sections)
         
         logger.info(f"[OK] 异常检测报告页面加载成功 (session={session_id})")
         return html.Div(report_components)
@@ -988,6 +1008,54 @@ def register_callbacks(app, session_manager):
             active_cell_list, table_data_list, table_id_list,
             session_id, session_manager
         )
+    
+    # 6. 按需加载偏移对齐条形图
+    @app.callback(
+        Output('alignment-plots-container', 'children'),
+        Input('load-alignment-plots-btn', 'n_clicks'),
+        State('session-id', 'data'),
+        prevent_initial_call=True
+    )
+    def load_alignment_plots(n_clicks, session_id):
+        """当用户点击按钮时加载统计图表"""
+        if not n_clicks:
+            return no_update
+        
+        logger.info(f"[PROCESS] 用户请求加载延时分析条形图 (session={session_id})")
+        backend = session_manager.get_backend(session_id)
+        if not backend:
+            return dbc.Alert("会话已失效，请重新上传或选择历史记录", color="danger")
+        
+        try:
+            alignment_result = backend.generate_offset_alignment_plot()
+            if not alignment_result:
+                return dbc.Alert("暂无符合条件的延时对齐数据", color="warning")
+            
+            children = []
+            if isinstance(alignment_result, list):
+                for item in alignment_result:
+                    fig = item.get('figure')
+                    title = item.get('title', '')
+                    children.append(
+                        dbc.Card([
+                            dbc.CardHeader(html.H5(title, className="mb-0")),
+                            dbc.CardBody(dcc.Graph(figure=fig, style={'height': '500px'}))
+                        ], className="shadow-sm mb-4")
+                    )
+            else:
+                children.append(
+                    dbc.Card([
+                        dbc.CardBody(dcc.Graph(figure=alignment_result, style={'height': '500px'}))
+                    ], className="shadow-sm mb-4")
+                )
+            
+            logger.info("[OK] 延时分析条形图加载完成")
+            return children
+            
+        except Exception as e:
+            logger.error(f"[ERROR] 动态加载延时分析图表失败: {e}")
+            logger.error(traceback.format_exc())
+            return dbc.Alert(f"加载图表失败: {str(e)}", color="danger")
     
 
 

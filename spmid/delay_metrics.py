@@ -80,7 +80,7 @@ class DelayMetrics:
             return 0.0
         
         me = sum(offsets) / len(offsets)
-        logger.info(f"📊 平均误差 ME: {me/10:.2f}ms (基于{len(offsets)}个精确匹配对)")
+        logger.debug(f"📊 平均误差 ME: {me/10:.2f}ms (基于{len(offsets)}个精确匹配对)")
         return me
     
     def get_mean_absolute_error(self) -> float:

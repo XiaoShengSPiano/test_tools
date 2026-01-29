@@ -258,8 +258,12 @@ class PlotService:
             key_ids                     # 按键ID选择
         )
 
-    def get_waterfall_key_statistics(self) -> Dict[str, Any]:
-        """获取瀑布图按键统计信息"""
+    def get_waterfall_key_statistics(self, data_types: List[str] = None) -> Dict[str, Any]:
+        """获取瀑布图按键统计信息
+        
+        Args:
+            data_types: 数据类型列表，如果为None则统计所有类型
+        """
         active_algorithms = self.backend.get_active_algorithms()
 
         if not active_algorithms:
@@ -269,7 +273,7 @@ class PlotService:
         algorithm_names = [alg.metadata.algorithm_name for alg in active_algorithms]
 
         return self.multi_algorithm_plot_generator.get_waterfall_key_statistics(
-            self.backend, analyzers, algorithm_names
+            self.backend, analyzers, algorithm_names, data_types
         )
 
     def generate_watefall_conbine_plot(self, key_on: float, key_off: float, key_id: int) -> Tuple[Any, Any, Any]:

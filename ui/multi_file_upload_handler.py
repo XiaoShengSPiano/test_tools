@@ -39,7 +39,6 @@ class MultiFileUploadHandler:
         """初始化多文件上传处理器（只在第一次创建时执行）"""
         if not hasattr(self, '_initialized'):
             self._initialized = True
-            logger.info("✅ MultiFileUploadHandler初始化完成")
     
     def normalize_file_lists(self, contents_list: Any, filename_list: Any) -> Tuple[List[str], List[str]]:
         """
@@ -167,13 +166,27 @@ class MultiFileUploadHandler:
             
             # 创建文件卡片列表 - 统一上传管理器已处理重复检测，这里总是处理
             file_items = []
+            
+            # 为了导入解密逻辑（FileUploadService 是静态方法，但也可以直接用 base64）
+            from backend.file_upload_service import FileUploadService
+
             for i, (content, filename) in enumerate(zip(contents_list, filename_list)):
                 file_id = self.generate_file_id(timestamp, i)
                 file_card = self.create_file_card(file_id, filename)
                 file_items.append(file_card)
 
-                # 添加到新的store数据
-                new_store_data['contents'].append(content)
+                # [优化] 不再将 content (Base64) 存入 store，而是存入后端缓存
+                if backend and content:
+                    decoded_bytes = FileUploadService.decode_base64_file_content(content)
+                    if decoded_bytes:
+                        backend.cache_temp_file(file_id, decoded_bytes)
+                        # 在 store 中存入 None 或占位符，避免传输大量数据
+                        new_store_data['contents'].append(None) 
+                    else:
+                        new_store_data['contents'].append(content) # 如果解码失败，退回到存原始数据（保底）
+                else:
+                    new_store_data['contents'].append(content)
+
                 new_store_data['filenames'].append(filename)
                 new_store_data['file_ids'].append(file_id)
 
@@ -208,7 +221,6 @@ class MultiFileUploadHandler:
                     new_store_data['filenames'],
                     new_store_data['file_ids']
                 )):
-                    # 总是显示文件卡片，允许用户重新上传相同文件
                     file_card = self.create_file_card(file_id, filename)
                     all_file_items.append(file_card)
                 

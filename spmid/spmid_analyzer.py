@@ -295,6 +295,17 @@ class SPMIDAnalyzer:
             return self.note_matcher.get_precision_offset_alignment_data()
         return []
     
+    def get_grouped_precision_match_data(self) -> Dict[int, List[float]]:
+        """
+        获取按按键ID分组的精确匹配延时数据（误差 ≤ 50ms）
+
+        Returns:
+            Dict[int, List[float]]: key_id -> [keyon_offset_ms, ...]
+        """
+        if self.note_matcher:
+            return self.note_matcher.get_grouped_precision_match_data()
+        return {}
+    
     def get_key_statistics_table_data(self) -> List[Dict[str, Union[int, float, str]]]:
         """
         获取按键统计表格数据

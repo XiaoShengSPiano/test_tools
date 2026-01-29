@@ -1391,15 +1391,13 @@ class NoteMatcher:
             if match_type not in [MatchType.EXCELLENT, MatchType.GOOD, MatchType.FAIR]:
                 continue
             
-            record_note = rec_note
-            replay_note = rep_note
             # 计算录制和播放音符的时间
-            record_keyon, record_keyoff = self._calculate_note_times(record_note)
-            replay_keyon, replay_keyoff = self._calculate_note_times(replay_note)
+            record_keyon, record_keyoff = self._calculate_note_times(rec_note)
+            replay_keyon, replay_keyoff = self._calculate_note_times(rep_note)
 
             # 获取锤速信息
-            record_velocity = self._get_velocity_from_note(record_note)
-            replay_velocity = self._get_velocity_from_note(replay_note)
+            record_velocity = self._get_velocity_from_note(rec_note)
+            replay_velocity = self._get_velocity_from_note(rep_note)
 
             # 计算原始偏移量
             keyon_offset = replay_keyon - record_keyon
@@ -1407,26 +1405,25 @@ class NoteMatcher:
             record_duration = record_keyoff - record_keyon
             replay_duration = replay_keyoff - replay_keyon
             duration_diff = replay_duration - record_duration
-            duration_offset = duration_diff
-
+            
             # 计算相对延时（用于悬停显示，单位：ms）
             relative_delay = keyon_offset / 10.0
 
             offset_data.append({
-                'record_index': record_note.uuid,  # 使用UUID代替index
-                'replay_index': replay_note.uuid,  # 使用UUID代替index
-                'key_id': record_note.id,
+                'record_index': rec_note.uuid,
+                'replay_index': rep_note.uuid,
+                'key_id': rec_note.id,
                 'record_keyon': record_keyon,
                 'replay_keyon': replay_keyon,
-                'record_velocity': record_velocity,    # 录制锤速
-                'replay_velocity': replay_velocity,    # 播放锤速
-                'velocity_diff': (replay_velocity - record_velocity) if record_velocity is not None and replay_velocity is not None else None,  # 锤速差值
-                'keyon_offset': keyon_offset,       # 原始偏移（单位：0.1ms）
-                'corrected_offset': keyon_offset,   # 兼容性字段，等同于 keyon_offset
-                'relative_delay': relative_delay,     # 相对延时（ms）
+                'record_velocity': record_velocity,
+                'replay_velocity': replay_velocity,
+                'velocity_diff': (replay_velocity - record_velocity) if record_velocity is not None and replay_velocity is not None else None,
+                'keyon_offset': keyon_offset,
+                'corrected_offset': keyon_offset,
+                'relative_delay': relative_delay,
                 'record_keyoff': record_keyoff,
                 'replay_keyoff': replay_keyoff,
-                'duration_offset': duration_offset,
+                'duration_offset': duration_diff,
                 'average_offset': abs(keyon_offset),
                 'record_duration': record_duration,
                 'replay_duration': replay_duration,
@@ -1434,6 +1431,22 @@ class NoteMatcher:
             })
 
         return offset_data
+
+    def get_grouped_precision_match_data(self) -> Dict[int, List[float]]:
+        """
+        获取按按键ID分组的精确匹配延时数据（误差 ≤ 50ms）
+        直接利用 NoteMatcher 的匹配结果，避免在外部进行二次遍历和分组。
+
+        Returns:
+            Dict[int, List[float]]: key_id -> [keyon_offset_ms, ...]
+        """
+        grouped_data = defaultdict(list)
+        for rec_note, rep_note, match_type, _ in self.matched_pairs:
+            if match_type in [MatchType.EXCELLENT, MatchType.GOOD, MatchType.FAIR]:
+                # 计算延时 (ms)
+                offset_ms = (rep_note.key_on_ms - rec_note.key_on_ms)
+                grouped_data[rec_note.id].append(offset_ms)
+        return grouped_data
 
     def _get_velocity_from_note(self, note) -> Optional[float]:
         """从音符中获取锤速"""
@@ -1766,23 +1779,48 @@ class NoteMatcher:
         """
         return self._get_delay_metrics().get_mean_error()
 
-    def get_all_display_data(self) -> Dict[str, Any]:
+    def get_all_display_data(self) -> Dict[str, List[MatchResult]]:
         """
-        获取所有用于显示的数据（统一接口）
+        获取所有用于显示的数据（统一接口，使用 MatchResult 对象）
 
-        提供统一的瀑布图显示数据访问接口，避免各个模块重复的数据收集逻辑
+        提供统一的瀑布图显示数据访问接口，避免表现层处理复杂的元组解包。
 
         Returns:
-            Dict[str, Any]: 包含所有显示相关数据的字典
-                - matched_pairs: List[Tuple[Note, Note, MatchType, float]]
-                - drop_hammers: List[Note]
-                - multi_hammers: List[Note]
-                - abnormal_matches: List[Tuple[Note, Note]]
+            Dict[str, List[MatchResult]]: 包含所有显示相关结果的字典
+                - matched_pairs: 正常匹配对
+                - drop_hammers: 丢锤错误
+                - multi_hammers: 多锤错误
+                - abnormal_matches: 异常匹配对（无锤速）
         """
+        # 1. 正常匹配对
+        normal_matches = [
+            MatchResult(match_type=mt, record_index=0, replay_index=0, error_ms=err, pair=(rec, rep))
+            for rec, rep, mt, err in self.matched_pairs
+        ]
+
+        # 2. 丢锤数据
+        drop_hammers = [
+            MatchResult(match_type=MatchType.FAILED, record_index=0, pair=(note, None), reason="丢锤 (播放数据缺失)")
+            for note in self.drop_hammers
+        ]
+
+        # 3. 多锤数据
+        multi_hammers = [
+            MatchResult(match_type=MatchType.FAILED, record_index=0, pair=(None, note), reason="多锤 (录制数据缺失)")
+            for note in self.multi_hammers
+        ]
+
+        # 4. 异常匹配对
+        abnormal_matches = [
+            MatchResult(match_type=MatchType.FAILED, record_index=0, replay_index=0, 
+                        error_ms=abs(rep.key_on_ms - rec.key_on_ms), pair=(rec, rep), reason="异常匹配 (均无有效锤速)")
+            for rec, rep in self.abnormal_matches
+        ]
+
         return {
-            'matched_pairs': self.get_matched_pairs_with_grade(),
-            'drop_hammers': self.drop_hammers.copy(),
-            'multi_hammers': self.multi_hammers.copy(),
-            'abnormal_matches': self.abnormal_matches.copy()
+            'matched_pairs': normal_matches,
+            'drop_hammers': drop_hammers,
+            'multi_hammers': multi_hammers,
+            'abnormal_matches': abnormal_matches
         }
 

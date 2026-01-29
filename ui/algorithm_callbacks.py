@@ -21,7 +21,6 @@ from dash._callback_context import callback_context
 
 from backend.session_manager import SessionManager
 from ui.multi_file_upload_handler import MultiFileUploadHandler
-from ui.layout_components import create_report_layout
 from utils.logger import Logger
 from utils.ui_helpers import create_empty_figure
 from plotly.graph_objects import Figure
@@ -78,29 +77,25 @@ def _handle_plot_update_error(error: Exception, backend) -> Tuple[Figure, html.D
 
     error_fig = create_empty_figure(f"更新失败: {str(error)}")
 
-    # 尝试创建错误报告
-    try:
-        error_report = create_report_layout(backend)
-    except:
-        # 如果 create_report_layout 也失败，返回包含必需组件的错误布局
-        empty_fig = {}
-        error_report = html.Div([
-            html.H4("更新失败", className="text-center text-danger"),
-            html.P(f"错误信息: {str(error)}", className="text-center"),
-            # 包含所有必需的图表组件（隐藏），确保回调函数不会报错
-            dcc.Graph(id='key-delay-scatter-plot', figure=empty_fig, style={'display': 'none'}),
-            dcc.Graph(id='key-delay-zscore-scatter-plot', figure=empty_fig, style={'display': 'none'}),
-            dcc.Graph(id='hammer-velocity-delay-scatter-plot', figure=empty_fig, style={'display': 'none'}),
-            # key-hammer-velocity-scatter-plot 已删除（功能与按键-力度交互效应图重复）
-            html.Div(id='offset-alignment-plot', style={'display': 'none'}),
-            html.Div([
-                dash_table.DataTable(
-                    id='offset-alignment-table',
-                    data=[],
-                    columns=[]
-                )
-            ], style={'display': 'none'})
-        ])
+    # 返回包含必需组件的错误布局或占位符
+    empty_fig = {}
+    error_report = html.Div([
+        html.H4("更新失败", className="text-center text-danger"),
+        html.P(f"错误信息: {str(error)}", className="text-center"),
+        # 包含所有必需的图表组件（隐藏），确保回调函数不会报错
+        dcc.Graph(id='key-delay-scatter-plot', figure=empty_fig, style={'display': 'none'}),
+        dcc.Graph(id='key-delay-zscore-scatter-plot', figure=empty_fig, style={'display': 'none'}),
+        dcc.Graph(id='hammer-velocity-delay-scatter-plot', figure=empty_fig, style={'display': 'none'}),
+        # key-hammer-velocity-scatter-plot 已删除（功能与按键-力度交互效应图重复）
+        html.Div(id='offset-alignment-plot', style={'display': 'none'}),
+        html.Div([
+            dash_table.DataTable(
+                id='offset-alignment-table',
+                data=[],
+                columns=[]
+            )
+        ], style={'display': 'none'})
+    ])
 
     return error_fig, error_report
 
@@ -340,8 +335,8 @@ def _generate_plot_and_report(backend, active_algorithms: List[str]) -> Tuple[Fi
     # 生成多算法瀑布图
     fig = backend.generate_waterfall_plot()
 
-    # 生成报告内容（多算法模式下的报告）
-    report_content = create_report_layout(backend)
+    # 报告内容已迁移至 pages/report.py，这里仅返回一个占位符以触发相关逻辑
+    report_content = html.Div("报告正在加载...", style={'display': 'none'})
 
     logger.info("[OK] 多算法瀑布图和报告更新完成")
     return fig, report_content
@@ -648,8 +643,7 @@ def register_algorithm_callbacks(app, session_manager: SessionManager):
         if not active_algorithms:
             # 没有激活的算法，显示空图表
             empty_fig = create_empty_figure("请至少激活一个算法以查看瀑布图")
-            empty_report = create_report_layout(backend)
-            return empty_fig, empty_report
+            return empty_fig, html.Div("暂无数据", style={'display': 'none'})
 
         try:
             # 生成图表和报告
@@ -736,9 +730,7 @@ def register_algorithm_callbacks(app, session_manager: SessionManager):
         Returns:
             Tuple[List[dbc.Card], html.Span]: (算法列表, 状态文本)
         """
-        logger.info(f"[DEBUG] algorithm_callbacks - session_manager地址: {id(session_manager)}")
         backend = session_manager.get_backend(session_id)
-        logger.info(f"[DEBUG] algorithm_callbacks - backend: {backend}")
         if not backend:
             return [], html.Span("")
 

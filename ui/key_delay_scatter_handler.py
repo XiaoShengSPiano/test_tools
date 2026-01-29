@@ -24,24 +24,33 @@ class KeyDelayScatterHandler(ScatterHandlerBase):
     """
     
     def handle_key_delay_scatter_click(self, scatter_clickData, close_modal_clicks, close_btn_clicks, session_id, current_style):
-        """处理按键与相对延时散点图点击，显示曲线对比（悬浮窗）并支持跳转到瀑布图"""
+        """处理按键与相对延时散点图点击，显示曲线对比（悬浮窗）"""
         # 检测触发源
         ctx = callback_context
         if not ctx.triggered:
             logger.debug("[WARNING] 按键与相对延时散点图点击回调：没有触发源")
             return no_update, no_update, no_update, no_update
         
-        trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
+        trigger_id_raw = ctx.triggered[0]['prop_id'].split('.')[0]
+        
+        # 1. 解析 Plot ID
+        plot_id = trigger_id_raw
+        if trigger_id_raw.startswith('{'):
+            try:
+                import json
+                plot_id = json.loads(trigger_id_raw).get('id', trigger_id_raw)
+            except Exception:
+                pass
         
         # 如果点击了关闭按钮，只有当模态框是由本回调打开时才处理
-        if trigger_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
+        if plot_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
             if current_style and current_style.get('display') == 'block' and scatter_clickData is not None:
                 result = self._handle_modal_close()
                 return result[0], result[1], result[2], result[3]
             return no_update, no_update, no_update, no_update
         
         # 如果是按键与相对延时散点图点击
-        if trigger_id == 'key-delay-scatter-plot' and scatter_clickData:
+        if plot_id == 'key-delay-scatter-plot' and scatter_clickData:
             # 按键与相对延时散点图有不同的 customdata 格式，需要专门处理
             result = self._handle_key_delay_plot_click(scatter_clickData, session_id, current_style, 'key-delay-scatter-plot')
             return result[0], result[1], result[2], no_update

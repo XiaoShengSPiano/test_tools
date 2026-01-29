@@ -623,21 +623,14 @@ class DelayAnalysis:
                 record_indices_key = key_groups[key_id].get('record_indices', [])
                 replay_indices_key = key_groups[key_id].get('replay_indices', [])
                 
-                if len(replay_vels_key) < 2:
+                if len(replay_vels_key) < 1:
                     continue
                 
-                # 进行线性回归（播放锤速 vs 相对延时）
-                slope, intercept, r_value, p_value, std_err = stats.linregress(replay_vels_key, relative_delays_key)
-                
-                # 生成回归线的x和y值（用于绘图）
-                vel_min = min(replay_vels_key)
-                vel_max = max(replay_vels_key)
-                vel_range = vel_max - vel_min
-                
-                # 生成10个点用于绘制回归线
-                vel_line = np.linspace(vel_min - vel_range * 0.1, 
-                                      vel_max + vel_range * 0.1, 10)
-                delay_line = slope * vel_line + intercept
+                # 初始化回归数据为默认值
+                slope = 0.0
+                intercept = 0.0
+                r_value = 0.0
+                p_value = 1.0 # Default to 1.0 if no regression
                 
                 interaction_data[key_id] = {
                     'forces': replay_vels_key,
@@ -647,12 +640,13 @@ class DelayAnalysis:
                     'replay_indices': replay_indices_key,
                     'mean_delay': float(mean_delay),  # 整体平均延时
                     'regression_line': {
-                        'force': [float(v) for v in vel_line],
-                        'delay': [float(d) for d in delay_line]
+                        'force': [],
+                        'delay': [],
+                        'slope': float(slope),
+                        'intercept': float(intercept),
+                        'r_value': float(r_value)
                     },
-                    'slope': float(slope),
-                    'intercept': float(intercept),
-                    'r_squared': float(r_value ** 2),
+                    'r_squared': float(r_value ** 2), # Calculate r_squared from r_value
                     'p_value': float(p_value),
                     'sample_count': len(replay_vels_key)
                 }

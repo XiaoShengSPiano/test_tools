@@ -36,9 +36,8 @@ from plotly.graph_objects import Figure
 from plotly.subplots import make_subplots
 
 from scipy import stats
-from ui.layout_components import create_report_layout, empty_figure, create_multi_algorithm_upload_area, create_multi_algorithm_management_area
+from ui.layout_components import empty_figure, create_multi_algorithm_upload_area, create_multi_algorithm_management_area
 from backend.session_manager import SessionManager
-from ui.waterfall_jump_handler import WaterfallJumpHandler
 from utils.ui_helpers import create_empty_figure
 from ui.delay_time_series_handler import DelayTimeSeriesHandler
 from ui.relative_delay_distribution_handler import RelativeDelayDistributionHandler
@@ -192,9 +191,6 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
 
     # ==================== 以下是旧架构的内联回调（已禁用） ====================
 
-    # 创建瀑布图跳转处理器实例
-    waterfall_jump_handler = WaterfallJumpHandler(session_manager)
-
     # 创建延时时间序列图处理器实例
     delay_time_series_handler = DelayTimeSeriesHandler(session_manager)
 
@@ -203,239 +199,6 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
 
     # 创建延迟值点击处理器实例
     delay_value_click_handler = DelayValueClickHandler(session_manager)
-
-    # 时间轴筛选回调函数
-    @app.callback(
-        [Output('main-plot', 'figure', allow_duplicate=True),
-         Output('time-filter-status', 'children', allow_duplicate=True),
-         Output('time-filter-slider', 'value', allow_duplicate=True)],
-        [Input('btn-apply-time-filter', 'n_clicks'),
-         Input('btn-reset-time-filter', 'n_clicks')],
-        [State('session-id', 'data'),
-         State('time-filter-slider', 'value')],
-        prevent_initial_call=True
-    )
-    def handle_time_filter(apply_clicks, reset_clicks, session_id, time_range):
-        """处理时间轴筛选"""
-        backend = session_manager.get_backend(session_id)
-        if not backend:
-            return no_update, no_update, no_update
-        
-        # 检查是否有数据
-        if not hasattr(backend, 'all_error_notes') or not backend.all_error_notes:
-            logger.warning("[WARNING] 没有分析数据，无法应用时间筛选")
-            return no_update, no_update, no_update
-        
-        # 获取触发上下文
-        ctx = callback_context
-        if not ctx.triggered:
-            return no_update, no_update, no_update
-        
-        trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
-        logger.info(f"时间筛选触发器: {trigger_id}")
-        
-        # 获取原始时间范围（用于重置）
-        filter_info = backend.get_filter_info()
-        original_time_range = filter_info['time_range']
-        original_min, original_max = original_time_range
-        slider_value = no_update
-        
-        # 处理"重置时间范围"按钮
-        if trigger_id == 'btn-reset-time-filter' and reset_clicks and reset_clicks > 0:
-            backend.apply_time_filter(None)
-            logger.info("⏰ 重置时间范围筛选")
-            # 重置滑块到原始范围
-            slider_value = [int(original_min), int(original_max)]
-            logger.info(f"⏰ 重置滑块到原始范围: {slider_value}")
-            
-        # 处理"应用时间筛选"按钮
-        elif trigger_id == 'btn-apply-time-filter' and apply_clicks and apply_clicks > 0:
-            if time_range and len(time_range) == 2 and time_range[0] != time_range[1]:
-                # 验证时间范围的合理性
-                start_time, end_time = time_range
-                if start_time < end_time:
-                    backend.apply_time_filter(time_range)
-                    logger.info(f"⏰ 应用时间轴筛选: {time_range}")
-                    # 保持当前滑块值
-                    slider_value = no_update
-                else:
-                    logger.warning(f"[WARNING] 时间范围无效: {time_range}")
-                    backend.apply_time_filter(None)
-                    # 重置滑块到原始范围
-                    slider_value = [int(original_min), int(original_max)]
-            else:
-                backend.apply_time_filter(None)
-                logger.info("⏰ 清除时间轴筛选（无效范围）")
-                # 重置滑块到原始范围
-                slider_value = [int(original_min), int(original_max)]
-        else:
-            logger.warning(f"[WARNING] 未识别的时间筛选触发器: {trigger_id}")
-            return no_update, no_update, no_update
-        
-        try:
-            # 重新生成瀑布图
-            fig = backend.generate_waterfall_plot()
-            filter_info = backend.get_filter_info()
-            time_status = filter_info['time_filter']
-            
-            # 将time_status转换为可渲染的字符串
-            if time_status['enabled']:
-                time_status_text = f"时间范围: {time_status['start_time']:.2f}s - {time_status['end_time']:.2f}s (时长: {time_status['duration']:.2f}s)"
-            else:
-                time_status_text = "显示全部时间范围"
-            
-            logger.info(f"⏰ 时间轴筛选状态: {time_status}")
-            
-            return fig, time_status_text, slider_value
-        except Exception as e:
-            logger.error(f"[ERROR] 时间筛选后生成瀑布图失败: {e}")
-            logger.error(traceback.format_exc())
-            
-            # 返回错误提示图
-            error_fig = create_empty_figure(f"时间筛选失败: {str(e)}")
-            return error_fig, "时间筛选出错，请重试", no_update
-
-
-    # 时间范围输入确认回调函数
-    @app.callback(
-        [Output('main-plot', 'figure', allow_duplicate=True),
-         Output('time-range-input-status', 'children', allow_duplicate=True),
-         Output('time-filter-slider', 'min', allow_duplicate=True),
-         Output('time-filter-slider', 'max', allow_duplicate=True),
-         Output('time-filter-slider', 'value', allow_duplicate=True),
-         Output('time-filter-slider', 'marks', allow_duplicate=True)],
-        [Input('btn-confirm-time-range', 'n_clicks')],
-        [State('session-id', 'data'),
-         State('time-range-start-input', 'value'),
-         State('time-range-end-input', 'value')],
-        prevent_initial_call=True
-    )
-    def handle_time_range_input_confirmation(n_clicks, session_id, start_time, end_time):
-        """处理时间范围输入确认"""
-        logger.info(f"[PROCESS] 时间范围输入确认回调被触发: n_clicks={n_clicks}, start_time={start_time}, end_time={end_time}")
-        
-        if not n_clicks or n_clicks <= 0:
-            logger.info("[WARNING] 按钮未点击，跳过处理")
-            return no_update, no_update, no_update, no_update, no_update, no_update
-        
-        backend = session_manager.get_backend(session_id)
-        if not backend:
-            logger.warning("[WARNING] 无效的会话ID")
-            return no_update, "无效的会话ID", no_update, no_update, no_update, no_update
-        
-        if start_time is None or end_time is None:
-            logger.warning("[WARNING] 时间范围输入为空")
-            return no_update, "请输入有效的时间范围", no_update, no_update, no_update, no_update
-        
-        backend = session_manager.get_backend(session_id)
-        if not backend:
-            return no_update
-        
-        try:
-            logger.info(f"[PROCESS] 调用后端更新时间范围: start_time={start_time}, end_time={end_time}")
-            # 调用后端方法更新时间范围
-            success, message = backend.update_time_filter_from_input(start_time, end_time)
-            
-            if success:
-                logger.info(f"[OK] 后端时间范围更新成功: {message}")
-                # 重新生成瀑布图（使用新的时间范围）
-                fig = backend.generate_waterfall_plot()
-                
-                # 更新滑动条的范围和当前值
-                new_min = int(start_time)
-                new_max = int(end_time)
-                new_value = [new_min, new_max]
-                
-                # 创建新的标记点
-                range_size = new_max - new_min
-                if range_size <= 1000:
-                    step = max(1, range_size // 5)
-                elif range_size <= 10000:
-                    step = max(10, range_size // 10)
-                else:
-                    step = max(100, range_size // 20)
-                
-                new_marks = {}
-                for i in range(new_min, new_max + 1, step):
-                    if i == new_min or i == new_max or (i - new_min) % (step * 2) == 0:
-                        new_marks[i] = str(i)
-                
-                logger.info(f"[OK] 时间范围更新成功: {message}")
-                logger.info(f"⏰ 更新滑动条范围: min={new_min}, max={new_max}, value={new_value}")
-                logger.info(f"⏰ 新标记点: {new_marks}")
-                status_message = f"[OK] {message}"
-                status_style = {'color': '#28a745', 'fontWeight': 'bold'}
-                
-                return fig, html.Span(status_message, style=status_style), new_min, new_max, new_value, new_marks
-            else:
-                logger.warning(f"[WARNING] 时间范围更新失败: {message}")
-                status_message = f"[ERROR] {message}"
-                status_style = {'color': '#dc3545', 'fontWeight': 'bold'}
-                
-                return no_update, html.Span(status_message, style=status_style), no_update, no_update, no_update, no_update
-                
-        except Exception as e:
-            logger.error(f"[ERROR] 时间范围输入确认失败: {e}")
-            logger.error(traceback.format_exc())
-            
-            error_message = f"[ERROR] 时间范围更新失败: {str(e)}"
-            error_style = {'color': '#dc3545', 'fontWeight': 'bold'}
-            
-            return no_update, html.Span(error_message, style=error_style), no_update, no_update, no_update, no_update
-
-
-    # 重置显示时间范围回调函数
-    @app.callback(
-        [Output('main-plot', 'figure', allow_duplicate=True),
-         Output('time-range-input-status', 'children', allow_duplicate=True),
-         Output('time-filter-slider', 'min', allow_duplicate=True),
-         Output('time-filter-slider', 'max', allow_duplicate=True),
-         Output('time-filter-slider', 'value', allow_duplicate=True),
-         Output('time-filter-slider', 'marks', allow_duplicate=True)],
-        [Input('btn-reset-display-time-range', 'n_clicks')],
-        [State('session-id', 'data')],
-        prevent_initial_call=True
-    )
-    def handle_reset_display_time_range(n_clicks, session_id):
-        """处理重置显示时间范围"""
-        if not n_clicks or n_clicks <= 0:
-            return no_update, no_update, no_update, no_update, no_update, no_update
-        
-        backend = session_manager.get_backend(session_id)
-        if not backend:
-            logger.warning("[WARNING] 无效的会话ID")
-            return no_update, "无效的会话ID", no_update, no_update, no_update, no_update
-        
-        backend = session_manager.get_backend(session_id)
-        if not backend:
-            return no_update
-        
-        try:
-            # 重置显示时间范围
-            backend.reset_time_filter()
-            
-            # 重新生成瀑布图
-            fig = backend.generate_waterfall_plot()
-            
-            # 获取原始数据时间范围并重置滑动条到原始范围
-            filter_info = backend.get_filter_info()
-            original_min, original_max = filter_info['time_range']
-            new_value = [int(original_min), int(original_max)]
-            
-            logger.info("[OK] 显示时间范围重置成功")
-            status_message = "[OK] 显示时间范围已重置到原始数据范围"
-            status_style = {'color': '#28a745', 'fontWeight': 'bold'}
-            
-            return fig, html.Span(status_message, style=status_style), no_update, no_update, new_value, no_update
-                
-        except Exception as e:
-            logger.error(f"[ERROR] 重置显示时间范围失败: {e}")
-            logger.error(traceback.format_exc())
-            
-            error_message = f"[ERROR] 重置显示时间范围失败: {str(e)}"
-            error_style = {'color': '#dc3545', 'fontWeight': 'bold'}
-            
-            return no_update, html.Span(error_message, style=error_style), no_update, no_update, no_update, no_update
 
     # TODO
     # 偏移对齐分析 - 页面加载时自动生成
@@ -639,7 +402,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
 
         # 添加密度曲线
         fig.add_trace(
-            go.Scatter(
+            go.Scattergl(
                 x=x_density,
                 y=y_density,
                 mode='lines',
@@ -963,7 +726,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         prevent_initial_call=True
     )
     def handle_relative_delay_distribution_table_click(active_cells, close_modal_clicks, close_btn_clicks, table_data_list, session_id, current_style):
-        """处理同种算法相对延时分布图详情表格点击，显示录制与播放对比曲线（悬浮窗）并支持跳转到瀑布图"""
+        """处理同种算法相对延时分布图详情表格点击，显示录制与播放对比曲线（悬浮窗）"""
         return relative_delay_distribution_handler.handle_table_click(
             active_cells, close_modal_clicks, close_btn_clicks,
             table_data_list, session_id, current_style
@@ -1020,7 +783,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         prevent_initial_call=True
     )
     def handle_delay_time_series_click(close_modal_clicks, close_btn_clicks, current_style):
-        """处理延时时间序列图点击，显示音符分析曲线（悬浮窗）并支持跳转到瀑布图"""
+        """处理延时时间序列图点击，显示音符分析曲线（悬浮窗）"""
         """处理延时时间序列图模态框的关闭按钮（单算法模式）"""
         logger.info("[START] handle_delay_time_series_click 关闭按钮回调被触发")
 
@@ -1192,15 +955,16 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                 try:
                     logger.info(f"[PROCESS] 更新瀑布图，共 {len(algorithms_with_data)} 个有数据的激活算法")
                     plot_fig = backend.generate_waterfall_plot()
-                    report_content = create_report_layout(backend)
+                    # 报告内容已迁移到 pages/report.py，由其内部回调处理刷新
+                    report_content = html.Div(id='report-update-signal', style={'display': 'none'})
                 except Exception as e:
                     logger.error(f"[ERROR] 更新瀑布图失败: {e}")
                     plot_fig = create_empty_figure(f"更新失败: {str(e)}")
                     # 使用 create_report_layout 确保包含所有必需的组件
                     try:
-                        report_content = create_report_layout(backend)
+                        report_content = html.Div(id='report-update-signal', style={'display': 'none'})
                     except:
-                        # 如果 create_report_layout 也失败，返回包含必需组件的错误布局
+                        # 错误情况下的备选方案
                         empty_fig = {}
                         report_content = html.Div([
                             html.H4("更新失败", className="text-center text-danger"),
@@ -1334,7 +1098,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             logger.error(f"[ERROR] 生成单键对比图失败: {e}")
             return backend.plot_generator._create_empty_plot(f"生成失败: {str(e)}")
 
-    # 按键延时分析表格点击回调 - 显示按键曲线对比（悬浮窗）并支持跳转到瀑布图
+    # 按键延时分析表格点击回调 - 显示按键曲线对比（悬浮窗）
     @app.callback(
         [Output('key-curves-modal', 'style', allow_duplicate=True),
          Output('key-curves-comparison-container', 'children', allow_duplicate=True),
@@ -1348,7 +1112,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         prevent_initial_call=True
     )
     def handle_key_table_click(active_cell, close_modal_clicks, close_btn_clicks, table_data, session_id, current_style):
-        """处理按键延时分析表格点击，显示按键曲线对比（悬浮窗）并支持跳转到瀑布图"""
+        """处理按键延时分析表格点击，显示按键曲线对比（悬浮窗）"""
         
         
         # 检测触发源
@@ -1546,7 +1310,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                         if record_note1 and hasattr(record_note1, 'after_touch') and not record_note1.after_touch.empty:
                             x_at = (record_note1.after_touch.index + record_note1.offset) / 10.0
                             y_at = record_note1.after_touch.values
-                            fig.add_trace(go.Scatter(x=x_at, y=y_at, mode='lines', name='录制触后', 
+                            fig.add_trace(go.Scattergl(x=x_at, y=y_at, mode='lines', name='录制触后', 
                                                     line=dict(color='blue', width=2), showlegend=False), row=1, col=1)
                         if record_note1 and hasattr(record_note1, 'hammers') and not record_note1.hammers.empty:
                             # 过滤锤速为0的锤击点
@@ -1554,17 +1318,17 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                             if hammer_mask.any():
                                 x_hm = (record_note1.hammers.index[hammer_mask] + record_note1.offset) / 10.0
                                 y_hm = record_note1.hammers.values[hammer_mask]
-                                fig.add_trace(go.Scatter(x=x_hm, y=y_hm, mode='markers', name='录制锤子',
+                                fig.add_trace(go.Scattergl(x=x_hm, y=y_hm, mode='markers', name='录制锤子',
                                                         marker=dict(color='blue', size=6), showlegend=False), row=1, col=1)
                         if replay_note1 and hasattr(replay_note1, 'after_touch') and not replay_note1.after_touch.empty:
                             x_at = (replay_note1.after_touch.index + replay_note1.offset) / 10.0
                             y_at = replay_note1.after_touch.values
-                            fig.add_trace(go.Scatter(x=x_at, y=y_at, mode='lines', name='回放触后',
+                            fig.add_trace(go.Scattergl(x=x_at, y=y_at, mode='lines', name='回放触后',
                                                     line=dict(color='red', width=2), showlegend=False), row=1, col=1)
                         if replay_note1 and hasattr(replay_note1, 'hammers') and not replay_note1.hammers.empty:
                             x_hm = (replay_note1.hammers.index + replay_note1.offset) / 10.0
                             y_hm = replay_note1.hammers.values
-                            fig.add_trace(go.Scatter(x=x_hm, y=y_hm, mode='markers', name='回放锤子',
+                            fig.add_trace(go.Scattergl(x=x_hm, y=y_hm, mode='markers', name='回放锤子',
                                                     marker=dict(color='red', size=6), showlegend=False), row=1, col=1)
                     
                     # 右侧：算法2的曲线
@@ -1573,7 +1337,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                         if record_note2 and hasattr(record_note2, 'after_touch') and not record_note2.after_touch.empty:
                             x_at = (record_note2.after_touch.index + record_note2.offset) / 10.0
                             y_at = record_note2.after_touch.values
-                            fig.add_trace(go.Scatter(x=x_at, y=y_at, mode='lines', name='录制触后',
+                            fig.add_trace(go.Scattergl(x=x_at, y=y_at, mode='lines', name='录制触后',
                                                     line=dict(color='blue', width=2), showlegend=False), row=1, col=2)
                         if record_note2 and hasattr(record_note2, 'hammers') and not record_note2.hammers.empty:
                             # 过滤锤速为0的锤击点
@@ -1581,17 +1345,17 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
                             if hammer_mask.any():
                                 x_hm = (record_note2.hammers.index[hammer_mask] + record_note2.offset) / 10.0
                                 y_hm = record_note2.hammers.values[hammer_mask]
-                                fig.add_trace(go.Scatter(x=x_hm, y=y_hm, mode='markers', name='录制锤子',
+                                fig.add_trace(go.Scattergl(x=x_hm, y=y_hm, mode='markers', name='录制锤子',
                                                         marker=dict(color='blue', size=6), showlegend=False), row=1, col=2)
                         if replay_note2 and hasattr(replay_note2, 'after_touch') and not replay_note2.after_touch.empty:
                             x_at = (replay_note2.after_touch.index + replay_note2.offset) / 10.0
                             y_at = replay_note2.after_touch.values
-                            fig.add_trace(go.Scatter(x=x_at, y=y_at, mode='lines', name='回放触后',
+                            fig.add_trace(go.Scattergl(x=x_at, y=y_at, mode='lines', name='回放触后',
                                                     line=dict(color='red', width=2), showlegend=False), row=1, col=2)
                         if replay_note2 and hasattr(replay_note2, 'hammers') and not replay_note2.hammers.empty:
                             x_hm = (replay_note2.hammers.index + replay_note2.offset) / 10.0
                             y_hm = replay_note2.hammers.values
-                            fig.add_trace(go.Scatter(x=x_hm, y=y_hm, mode='markers', name='回放锤子',
+                            fig.add_trace(go.Scattergl(x=x_hm, y=y_hm, mode='markers', name='回放锤子',
                                                     marker=dict(color='red', size=6), showlegend=False), row=1, col=2)
                     
                     # 主标题
@@ -2697,22 +2461,6 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
         # 其他情况，保持当前状态
         return current_style, []
     
-    # 跳转到瀑布图按钮回调
-    @app.callback(
-        [Output('main-plot', 'figure', allow_duplicate=True),
-         Output('main-tabs', 'value', allow_duplicate=True),
-         Output('key-curves-modal', 'style', allow_duplicate=True),
-         Output('jump-source-plot-id', 'data', allow_duplicate=True)],
-        [Input('jump-to-waterfall-btn', 'n_clicks'),
-         Input('jump-to-waterfall-btn-from-modal', 'n_clicks')],
-        [State('session-id', 'data'),
-         State('current-clicked-point-info', 'data')],
-        prevent_initial_call=True
-    )
-    def handle_jump_to_waterfall(n_clicks, n_clicks_from_modal, session_id, point_info):
-        """处理跳转到瀑布图按钮点击"""
-        return waterfall_jump_handler.handle_jump_to_waterfall(n_clicks or n_clicks_from_modal, session_id, point_info)
-    
     # 返回报告界面按钮回调
     @app.callback(
         [Output('main-tabs', 'value', allow_duplicate=True),
@@ -3169,244 +2917,8 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
 
 
 
-    # ==================== 曲线对齐测试回调 ====================
-    @app.callback(
-        Output('curve-alignment-test-result', 'children'),
-        Input('btn-test-curve-alignment', 'n_clicks'),
-        State('session-id', 'data'),
-        prevent_initial_call=True
-    )
-    def handle_test_curve_alignment(n_clicks, session_id):
-        """处理曲线对齐测试按钮点击"""
-        if n_clicks is None or n_clicks == 0:
-            return html.Div("点击按钮开始测试", 
-                           className="text-muted text-center",
-                           style={'padding': '20px', 'fontSize': '14px'})
-        
-        try:
-            backend = session_manager.get_backend(session_id)
-            if not backend:
-                return html.Div([
-                    dbc.Alert("[WARNING] 无法获取backend，请先上传数据", color="warning")
-                ])
-            
-            # 执行测试
-            test_result = backend.test_curve_alignment()
-            
-            if test_result is None or test_result.get('status') != 'success':
-                error_msg = test_result.get('message', '测试失败') if test_result else '测试失败'
-                return html.Div([
-                    dbc.Alert([
-                        html.I(className="fas fa-exclamation-triangle me-2"),
-                        html.Strong(f"测试失败: {error_msg}")
-                    ], color="danger")
-                ])
-            
-            result = test_result['result']
-            comparison_fig = test_result.get('comparison_figure')  # 对齐前后对比图（向后兼容）
-            all_stages_fig = test_result.get('all_stages_figure')  # 所有处理阶段的对比图 (兼容旧版)
-            individual_stage_figures = test_result.get('individual_stage_figures', []) # 新版独立图表列表
-            
-            # 构建结果显示
-            children = []
-            
-            # 渲染所有处理阶段的图表
-            # 优先使用新的独立图表列表
-            if individual_stage_figures:
-                children.append(html.H6("各处理阶段曲线对比（播放曲线对齐到录制曲线）", 
-                           className="mb-3",
-                           style={'color': '#2c3e50', 'fontWeight': 'bold'}))
-                
-                for stage_info in individual_stage_figures:
-                    title = stage_info.get('title', '未知阶段')
-                    fig = stage_info.get('figure')
-                    
-                    if fig:
-                        children.append(html.Div([
-                            html.H6(title, className="mt-4 mb-2", style={'fontSize': '14px', 'fontWeight': 'bold', 'color': '#555'}),
-                            dcc.Graph(
-                                figure=fig, 
-                                config={'displayModeBar': True}
-                            )
-                        ], className="mb-2"))
-            
-            # 如果没有新版图表，回退到旧版大图
-            elif all_stages_fig is not None:
-                children.append(html.Div([
-                    html.H6("各处理阶段曲线对比（播放曲线对齐到录制曲线）", 
-                           className="mb-3",
-                           style={'color': '#2c3e50', 'fontWeight': 'bold'}),
-                    dcc.Graph(figure=all_stages_fig, style={'height': '2800px', 'minHeight': '2000px'})
-                ], className="mb-4"))
-            
-            # 相似度信息
-            children.append(
-                html.Div([
-                    html.H6("相似度结果", className="mb-3",
-                           style={'color': '#2c3e50', 'fontWeight': 'bold'}),
-                    dbc.Row([
-                        dbc.Col([
-                            dbc.Card([
-                                dbc.CardBody([
-                                    html.Small("上升沿相似度", className="text-muted d-block mb-1"),
-                                    html.H4(f"{result.get('rising_edge_similarity', 0):.3f}", 
-                                           style={'color': '#1f77b4', 'fontWeight': 'bold'})
-                                ])
-                            ], color="primary", outline=True)
-                        ], width=4),
-                        dbc.Col([
-                            dbc.Card([
-                                dbc.CardBody([
-                                    html.Small("下降沿相似度", className="text-muted d-block mb-1"),
-                                    html.H4(f"{result.get('falling_edge_similarity', 0):.3f}", 
-                                           style={'color': '#ff7f0e', 'fontWeight': 'bold'})
-                                ])
-                            ], color="warning", outline=True)
-                        ], width=4),
-                        dbc.Col([
-                            dbc.Card([
-                                dbc.CardBody([
-                                    html.Small("整体相似度", className="text-muted d-block mb-1"),
-                                    html.H4(f"{result.get('overall_similarity', 0):.3f}", 
-                                           style={'color': '#2ca02c', 'fontWeight': 'bold'})
-                                ])
-                            ], color="success", outline=True)
-                        ], width=4)
-                    ], className="mb-3"),
-                ], className="mb-4")
-            )
-
-            # 特征量化分析表格
-            record_feat = result.get('record_features', {})
-            replay_feat = result.get('replay_features', {})
-            feat_diff = result.get('feature_comparison', {})
-            
-            if record_feat and replay_feat:
-                import pandas as pd
-                
-                # 准备表格数据
-                table_data = [
-                    {
-                        "指标": "峰值力度 (Peak)", 
-                        "录制值": f"{record_feat.get('peak_value', 0):.1f}", 
-                        "播放值": f"{replay_feat.get('peak_value', 0):.1f}", 
-                        "差异": f"{feat_diff.get('peak_diff', 0):.1f}",
-                        "说明": "Max Value"
-                    },
-                    {
-                        "指标": "峰值时间 (Time)", 
-                        "录制值": f"{record_feat.get('peak_time', 0):.1f}ms", 
-                        "播放值": f"{replay_feat.get('peak_time', 0):.1f}ms", 
-                        "差异": f"{feat_diff.get('peak_time_lag', 0):.1f}ms",
-                        "说明": "Time Lag"
-                    },
-                    {
-                        "指标": "上升时间 (Rise Time)", 
-                        "录制值": f"{record_feat.get('rise_time_ms', 0):.1f}ms", 
-                        "播放值": f"{replay_feat.get('rise_time_ms', 0):.1f}ms", 
-                        "差异": f"{feat_diff.get('rise_time_diff', 0):.1f}ms",
-                        "说明": "10% -> 90%"
-                    },
-                    {
-                        "指标": "上升斜率 (Rise Slope)", 
-                        "录制值": f"{record_feat.get('rise_slope', 0):.2f}", 
-                        "播放值": f"{replay_feat.get('rise_slope', 0):.2f}", 
-                        "差异": f"{replay_feat.get('rise_slope', 0) - record_feat.get('rise_slope', 0):.2f}",
-                        "说明": "Value / ms"
-                    },
-                    {
-                        "指标": "下降时间 (Fall Time)", 
-                        "录制值": f"{record_feat.get('fall_time_ms', 0):.1f}ms", 
-                        "播放值": f"{replay_feat.get('fall_time_ms', 0):.1f}ms", 
-                        "差异": f"{feat_diff.get('fall_time_diff', 0):.1f}ms",
-                        "说明": "90% -> 10%"
-                    },
-                    {
-                        "指标": "下降斜率 (Fall Slope)", 
-                        "录制值": f"{record_feat.get('fall_slope', 0):.2f}", 
-                        "播放值": f"{replay_feat.get('fall_slope', 0):.2f}", 
-                        "差异": f"{replay_feat.get('fall_slope', 0) - record_feat.get('fall_slope', 0):.2f}",
-                        "说明": "Value / ms"
-                    },
-                    {
-                        "指标": "抖动度 (Jitter RMSE)", 
-                        "录制值": f"{record_feat.get('jitter', 0):.2f}", 
-                        "播放值": f"{replay_feat.get('jitter', 0):.2f}", 
-                        "差异": f"x{feat_diff.get('jitter_ratio', 0):.2f}",
-                        "说明": "Raw - Smooth"
-                    }
-                ]
-                
-                table_header = [
-                    html.Thead(html.Tr([html.Th(col) for col in ["指标", "录制值", "播放值", "差异", "说明"]]))
-                ]
-                table_body = [
-                    html.Tbody([
-                        html.Tr([
-                            html.Td(row["指标"], style={'fontWeight': 'bold'}),
-                            html.Td(row["录制值"]),
-                            html.Td(row["播放值"]),
-                            html.Td(row["差异"], style={'color': 'red' if 'x' in row['差异'] and float(row['差异'][1:]) > 2 else 'black'}),
-                            html.Td(row["说明"], style={'fontSize': '0.85em', 'color': '#666'})
-                        ]) for row in table_data
-                    ])
-                ]
-                
-                children.append(html.Div([
-                    html.H6("物理特征量化分析", className="mb-3", style={'color': '#2c3e50', 'fontWeight': 'bold'}),
-                    dbc.Table(table_header + table_body, bordered=True, hover=True, striped=True, className="mb-4")
-                ]))
-
-            
-            # 其他信息
-            children.append(html.Div([
-                    dbc.Row([
-                        dbc.Col([
-                            html.Small(f"DTW距离: {result.get('dtw_distance', 0):.3f}", 
-                                      className="text-muted"),
-                            html.Br(),
-                            html.Small(f"测试数据: record_index={test_result.get('record_index', 'N/A')}, "
-                                      f"replay_index={test_result.get('replay_index', 'N/A')}", 
-                                      className="text-muted")
-                        ], width=12)
-                    ])
-                ], className="mb-4")
-            )
-            
-            # 对齐前后对比图
-            if comparison_fig:
-                children.append(
-                    html.Div([
-                        html.H6("对齐前后对比", className="mb-3",
-                               style={'color': '#2c3e50', 'fontWeight': 'bold'}),
-                        dcc.Graph(
-                            figure=comparison_fig,
-                            style={'height': '800px'}
-                        )
-                    ], className="mb-4")
-                )
-            else:
-                children.append(
-                    html.Div([
-                        dbc.Alert("[WARNING] 无法生成对齐对比图", color="warning")
-                    ])
-                )
-            
-            return html.Div(children)
-            
-        except Exception as e:
-            logger.error(f"[ERROR] 曲线对齐测试失败: {e}")
-            
-            logger.error(traceback.format_exc())
-            return html.Div([
-                dbc.Alert([
-                    html.I(className="fas fa-exclamation-triangle me-2"),
-                    html.Strong(f"测试失败: {str(e)}")
-                ], color="danger")
-            ])
-
     # TODO
-    # 丢锤和多锤表格点击回调 - 显示曲线对比（悬浮窗）并支持跳转到瀑布图
+    # 丢锤和多锤表格点击回调 - 显示曲线对比（悬浮窗）
     @app.callback(
         [Output('key-curves-modal', 'style', allow_duplicate=True),
          Output('key-curves-comparison-container', 'children', allow_duplicate=True),
@@ -3423,7 +2935,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
     )
     def handle_error_tables_click(active_cells_multi_drop, active_cells_multi_multi, close_modal_clicks, close_btn_clicks,
                                  data_multi_drop, data_multi_multi, session_id, current_style):
-        """处理丢锤和多锤表格点击，显示曲线对比（悬浮窗）并支持跳转到瀑布图"""
+        """处理丢锤和多锤表格点击，显示曲线对比（悬浮窗）"""
         # 检测触发源
         ctx = callback_context
         if not ctx.triggered:
@@ -3655,7 +3167,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
             # 生成曲线图（只显示有数据的部分）
             fig = _create_single_data_curve_figure(note_data, key_id, data_label, algorithm_name)
 
-            # 计算时间信息，用于跳转到瀑布图
+            # 计算时间信息
             center_time_ms = None
             record_idx = None
             replay_idx = None
@@ -3832,7 +3344,7 @@ def register_callbacks(app, session_manager: SessionManager, history_manager):
 
                     # 添加hammers锤击点
                     fig.add_trace(
-                        go.Scatter(
+                        go.Scattergl(
                             x=hm_time_ms,
                             y=filtered_value,
                             mode='markers',

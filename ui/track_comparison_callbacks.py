@@ -92,6 +92,63 @@ def update_track_selection_handler(pathname, trigger, session_id, session_manage
             {'display': 'none'}
         )
 
+
+def reset_comparison_results_handler(pathname, trigger, session_id, session_manager):
+    """
+    当文件被删除时，重置对比结果区域到初始状态
+    
+    Args:
+        pathname: 当前页面路径
+        trigger: 全局文件列表更新触发器
+        session_id: 会话ID
+        session_manager: SessionManager实例
+    
+    Returns:
+        (对比结果区域内容, 对比结果区域样式, store数据)
+    """
+    # 只在音轨对比页面才更新
+    if pathname != '/track-comparison':
+        raise PreventUpdate
+    
+    try:
+        # 检查是否有文件
+        backend = None
+        if session_id:
+            backend = session_manager.get_backend(session_id)
+        
+        # 如果当前session没有backend，或者backend中没有文件，尝试从所有backend中找
+        if not backend or (backend and len(backend.get_active_algorithms()) == 0):
+            # 遍历所有backend，找到有文件的那个
+            for sid, b in session_manager.backends.items():
+                if b and len(b.get_active_algorithms()) > 0:
+                    backend = b
+                    break
+        
+        # 如果没有backend或文件少于2个，重置对比结果
+        if not backend or len(backend.get_active_algorithms()) < 2:
+            logger.info("检测到文件被删除或文件数量不足，重置对比结果区域")
+            return (
+                html.Div(),  # 空内容
+                {'display': 'none'},  # 隐藏结果区域
+                {'selected_tracks': [], 'baseline_id': None}  # 重置store数据
+            )
+        
+        # 有足够的文件，不更新（保持现有结果）
+        raise PreventUpdate
+        
+    except PreventUpdate:
+        raise
+    except Exception as e:
+        logger.error(f"重置对比结果失败: {e}")
+        traceback.print_exc()
+        # 发生错误时也重置，确保界面不会卡在错误状态
+        return (
+            html.Div(),
+            {'display': 'none'},
+            {'selected_tracks': [], 'baseline_id': None}
+        )
+
+
 def update_comparison_settings_handler(baseline_values, pathname):
         """
         更新对比设置区域（显示开始对比按钮）
@@ -112,7 +169,7 @@ def update_comparison_settings_handler(baseline_values, pathname):
                     html.I(className="bi bi-play-circle-fill me-2"),
                     "开始对比分析"
                 ],
-                id='start-comparison-btn',
+                id={'type': 'start-comparison-btn', 'index': 'main'},
                 color="primary",
                 size="lg",
                 className="w-100"
@@ -336,12 +393,14 @@ def _precompute_all_table_data(serializable_results):
                 keyon_diff = pair['compare_keyon'] - pair['baseline_keyon']
                 hammer_time_diff = pair['compare_hammer_time'] - pair['baseline_hammer_time']
                 duration_diff = pair['compare_duration'] - pair['baseline_duration']
-                velocity_diff = pair['compare_hammer_velocity'] - pair['baseline_hammer_velocity']
+                baseline_velocity = pair.get('baseline_hammer_velocity') or 0
+                compare_velocity = pair.get('compare_hammer_velocity') or 0
+                velocity_diff = compare_velocity - baseline_velocity
                 
                 # 计算锤速还原百分比
                 velocity_percentage = 0.0
-                if pair['baseline_hammer_velocity'] and pair['baseline_hammer_velocity'] != 0:
-                    velocity_percentage = (pair['compare_hammer_velocity'] / pair['baseline_hammer_velocity']) * 100
+                if baseline_velocity and baseline_velocity != 0:
+                    velocity_percentage = (compare_velocity / baseline_velocity) * 100
                 
                 # 第一行：标准音轨数据
                 table_data.append({
@@ -352,7 +411,7 @@ def _precompute_all_table_data(serializable_results):
                     'uuid': pair['baseline_uuid'],  # 用于反查数据的唯一标识
                     '时间': f"{pair['baseline_keyon']:.2f}ms",
                     '锤击时间': f"{pair['baseline_hammer_time']:.2f}ms",
-                    '锤速': int(pair['baseline_hammer_velocity']),
+                    '锤速': int(pair.get('baseline_hammer_velocity') or 0),
                     '持续时间': f"{pair['baseline_duration']:.2f}ms",
                     'keyon时间差': '',
                     '锤击时间差': '',
@@ -371,7 +430,7 @@ def _precompute_all_table_data(serializable_results):
                     'uuid': pair['compare_uuid'],  # 用于反查数据的唯一标识
                     '时间': f"{pair['compare_keyon']:.2f}ms",
                     '锤击时间': f"{pair['compare_hammer_time']:.2f}ms",
-                    '锤速': int(pair['compare_hammer_velocity']),
+                    '锤速': int(pair.get('compare_hammer_velocity') or 0),
                     '持续时间': f"{pair['compare_duration']:.2f}ms",
                     'keyon时间差': f"{keyon_diff:+.2f}ms",
                     '锤击时间差': f"{hammer_time_diff:+.2f}ms",
@@ -788,11 +847,13 @@ def update_detail_table_handler(current_state_json, key_filter_value, store_data
             keyon_diff = pair['compare_keyon'] - pair['baseline_keyon']
             hammer_time_diff = pair['compare_hammer_time'] - pair['baseline_hammer_time']
             duration_diff = pair['compare_duration'] - pair['baseline_duration']
-            velocity_diff = pair['compare_hammer_velocity'] - pair['baseline_hammer_velocity']
+            baseline_velocity = pair.get('baseline_hammer_velocity') or 0
+            compare_velocity = pair.get('compare_hammer_velocity') or 0
+            velocity_diff = compare_velocity - baseline_velocity
 
             velocity_percentage = 0.0
-            if pair['baseline_hammer_velocity'] and pair['baseline_hammer_velocity'] != 0:
-                velocity_percentage = (pair['compare_hammer_velocity'] / pair['baseline_hammer_velocity']) * 100
+            if baseline_velocity and baseline_velocity != 0:
+                velocity_percentage = (compare_velocity / baseline_velocity) * 100
 
             table_data.append({
                 'SPMID文件': baseline_track,
@@ -802,7 +863,7 @@ def update_detail_table_handler(current_state_json, key_filter_value, store_data
                 'uuid': pair['baseline_uuid'],  # 用于反查数据的唯一标识
                 '时间': f"{pair['baseline_keyon']:.2f}ms",
                 '锤击时间': f"{pair['baseline_hammer_time']:.2f}ms",
-                '锤速': int(pair['baseline_hammer_velocity']),
+                '锤速': int(pair.get('baseline_hammer_velocity') or 0),
                 '持续时间': f"{pair['baseline_duration']:.2f}ms",
                 'keyon时间差': '',
                 '锤击时间差': '',
@@ -820,7 +881,7 @@ def update_detail_table_handler(current_state_json, key_filter_value, store_data
                 'uuid': pair['compare_uuid'],  # 用于反查数据的唯一标识
                 '时间': f"{pair['compare_keyon']:.2f}ms",
                 '锤击时间': f"{pair['compare_hammer_time']:.2f}ms",
-                '锤速': int(pair['compare_hammer_velocity']),
+                '锤速': int(pair.get('compare_hammer_velocity') or 0),
                 '持续时间': f"{pair['compare_duration']:.2f}ms",
                 'keyon时间差': f"{keyon_diff:+.2f}ms",
                 '锤击时间差': f"{hammer_time_diff:+.2f}ms",
@@ -1017,15 +1078,37 @@ def register_callbacks(app, session_manager):
         Output('comparison-results-area', 'children'),
         Output('comparison-results-area', 'style'),
         Output('track-comparison-store', 'data'),
-        Input('start-comparison-btn', 'n_clicks'),
+        Input({'type': 'start-comparison-btn', 'index': dash.ALL}, 'n_clicks'),
+        Input('url', 'pathname'),  # 监听页面变化
+        Input('algorithm-list-trigger', 'data'),  # 监听全局文件列表变化
         State({'type': 'track-select-checkbox', 'index': dash.ALL}, 'value'),
         State({'type': 'track-select-checkbox', 'index': dash.ALL}, 'id'),
         State({'type': 'baseline-radio', 'index': dash.ALL}, 'value'),
         State('session-id', 'data'),
         prevent_initial_call=True
     )
-    def perform_comparison(n_clicks, checkbox_values, checkbox_ids, baseline_values, session_id):
-        return perform_comparison_handler(n_clicks, checkbox_values, checkbox_ids, baseline_values, session_id, session_manager)
+    def perform_comparison(n_clicks, pathname, trigger, checkbox_values, checkbox_ids, baseline_values, session_id):
+        ctx = dash.callback_context
+        if not ctx.triggered:
+            raise PreventUpdate
+        
+        trigger_id = ctx.triggered[0]['prop_id']
+        
+        # 如果触发源是文件列表变化或页面变化，检查是否需要重置
+        if 'algorithm-list-trigger' in trigger_id or 'url' in trigger_id:
+            return reset_comparison_results_handler(pathname, trigger, session_id, session_manager)
+        
+        # 如果是点击开始对比按钮，执行对比
+        if 'start-comparison-btn' in trigger_id:
+            # 对于 pattern-matching ID，n_clicks 是一个列表
+            # 找到 index 为 'main' 的那个按钮的点击次数
+            actual_n_clicks = 0
+            if isinstance(n_clicks, list) and len(n_clicks) > 0:
+                actual_n_clicks = n_clicks[0]
+            
+            return perform_comparison_handler(actual_n_clicks, checkbox_values, checkbox_ids, baseline_values, session_id, session_manager)
+        
+        raise PreventUpdate
 
     # ========== 优化2: 合并回调函数 ==========
     # 将原来的5个级联回调合并为1个,减少回调次数和重复处理
@@ -1242,13 +1325,15 @@ def register_callbacks(app, session_manager):
         Input('track-comparison-detail-datatable', 'active_cell'),
         Input('close-curve-modal', 'n_clicks'),
         State('track-comparison-detail-datatable', 'data'),
+        State('track-comparison-detail-datatable', 'page_current'),
+        State('track-comparison-detail-datatable', 'page_size'),
         State('current-table-state', 'children'),
         State('track-comparison-store', 'data'),
         State('session-id', 'data'),
         prevent_initial_call=True
     )
-    def handle_table_click_and_show_curve(active_cell, close_clicks, table_data, current_state_json, store_data, session_id):
-        """处理表格点击，实时从后端加载曲线数据"""
+    def handle_table_click_and_show_curve(active_cell, close_clicks, table_data, page_current, page_size, current_state_json, store_data, session_id):
+        """处理表格点击，实时从后端加载曲线数据（按分页计算全局行号）"""
         ctx = dash.callback_context
         if not ctx.triggered:
             return False, no_update
@@ -1256,22 +1341,56 @@ def register_callbacks(app, session_manager):
         trigger_id = ctx.triggered[0]['prop_id']
         if 'close-curve-modal' in trigger_id:
             return False, no_update
-        # 获取行数据
+        
+        # 检查必要的数据是否存在
+        if not active_cell or not table_data or not current_state_json:
+            logger.warning("缺少必要的数据：active_cell、table_data 或 current_state_json 为空")
+            return False, "无法定位音符数据：缺少必要的数据"
+        
+        # 按分页计算全局行索引：active_cell['row'] 是当前页内行号 (0..page_size-1)
         try:
-            row_data = table_data[active_cell['row']]
+            page_row = active_cell.get('row')
+            if page_row is None:
+                return False, "无法定位音符数据：未获取到行号"
+            page_current = page_current if page_current is not None else 0
+            page_size = page_size if page_size is not None else 20
+            global_row_index = page_current * page_size + page_row
+            if global_row_index < 0 or global_row_index >= len(table_data):
+                logger.warning(f"行索引越界：global_row_index={global_row_index}, len(table_data)={len(table_data)}, page_current={page_current}, page_size={page_size}, page_row={page_row}")
+                return False, "无法定位音符数据：行索引越界"
+            row_data = table_data[global_row_index]
             key_id = row_data.get('琴键编号')
-            # 获取序号 (注意：表格中是序号是 1-based，数据中是 0-based)
-            seq = row_data.get('序号') - 1
+            seq_num = row_data.get('序号')  # 表格中的序号（第几对）
+            data_type = row_data.get('数据类型')  # '标准' 或 '对比'
+            current_uuid = row_data.get('uuid')  # 当前行的UUID
             compare_name = json.loads(current_state_json).get('compare_name')
-        except:
+        except Exception as e:
+            logger.error(f"无法定位音符数据: {e}")
+            traceback.print_exc()
             return False, "无法定位音符数据"
 
-        # 找到匹配对 (使用 Key ID + Sequence 组合定位，这是最准确的)
+        if not current_uuid or current_uuid == 'N/A':
+            return False, "表格数据中缺少UUID，无法定位音符对象"
+
+        # 找到匹配对 (使用UUID定位，这是最准确的方式)
         matched_pairs = store_data.get('comparisons_dict', {}).get(compare_name, {}).get('matched_pairs', [])
-        target_pair = next((p for p in matched_pairs if p.get('key_id') == key_id and p.get('sequence') == seq), None)
+        target_pair = None
+        
+        # 根据当前行的数据类型，查找匹配对
+        if data_type == '标准':
+            target_pair = next((p for p in matched_pairs if p.get('baseline_uuid') == current_uuid), None)
+        elif data_type == '对比':
+            target_pair = next((p for p in matched_pairs if p.get('compare_uuid') == current_uuid), None)
         
         if not target_pair:
-            return False, f"未找到琴键 {key_id} (序号 {seq+1}) 的匹配信息"
+            return False, f"未找到UUID {current_uuid} 的匹配信息"
+
+        # 从匹配对中获取两个UUID
+        baseline_uuid = target_pair.get('baseline_uuid')
+        compare_uuid = target_pair.get('compare_uuid')
+
+        if not baseline_uuid or not compare_uuid:
+            return False, "匹配对中缺少UUID信息"
 
         # 从后端获取曲线数据
         try:
@@ -1284,24 +1403,22 @@ def register_callbacks(app, session_manager):
             b_alg = algs.get(baseline_name)
             c_alg = algs.get(compare_name)
             
-            # 辅助函数：根据 Key ID 和 序号(第几次按键) 严格定位 Note
-            def find_note_by_sequence_index(alg, target_key_id, target_seq):
-                if not alg or not alg.analyzer: return None
+            # 辅助函数：根据 UUID 定位 Note 对象
+            def find_note_by_uuid(alg, target_uuid):
+                """通过UUID查找Note对象"""
+                if not alg or not alg.analyzer:
+                    return None
                 # 获取该算法所有音符
                 all_notes = alg.analyzer.initial_valid_replay_data
-                # 筛选出该按键的所有音符
-                key_notes = [n for n in all_notes if n.id == target_key_id]
-                # 按时间排序 (必须与对比时的排序逻辑一致)
-                key_notes.sort(key=lambda n: n.key_on_ms)
-                
-                # 根据序号取对应音符
-                if 0 <= target_seq < len(key_notes):
-                    return key_notes[target_seq]
+                # 通过UUID查找
+                for note in all_notes:
+                    if hasattr(note, 'uuid') and str(note.uuid) == str(target_uuid):
+                        return note
                 return None
 
-            # 使用严格序号查找，而非 UUID (防止 UUID 重复或为空)
-            b_note = find_note_by_sequence_index(b_alg, key_id, seq)
-            c_note = find_note_by_sequence_index(c_alg, key_id, seq)
+            # 使用UUID查找Note对象，确保数据一致性
+            b_note = find_note_by_uuid(b_alg, baseline_uuid)
+            c_note = find_note_by_uuid(c_alg, compare_uuid)
 
             if not b_note or not c_note:
                 return True, dbc.Alert("在后端数据中找不到对应的音符对象，可能原始数据已更新。", color="warning")
@@ -1314,7 +1431,7 @@ def register_callbacks(app, session_manager):
             for note, label, color in [(b_note, "标准", "blue"), (c_note, "对比", "red")]:
                 if hasattr(note, 'after_touch') and note.after_touch is not None and not note.after_touch.empty:
                     times = [(idx + note.offset) / 10.0 for idx in note.after_touch.index]
-                    fig.add_trace(go.Scatter(x=times, y=note.after_touch.values.tolist(), mode='lines', name=f"{label} (after_touch)", line=dict(color=color)))
+                    fig.add_trace(go.Scattergl(x=times, y=note.after_touch.values.tolist(), mode='lines', name=f"{label} (after_touch)", line=dict(color=color)))
                 
                 if hasattr(note, 'hammers') and note.hammers is not None and not note.hammers.empty:
                     # 修复 Bug: 避免直接比较 Series (The truth value of a Series is ambiguous)
@@ -1331,9 +1448,13 @@ def register_callbacks(app, session_manager):
                         h_times = [(idx + note.offset) / 10.0 for idx in valid_hammers.index]
                         h_vels = valid_hammers.values.tolist()
                         
-                        fig.add_trace(go.Scatter(x=h_times, y=h_vels, mode='markers', name=f"{label} 锤击点", marker=dict(color=color, size=10, symbol='diamond')))
+                        fig.add_trace(go.Scattergl(x=h_times, y=h_vels, mode='markers', name=f"{label} 锤击点", marker=dict(color=color, size=10, symbol='diamond')))
 
-            fig.update_layout(height=450, title=f"琴键 {key_id} 曲线对比 (延迟加载)", xaxis_title="时间 (ms)", yaxis_title="触后值 / 锤速", margin=dict(l=40, r=40, t=40, b=40))
+            # 标题同时显示琴键编号与序号
+            title = f"琴键 {key_id} 曲线对比 (延迟加载)"
+            if seq_num is not None:
+                title = f"琴键 {key_id} - 序号 {seq_num} 曲线对比 (延迟加载)"
+            fig.update_layout(height=450, title=title, xaxis_title="时间 (ms)", yaxis_title="触后值 / 锤速", margin=dict(l=40, r=40, t=40, b=40))
             
             return True, html.Div([dcc.Graph(figure=fig), html.Small("数据已从后端实时提取", className="text-muted")])
 

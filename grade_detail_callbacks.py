@@ -183,15 +183,15 @@ def show_single_grade_detail(button_index, session_id, session_manager):
         return None
 
 # ==========================================
-# 3. 绘图与跳转层 (Viz & Navigation)
+# 3. 绘图层 (Viz)
 # ==========================================
 
 def _create_modal_style(show=True):
     return {
-        'display': 'block' if show else 'none',
+        'display': 'flex' if show else 'none',  # 与 app 布局一致：flex 才能居中显示
         'position': 'fixed', 'zIndex': '9999', 'left': '0', 'top': '0',
         'width': '100%', 'height': '100%', 'backgroundColor': 'rgba(0,0,0,0.6)',
-        'backdropFilter': 'blur(5px)'
+        'backdropFilter': 'blur(5px)', 'alignItems': 'center', 'justifyContent': 'center'
     }
 
 def _process_note_data(session_manager, session_id, row_data, table_index, active_cell=None):
@@ -210,82 +210,70 @@ def _process_note_data(session_manager, session_id, row_data, table_index, activ
         
         matched = None
         if record_uuid and replay_uuid:
-            # 使用配对信息直接查找匹配对
             matched = matcher.find_matched_pair_by_uuid(str(record_uuid), str(replay_uuid))
-            if matched:
-                logger.info(f"通过配对信息找到匹配对: record_uuid={record_uuid}, replay_uuid={replay_uuid}")
         
-        if not matched: 
-            logger.warning(f"未找到匹配曲线: key_id={key_id}, global_idx={global_idx}, data_type={data_type}, table_index={table_index}")
+        if not matched:
+            logger.warning("_process_note_data: 未找到匹配对 key_id=%s record_uuid=%s replay_uuid=%s", key_id, record_uuid, replay_uuid)
             return _create_modal_style(True), [html.Div("未找到匹配曲线")], no_update
         
-        # 从matched中解包出正确的note对象
         rec_note, rep_note, match_type, error_ms = matched
-        
-        # 验证找到的note对象是否正确
         validation_errors = []
+
         if data_type == '录制':
             if str(rec_note.uuid) != str(global_idx):
-                error_msg = f"UUID不匹配: 期望={global_idx}, 实际rec_note.uuid={rec_note.uuid}"
-                logger.error(error_msg)
-                validation_errors.append(error_msg)
+                validation_errors.append(f"录制UUID不匹配: 表格={global_idx} 找到={rec_note.uuid}")
+            if rec_note.id != key_id:
+                validation_errors.append(f"录制按键ID不匹配: 表格keyId={key_id} 找到={rec_note.id}")
         elif data_type == '播放':
             if str(rep_note.uuid) != str(global_idx):
-                error_msg = f"UUID不匹配: 期望={global_idx}, 实际rep_note.uuid={rep_note.uuid}"
-                logger.error(error_msg)
-                validation_errors.append(error_msg)
-        
-        # 验证key_id是否匹配
-        if rec_note.id != key_id:
-            error_msg = f"录制按键ID不匹配: 期望={key_id}, 实际={rec_note.id}"
-            logger.warning(error_msg)
-            validation_errors.append(error_msg)
-        if rep_note.id != key_id:
-            error_msg = f"播放按键ID不匹配: 期望={key_id}, 实际={rep_note.id}"
-            logger.warning(error_msg)
-            validation_errors.append(error_msg)
-        
-        # 如果有严重错误，返回错误信息
+                validation_errors.append(f"播放UUID不匹配: 表格={global_idx} 找到={rep_note.uuid}")
+            if rep_note.id != key_id:
+                validation_errors.append(f"播放按键ID不匹配: 表格keyId={key_id} 找到={rep_note.id}")
+
         if validation_errors:
+            logger.warning("_process_note_data: 验证失败 %s", validation_errors)
             error_content = html.Div([
                 html.H5("数据验证失败", className="text-danger"),
                 html.Ul([html.Li(err) for err in validation_errors])
             ])
             return _create_modal_style(True), [error_content], no_update
         
+        # 以 UUID 查到的 note 为准：图表与 point_info 均用 rec_note.id，与表格一致
+        key_id = rec_note.id
         # 构建图表
         fig_original, fig_aligned = _create_curves_subplot(backend, key_id, table_index, matched)
-        jump_info = {
+        
+        # 构建点信息（用于其他功能，如返回定位）
+        point_info = {
             'key_id': key_id, 'algorithm_name': table_index, 'record_uuid': rec_note.uuid,
             'replay_uuid': rep_note.uuid, 'source_plot_id': 'grade-detail-curves-modal',
             'table_index': table_index, 'row_index': active_cell.get('row') if active_cell else None
         }
-
+        
         # Tab 1: 原始对比
         tab1_content = [
             dcc.Graph(figure=fig_original, style={'marginBottom': '20px'}),
             dcc.Graph(figure=fig_aligned, style={'marginBottom': '20px'}),
         ]
-
+        
         # Tab 2: 相似度分析
         tab2_content = _create_similarity_content(rec_note, rep_note, backend)
-
+        
+        # 仅保留曲线对比和相似度分析
         content = [
             dcc.Tabs([
                 dcc.Tab(label='曲线对比', children=html.Div(tab1_content, style={'padding': '20px'})),
                 dcc.Tab(label='相似度分析', children=html.Div(tab2_content, style={'padding': '20px'}))
-            ]),
-            html.Div(html.Button("跳转到瀑布图", id="jump-to-waterfall-btn-from-grade-detail", className="btn btn-success"),
-                     style={'textAlign': 'center', 'marginTop': '10px'})
+            ])
         ]
-        return _create_modal_style(True), content, jump_info
+        return _create_modal_style(True), content, point_info
     except Exception as e:
         logger.error(f"生成模态框内容失败: {e}")
         logger.error(traceback.format_exc())
         return _create_modal_style(True), [html.Div(f"生成失败: {e}")], no_update
 
 def _create_similarity_content(rec_note, rep_note, backend) -> List[Any]:
-    """创建相似度分析Tab内容"""
+    """创建相似度分析Tab内容 (显示深度重构后的多维评分)"""
     try:
         # 获取全局平均延时
         mean_delay = backend.get_global_average_delay() if backend else 0.0
@@ -303,7 +291,11 @@ def _create_similarity_content(rec_note, rep_note, backend) -> List[Any]:
         similarity = result.get('overall_similarity', 0.0)
         shape_score = result.get('shape_similarity', 0.0)
         amp_score = result.get('amplitude_similarity', 0.0)
-        dtw_distance = result.get('dtw_distance', 0.0)
+        impulse_score = result.get('impulse_similarity', 0.0)
+        phys_score = result.get('physical_similarity', 0.0)
+        
+        pearson = result.get('pearson_correlation', 0.0)
+        dtw_dist = result.get('dtw_distance', 0.0)
         
         # 生成图表
         figures = analyzer.generate_processing_stages_figures(result)
@@ -311,35 +303,53 @@ def _create_similarity_content(rec_note, rep_note, backend) -> List[Any]:
         # 构建UI
         ui_elements = [
             html.Div([
-                html.H4(f"综合相似度: {similarity:.3f}", className="text-primary"),
+                html.H3(f"综合相似度: {similarity:.1%}", className="text-primary", style={'fontWeight': 'bold', 'marginBottom': '15px'}),
+                
+                # 评分展示 (50/50 模式)
                 html.Div([
-                    html.Span(f"形状相似度(60%): {shape_score:.3f}", className="badge bg-info me-2", style={'fontSize': '14px'}),
-                    html.Span(f"幅度还原度(40%): {amp_score:.3f}", className="badge bg-success", style={'fontSize': '14px'})
-                ], className="mb-2"),
-                html.P(f"DTW距离: {dtw_distance:.3f}", className="text-muted small"),
+                    html.Div([
+                        html.Div("形状相关 (50%)", style={'fontSize': '12px', 'color': '#666'}),
+                        html.Div(f"{shape_score:.3f}", style={'fontSize': '20px', 'color': '#17a2b8', 'fontWeight': 'bold'}),
+                        html.Div(f"DTW/Pearson", style={'fontSize': '10px', 'color': '#999'})
+                    ], style={'flex': '1', 'textAlign': 'center', 'borderRight': '1px solid #eee'}),
+                    
+                    html.Div([
+                        html.Div("物理动作还原 (50%)", style={'fontSize': '12px', 'color': '#666'}),
+                        html.Div(f"{phys_score:.3f}", style={'fontSize': '20px', 'color': '#6f42c1', 'fontWeight': 'bold'}),
+                        html.Div("斜率/高度/序列", style={'fontSize': '10px', 'color': '#999'})
+                    ], style={'flex': '1', 'textAlign': 'center'}),
+                ], style={'display': 'flex', 'padding': '15px', 'backgroundColor': '#f8f9fa', 'borderRadius': '10px', 'marginBottom': '20px'}),
+                
                 html.Hr()
             ], style={'textAlign': 'center', 'marginBottom': '20px'})
         ]
         
         # 添加所有阶段的图表
         for fig_item in figures:
-            ui_elements.append(dcc.Graph(
-                figure=fig_item['figure'],
-                style={'marginBottom': '20px', 'height': '350px'}
-            ))
+            ui_elements.append(html.Div([
+                html.H5(fig_item['title'], style={'textAlign': 'left', 'marginLeft': '10px', 'color': '#444'}),
+                dcc.Graph(
+                    figure=fig_item['figure'],
+                    style={'marginBottom': '25px', 'height': '380px'}
+                )
+            ]))
             
         return ui_elements
         
     except Exception as e:
         logger.error(f"创建相似度内容失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return [html.Div(f"相似度分析出错: {e}", className="alert alert-danger")]
 
 def _add_hammer_markers(fig, note, label, color, time_offset=0.0):
-    """向图表添加锤击点标记（过滤掉锤速为0的点）
+    """向图表添加锤击点标记（与表格一致：仅绘制第一个锤击）
     
-    锤击点的数据完全来自hammers，不依赖after_touch：
-    - X坐标：时间（hammers.index + offset）
-    - Y坐标：锤速值（hammers.values）
+    表格中「锤击时间」「锤速」来自 get_first_hammer_time / get_first_hammer_velocity，
+    即 hammers.index[0]、hammers.values[0]。此处必须使用相同数据源，确保与表格一一对应。
+    
+    - X坐标：first_hammer_time - time_offset（与表格锤击时间一致）
+    - Y坐标：first_hammer_velocity（与表格锤速一致）
     
     Args:
         fig: Plotly图表对象
@@ -348,22 +358,20 @@ def _add_hammer_markers(fig, note, label, color, time_offset=0.0):
         color: 标记颜色
         time_offset: 时间偏移量（用于对齐）
     """
-    if note.hammers.empty:
+    if note.hammers is None or (note.hammers.empty):
         return
     
-    # 过滤掉锤速为0的点
-    valid_mask = note.hammers.values > 0
-    if not any(valid_mask):
+    t_ms = note.get_first_hammer_time()
+    v = note.get_first_hammer_velocity()
+    # 与表格一致：即使锤速为 0 也绘制，不过滤
+    if t_ms is None:
         return
+    v = v if v is not None else 0
+    x = float(t_ms) - time_offset
     
-    # 从hammers数据中获取时间和锤速
-    hammer_times = (note.hammers.index[valid_mask] + note.offset) / 10.0 - time_offset
-    hammer_velocities = note.hammers.values[valid_mask]
-    
-    # 直接使用锤速值作为Y坐标
-    fig.add_trace(go.Scatter(
-        x=hammer_times.tolist() if hasattr(hammer_times, 'tolist') else list(hammer_times),
-        y=hammer_velocities.tolist() if hasattr(hammer_velocities, 'tolist') else list(hammer_velocities),
+    fig.add_trace(go.Scattergl(
+        x=[x],
+        y=[int(v)],
         mode='markers',
         name=f'{label}锤击',
         marker=dict(symbol='diamond', size=10, color=color),
@@ -375,8 +383,8 @@ def _add_after_touch_traces(fig, rec_note, rep_note, delay=0.0):
     rec_x = (rec_note.after_touch.index + rec_note.offset) / 10.0
     rep_x = (rep_note.after_touch.index + rep_note.offset) / 10.0 - delay
     
-    fig.add_trace(go.Scatter(x=rec_x, y=rec_note.after_touch.values, name='录制', line=dict(color='blue')))
-    fig.add_trace(go.Scatter(x=rep_x, y=rep_note.after_touch.values, name='播放', line=dict(color='red')))
+    fig.add_trace(go.Scattergl(x=rec_x, y=rec_note.after_touch.values, name='录制', line=dict(color='blue')))
+    fig.add_trace(go.Scattergl(x=rep_x, y=rep_note.after_touch.values, name='播放', line=dict(color='red')))
 
 def _create_curves_subplot(backend, key_id, algorithm_name, matched_pair):
     """构建对比曲线 Dash 组件 - 返回两个独立的图表"""
@@ -424,7 +432,7 @@ def _create_curves_subplot(backend, key_id, algorithm_name, matched_pair):
 def register_grade_detail_callbacks(app, session_manager: SessionManager):
     """注册等级统计主交互逻辑"""
     
-    # 表格单元格点击 -> 显示对比图
+    # 表格单元格点击 -> 显示按键曲线模态框。流程见 docs/grade_detail_table_callbacks_flow.md
     @app.callback(
         [Output('grade-detail-curves-modal', 'style'),
          Output('grade-detail-curves-comparison-container', 'children'),
@@ -432,33 +440,77 @@ def register_grade_detail_callbacks(app, session_manager: SessionManager):
         [Input({'type': 'grade-detail-datatable', 'index': dash.ALL}, 'active_cell'),
          Input('close-grade-detail-curves-modal', 'n_clicks')],
         [State({'type': 'grade-detail-datatable', 'index': dash.ALL}, 'data'),
+         State({'type': 'grade-detail-datatable', 'index': dash.ALL}, 'page_current'),
+         State({'type': 'grade-detail-datatable', 'index': dash.ALL}, 'page_size'),
+         State('grade-detail-datatable-indices', 'data'),
          State('session-id', 'data'),
          State('grade-detail-curves-modal', 'style')],
         prevent_initial_call=True
     )
-    def handle_click(cells, n_clicks, table_data_list, session_id, current_style):
+    def handle_click(cells, n_clicks, table_data_list, page_current_list, page_size_list, indices, session_id, current_style):
         ctx = dash.callback_context
+        if not ctx.triggered:
+            return current_style, [], no_update
+
         triggered = ctx.triggered[0]['prop_id']
-        
         if 'close-grade-detail-curves-modal' in triggered:
             return _create_modal_style(False), [], no_update
-            
-        if 'active_cell' in triggered:
-            # 提取具体的触发槽
+        if 'active_cell' not in triggered:
+            return current_style, [], no_update
+
+        try:
             target_idx = json.loads(triggered.split('.')[0])['index']
-            active_cell = next((c for c in cells if c), None)
-            
-            # 找到对应的数据块
-            if target_idx == 'single':
-                data = table_data_list[0] if table_data_list else []
-            else:
-                # 简单匹配策略：取第一个非空
-                data = next((d for d in table_data_list if d), [])
-                
-            if active_cell and data:
-                row = data[active_cell['row']]
-                return _process_note_data(session_manager, session_id, row, target_idx, active_cell)
-        return current_style, [], no_update
+            active_cell = ctx.triggered[0].get('value')
+        except Exception as e:
+            logger.error("handle_click: 解析 triggered 失败: %s", e)
+            return current_style, [], no_update
+
+        # 若 triggered 的 value 为空（如表格重绘清空选中），用 ALL 列表 cells[pos] 兜底
+        if not active_cell or (isinstance(active_cell, dict) and active_cell.get('row') is None and active_cell.get('row_id') is None):
+            if indices and isinstance(indices, list) and target_idx in indices and cells is not None:
+                try:
+                    pos = indices.index(target_idx)
+                    if pos < len(cells):
+                        fallback = cells[pos]
+                        if fallback and (fallback.get('row') is not None or fallback.get('row_id') is not None):
+                            active_cell = fallback
+                except Exception:
+                    pass
+            if not active_cell or (isinstance(active_cell, dict) and active_cell.get('row') is None and active_cell.get('row_id') is None):
+                return current_style, [], no_update
+
+        row_val = active_cell.get('row') if active_cell.get('row') is not None else active_cell.get('row_id')
+        if row_val is None:
+            return current_style, [], no_update
+        try:
+            page_row = int(row_val)
+        except (TypeError, ValueError):
+            return current_style, [], no_update
+        active_cell = dict(active_cell)
+        active_cell['row'] = page_row
+
+        if not indices or not isinstance(indices, list):
+            return _create_modal_style(True), [html.Div("请先选择评级")], no_update
+        if target_idx not in indices:
+            return _create_modal_style(True), [html.Div("无法定位当前表格，请先选择评级")], no_update
+
+        pos = indices.index(target_idx)
+        if not table_data_list or pos >= len(table_data_list):
+            return _create_modal_style(True), [html.Div("表格数据未就绪，请先选择评级")], no_update
+
+        data = table_data_list[pos] or []
+        page_current = (page_current_list[pos] if page_current_list and pos < len(page_current_list) else None) or 0
+        page_size = (page_size_list[pos] if page_size_list and pos < len(page_size_list) else None) or 50
+
+        if not data:
+            return _create_modal_style(True), [html.Div("暂无数据")], no_update
+
+        global_row_idx = page_current * page_size + page_row
+        if global_row_idx < 0 or global_row_idx >= len(data):
+            return _create_modal_style(True), [html.Div("行索引越界，请刷新后重试")], no_update
+
+        row = data[global_row_idx]
+        return _process_note_data(session_manager, session_id, row, target_idx, active_cell)
 
     # 按钮点击 -> 展开/切换评级详情
     # 注意：为了避免 Output 重叠冲突，此回调不再直接输出 'data'，
@@ -469,48 +521,54 @@ def register_grade_detail_callbacks(app, session_manager: SessionManager):
         Output({'type': 'grade-detail-key-filter', 'index': dash.ALL}, 'options'),
         Output({'type': 'grade-detail-key-filter', 'index': dash.ALL}, 'value'),
         Output({'type': 'grade-detail-state-store', 'index': dash.ALL}, 'data'),
+        Output('grade-detail-datatable-indices', 'data'),
         Input({'type': 'grade-detail-btn', 'index': dash.ALL}, 'n_clicks'),
         State('session-id', 'data'),
         prevent_initial_call=True
     )
     def switch_grade(n_clicks_list, session_id):
+        # ALL 型 Output 必须返回 list/tuple，不能返回 no_update；无匹配组件时返回空列表
+        def _no_update_all():
+            return [], [], [], [], [], no_update
+
         ctx = dash.callback_context
-        if not ctx.triggered: return [no_update] * 5
-        
+        if not ctx.triggered:
+            return _no_update_all()
+
         btn_index = json.loads(ctx.triggered[0]['prop_id'].split('.')[0])['index']
-        # 解析算法和评级
         if '_' in btn_index:
             alg_name, actual_grade = btn_index.rsplit('_', 1)
         else:
             alg_name, actual_grade = None, btn_index
-            
+
         backend = session_manager.get_backend(session_id)
-        if not backend: return [no_update] * 5
-        
-        # 确定后端活跃算法数
+        if not backend:
+            return _no_update_all()
+
         active_algs = backend.get_active_algorithms()
         num_slots = len(active_algs) if active_algs else 1
-        
-        # 获取底层数据结果 (用于项提取)
+        # 与布局顺序一致；表格 index 恒为 algorithm_name，不用 'single'
+        indices = [a.metadata.algorithm_name for a in active_algs] if active_algs else []
+
         result = show_single_grade_detail(btn_index, session_id, session_manager)
-        if not result: return [no_update] * 5
+        if not result:
+            return _no_update_all()
         style, cols, all_data = result
         
-        # 解析可用的按键下拉选项
         key_ids = sorted(list(set(r.get('keyId') or r.get('key_id') for r in all_data if (r.get('keyId') or r.get('key_id')) is not None)))
         opts = [{'label': '请选择按键...', 'value': ''}, {'label': '全部按键', 'value': 'all'}] + \
                [{'label': f"按键 {k}", 'value': str(k)} for k in key_ids]
         
-        # 初始化扇区容器
         out_styles, out_cols = [no_update] * num_slots, [no_update] * num_slots
         out_opts, out_vals = [no_update] * num_slots, [no_update] * num_slots
         out_states = [no_update] * num_slots
         
-        # 定位目标 Slot
         target = 0
         if alg_name:
             for i, alg in enumerate(active_algs):
-                if alg.metadata.algorithm_name == alg_name: target = i; break
+                if alg.metadata.algorithm_name == alg_name:
+                    target = i
+                    break
         
         out_styles[target] = style
         out_cols[target] = cols
@@ -518,29 +576,7 @@ def register_grade_detail_callbacks(app, session_manager: SessionManager):
         out_vals[target] = 'all'
         out_states[target] = {'grade_key': actual_grade, 'nonce': dash.callback_context.triggered[0]['value']}
         
-        return out_styles, out_cols, out_opts, out_vals, out_states
-
-def register_grade_detail_jump_callbacks(app, session_manager: SessionManager):
-    """跳转逻辑"""
-    @app.callback(
-        [Output('url', 'pathname'),
-         Output('grade-detail-curves-modal', 'style', allow_duplicate=True),
-         Output('jump-source-plot-id', 'data', allow_duplicate=True)],
-        [Input('jump-to-waterfall-btn-from-grade-detail', 'n_clicks')],
-        [State('session-id', 'data'),
-         State('current-clicked-point-info', 'data'),
-         State('url', 'pathname')],
-        prevent_initial_call=True
-    )
-    def jump_to_waterfall(n_clicks, session_id, info, current_pathname):
-        if not n_clicks or not info: return no_update, no_update, no_update
-
-        # 如果已经在waterfall页面，直接返回不做操作
-        if current_pathname == '/waterfall':
-            return no_update, {'display': 'none'}, 'grade-detail-curves-modal'
-
-        # 跳转到waterfall页面
-        return '/waterfall', {'display': 'none'}, 'grade-detail-curves-modal'
+        return out_styles, out_cols, out_opts, out_vals, out_states, indices
 
 def register_grade_detail_return_callbacks(app, session_manager: SessionManager):
     """返回逻辑"""
@@ -568,7 +604,6 @@ def register_grade_detail_return_callbacks(app, session_manager: SessionManager)
 def register_all_callbacks(app, session_manager: SessionManager):
     """聚合注册所有评级详情相关的交互"""
     register_grade_detail_callbacks(app, session_manager)
-    register_grade_detail_jump_callbacks(app, session_manager)
     register_grade_detail_return_callbacks(app, session_manager)
     
     # 【核心：数据渲染与过滤逻辑】

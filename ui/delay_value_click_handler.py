@@ -339,7 +339,7 @@ class DelayValueClickHandler:
 
             rendered_row = dcc.Graph(figure=detail_figure_combined, style={'height': '600px'})
 
-            # 设置点击点信息，用于跳转到瀑布图
+            # 设置点击点信息
             key_id = getattr(record_note, 'id', 'N/A') if record_note else 'N/A'
             clicked_point_info = {
                 'algorithm_name': algorithm_name,

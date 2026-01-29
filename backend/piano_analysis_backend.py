@@ -81,6 +81,10 @@ class PianoAnalysisBackend:
         # 初始化相对延时分析器（处理相对延时分析）
         self.relative_delay_analyzer = RelativeDelayAnalyzer(self)
         
+        # ==================== 临时文件缓存 ====================
+        # 用于存储上传的文件二进制数据，减少 dcc.Store 的负载
+        self.temp_file_cache: Dict[str, bytes] = {}
+        
         logger.info(f"PianoAnalysisBackend初始化完成 (Session: {session_id})")
 
 
@@ -94,6 +98,9 @@ class PianoAnalysisBackend:
         # 清理多算法管理器
         if self.multi_algorithm_manager:
             self.multi_algorithm_manager.clear_all()
+        
+        # 清理临时文件缓存
+        self.clear_temp_cache()
 
         logger.info("✅ 所有数据状态已清理")
     
@@ -138,6 +145,22 @@ class PianoAnalysisBackend:
             )
         )
         return algorithm
+
+    # ==================== 临时文件缓存方法 ====================
+    def cache_temp_file(self, file_id: str, content_bytes: bytes) -> None:
+        """缓存临时上传的文件"""
+        if file_id and content_bytes:
+            self.temp_file_cache[file_id] = content_bytes
+            logger.debug(f"已缓存临时文件: {file_id}, 大小: {len(content_bytes)} 字节")
+    
+    def get_cached_temp_file(self, file_id: str) -> Optional[bytes]:
+        """获取缓存的临时文件"""
+        return self.temp_file_cache.get(file_id)
+    
+    def clear_temp_cache(self) -> None:
+        """清理临时文件缓存"""
+        self.temp_file_cache.clear()
+        logger.info("✅ 临时文件缓存已清理")
 
     def _analyze_single_algorithm(self, algorithm) -> bool:
         """
@@ -247,23 +270,6 @@ class PianoAnalysisBackend:
             logger.error(f"数据分析异常: {e}")
             logger.error(traceback.format_exc())
             return False
-
-    def generate_report_content(self):
-        """
-        生成报告内容（用于单算法模式）
-
-        Returns:
-            html.Div: 报告内容
-        """
-        try:
-            from ui.layout_components import create_report_layout
-            return create_report_layout(self)
-        except Exception as e:
-            logger.error(f"生成报告内容失败: {e}")
-            logger.error(traceback.format_exc())
-            return html.Div([
-                dbc.Alert(f"报告生成失败: {str(e)}", color="danger")
-            ])
 
 
     def process_history_selection(self, history_id):
@@ -518,15 +524,18 @@ class PianoAnalysisBackend:
         """
         return self.plot_service.generate_waterfall_plot(data_types, key_ids, time_filter, key_filter)
 
-    def get_waterfall_key_statistics(self) -> Dict[str, Any]:
+    def get_waterfall_key_statistics(self, data_types: List[str] = None) -> Dict[str, Any]:
         """获取瀑布图按键统计信息
+
+        Args:
+            data_types: 数据类型列表，如果为None则统计所有类型
 
         Returns:
             Dict[str, Any]: 包含按键统计信息的字典
                 - available_keys: List[Dict] 可用按键列表，每个包含key_id, total_count, exception_count等
                 - summary: Dict 总体统计信息
         """
-        return self.plot_service.get_waterfall_key_statistics()
+        return self.plot_service.get_waterfall_key_statistics(data_types)
     
     def generate_watefall_conbine_plot(self, key_on: float, key_off: float, key_id: int) -> Any:
         """生成瀑布图对比图（委托给PlotService）"""
@@ -618,181 +627,6 @@ class PianoAnalysisBackend:
             logger.error(f"获取{delay_type}延迟音符失败: {e}")
             logger.error(traceback.format_exc())
             return None
-    
-    def get_first_data_point_notes(self) -> Optional[Tuple[Any, Any]]:
-        """
-        获取延时时间序列图的第一个数据点对应的音符
-        
-        支持单算法模式和多算法模式：
-        - 单算法模式：使用 multi_algorithm_manager 中的算法
-        - 多算法模式：使用指定的算法
-        
-        Returns:
-            Tuple[Note, Note]: (record_note, replay_note)，如果失败则返回None
-        """
-        try:
-            # 获取激活的算法（统一处理单算法和多算法模式）
-            active_algorithms = self.get_active_algorithms()
-
-            if not active_algorithms:
-                return None
-                
-            # 使用第一个激活的算法（无论单算法还是多算法模式）
-            algorithm = active_algorithms[0]
-            if not algorithm.analyzer or not algorithm.analyzer.note_matcher:
-                logger.warning(f"算法 '{algorithm.metadata.algorithm_name}' 的分析器或匹配器不存在")
-                return None
-
-            analyzer = algorithm.analyzer
-            note_matcher = analyzer.note_matcher
-            
-            # 获取偏移数据
-            offset_data = note_matcher.get_offset_alignment_data()
-            if not offset_data:
-                logger.warning("没有匹配数据")
-                return None
-            
-            # 提取数据点并排序
-            data_points = []
-            for item in offset_data:
-                record_keyon = item.get('record_keyon', 0)
-                record_index = item.get('record_index')
-                replay_index = item.get('replay_index')
-                
-                if record_keyon is None or record_index is None or replay_index is None:
-                    continue
-                
-                data_points.append({
-                    'time': record_keyon / 10.0,  # 转换为ms
-                    'record_index': record_index,
-                    'replay_index': replay_index
-                })
-            
-            if not data_points:
-                logger.warning("没有有效数据点")
-                return None
-            
-            # 按时间排序，获取第一个数据点
-            data_points.sort(key=lambda x: x['time'])
-            first_point = data_points[0]
-            
-            record_index = first_point['record_index']
-            replay_index = first_point['replay_index']
-            
-            # 从matched_pairs中查找对应的Note对象
-            matched_pairs = note_matcher.get_matched_pairs()
-            record_note = None
-            replay_note = None
-            
-            for r_idx, p_idx, r_note, p_note in matched_pairs:
-                if r_idx == record_index and p_idx == replay_index:
-                    record_note = r_note
-                    replay_note = p_note
-                    break
-            
-            if record_note is None or replay_note is None:
-                logger.warning(f"未找到匹配对: record_index={record_index}, replay_index={replay_index}")
-                return None
-            
-            logger.info(f"找到第一个数据点: record_index={record_index}, replay_index={replay_index}")
-            return (record_note, replay_note)
-            
-        except Exception as e:
-            logger.error(f"获取第一个数据点失败: {e}")
-            logger.error(traceback.format_exc())
-            return None
-    
-    def test_curve_alignment(self) -> Optional[Dict[str, Any]]:
-        """
-        测试曲线对齐功能，使用延时时间序列图的第一个数据点
-        
-        Returns:
-            Dict[str, Any]: 测试结果，包含对齐前后的对比图和相似度
-        """
-        try:
-            from backend.force_curve_analyzer import ForceCurveAnalyzer
-            
-            # 获取第一个数据点的音符
-            notes = self.get_first_data_point_notes()
-            if notes is None:
-                return {
-                    'status': 'error',
-                    'message': '无法获取第一个数据点的音符'
-                }
-            
-            record_note, replay_note = notes
-            
-            # 计算平均延时（统一处理单算法和多算法模式）
-            mean_delay = 0.0
-            
-                # 获取第一个激活的算法（与get_first_data_point_notes逻辑一致）
-            active_algorithms = self.get_active_algorithms()
-            if active_algorithms:
-                algorithm = active_algorithms[0]
-                if algorithm.analyzer:
-                    mean_error_0_1ms = algorithm.analyzer.get_mean_error()
-                    if mean_error_0_1ms is not None:
-                        mean_delay = mean_error_0_1ms / 10.0
-            
-            logger.info(f"测试曲线对齐 - 获取平均延时: {mean_delay}ms")
-            
-            # 创建曲线分析器
-            # 减少平滑强度，保持波峰和波谷特征
-            analyzer = ForceCurveAnalyzer(
-                smooth_sigma=0.3,  # 大幅减小平滑强度，从1.0改为0.3，更好地保持波峰和波谷
-                dtw_distance_metric='manhattan',
-                dtw_window_size_ratio=0.3  # 适中的窗口大小，平衡对齐效果和形状保持
-            )
-            
-            # 对比曲线（播放曲线对齐到录制曲线）
-            result = analyzer.compare_curves(
-                record_note, 
-                replay_note,
-                record_note=record_note,
-                replay_note=replay_note,
-                mean_delay=mean_delay  # 传入平均延时
-            )
-            
-            if result is None:
-                return {
-                    'status': 'error',
-                    'message': '曲线对比失败'
-                }
-            
-            # 生成所有处理阶段的对比图 (大图)
-            all_stages_fig = None
-            # 生成独立的处理阶段图表列表
-            individual_stage_figures = []
-            
-            if 'processing_stages' in result:
-                # 兼容旧的大图逻辑
-                all_stages_fig = analyzer.visualize_all_processing_stages(result)
-                # 生成新的独立图表列表
-                individual_stage_figures = analyzer.generate_processing_stages_figures(result)
-            
-            # 生成对齐前后对比图（保持向后兼容）
-            comparison_fig = None
-            if 'alignment_comparison' in result:
-                comparison_fig = analyzer.visualize_alignment_comparison(result)
-            
-            return {
-                'status': 'success',
-                'result': result,
-                'comparison_figure': comparison_fig,
-                'all_stages_figure': all_stages_fig, # 保留以兼容
-                'individual_stage_figures': individual_stage_figures, # 新增字段
-                'record_index': record_note.id if hasattr(record_note, 'id') else 'N/A',
-                'replay_index': replay_note.id if hasattr(replay_note, 'id') else 'N/A'
-            }
-            
-        except Exception as e:
-            logger.error(f"测试曲线对齐失败: {e}")
-            
-            logger.error(traceback.format_exc())
-            return {
-                'status': 'error',
-                'message': f'测试失败: {str(e)}'
-            }
     
     def generate_scatter_detail_plot_by_indices(self, record_index: int, replay_index: int) -> Any:
         """生成散点图点击的详细曲线图（委托给PlotService）"""
@@ -919,14 +753,15 @@ class PianoAnalysisBackend:
             # 计算总错误数
             total_errors = drop_hammers + multi_hammers + invalid_record_notes + invalid_replay_notes
 
-            return {
+            result = {
                 'drop_hammers': drop_hammers,
                 'multi_hammers': multi_hammers,
                 'invalid_record_notes': invalid_record_notes,
                 'invalid_replay_notes': invalid_replay_notes,
                 'total_errors': total_errors
             }
-            
+            return result
+
         except Exception as e:
             logger.error(f"获取算法统计信息失败: {e}")
             return {
@@ -971,7 +806,7 @@ class PianoAnalysisBackend:
             # 音符总数 = 有效音符 + 无效音符
             total_notes = valid_record + valid_replay + invalid_record + invalid_replay
             
-            return {
+            result = {
                 'total_notes': total_notes,
                 'valid_record_notes': valid_record,
                 'valid_replay_notes': valid_replay,
@@ -979,7 +814,8 @@ class PianoAnalysisBackend:
                 'invalid_record_notes': invalid_record,
                 'invalid_replay_notes': invalid_replay
             }
-            
+            return result
+
         except Exception as e:
             logger.error(f"获取数据概览统计信息失败: {e}")
             import traceback

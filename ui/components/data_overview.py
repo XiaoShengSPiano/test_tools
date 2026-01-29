@@ -4,6 +4,9 @@
 """
 from dash import html
 import dash_bootstrap_components as dbc
+from utils.logger import Logger
+
+logger = Logger.get_logger()
 
 
 def create_data_overview_card(stats_data, algorithm_name=None):
@@ -24,7 +27,7 @@ def create_data_overview_card(stats_data, algorithm_name=None):
     """
     if not stats_data:
         return html.Div()
-    
+
     # 从统计数据中获取各项指标
     record_valid = stats_data.get('valid_record_notes', 0)
     replay_valid = stats_data.get('valid_replay_notes', 0)
@@ -37,7 +40,7 @@ def create_data_overview_card(stats_data, algorithm_name=None):
     
     title = "数据概览" if not algorithm_name else f"数据概览 - {algorithm_name}"
     
-    return dbc.Card([
+    card = dbc.Card([
         dbc.CardHeader([
             html.H4([
                 html.I(className="fas fa-info-circle me-2", style={'color': '#17a2b8'}),
@@ -61,6 +64,7 @@ def create_data_overview_card(stats_data, algorithm_name=None):
             ])
         ])
     ], className="shadow-sm mb-4")
+    return card
 
 
 def _create_stat_item(label, value, color="primary"):

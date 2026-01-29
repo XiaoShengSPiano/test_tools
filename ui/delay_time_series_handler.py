@@ -98,11 +98,20 @@ class DelayTimeSeriesHandler:
 
     def _handle_trigger_detection(self, ctx: CallbackContext) -> Dict[str, Any]:
         """处理触发源检测"""
-        trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
-        logger.info(f"🔍 触发ID: {trigger_id}")
+        trigger_id_raw = ctx.triggered[0]['prop_id'].split('.')[0]
+        logger.info(f"🔍 原始触发ID: {trigger_id_raw}")
+
+        # 解析 Plot ID (支持字典模式匹配)
+        plot_id = trigger_id_raw
+        if trigger_id_raw.startswith('{'):
+            try:
+                import json
+                plot_id = json.loads(trigger_id_raw).get('id', trigger_id_raw)
+            except Exception:
+                pass
 
         # 如果点击了关闭按钮，隐藏模态框
-        if trigger_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
+        if plot_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
             modal_style = {
                 'display': 'none',
                 'position': 'fixed',
@@ -120,11 +129,12 @@ class DelayTimeSeriesHandler:
             }
 
         # 只有在点击了时间序列图时才处理
-        if trigger_id not in ['scatter-analysis-raw-delay-plot', 'scatter-analysis-relative-delay-plot'] or not ctx.triggered[0]['value']:
+        # 注意：这里需要检查解析后的 plot_id
+        if plot_id not in ['raw-delay-time-series-plot', 'relative-delay-time-series-plot'] or not ctx.triggered[0]['value']:
             return {'should_skip': True}
 
-        logger.info(f"[TARGET] 检测到 {trigger_id} 点击")
-        return {'is_close_button': False, 'should_skip': False, 'trigger_id': trigger_id}
+        logger.info(f"[TARGET] 检测到 {plot_id} 点击")
+        return {'is_close_button': False, 'should_skip': False, 'trigger_id': plot_id}
 
     def _validate_click_data(self, delay_click_data) -> Dict[str, Any]:
         """验证点击数据"""
@@ -291,7 +301,7 @@ class DelayTimeSeriesHandler:
     def _prepare_return_data(self, match_result, point_data, chart_result, time_result, source_plot_id) -> Dict[str, Any]:
         """准备返回数据"""
 
-        # 保存点击点信息，用于跳转到瀑布图
+        # 保存点击点信息
         point_info = {
             'key_id': point_data['key_id'],
             'record_idx': point_data['record_index'],

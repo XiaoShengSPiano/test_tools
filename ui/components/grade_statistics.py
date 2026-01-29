@@ -5,6 +5,77 @@
 from dash import html
 import dash_bootstrap_components as dbc
 from utils.constants import GRADE_CONFIGS, GRADE_LEVELS
+from utils.logger import Logger
+
+logger = Logger.get_logger()
+
+
+def create_grade_statistics_rows(graded_stats, algorithm_name=None):
+    """统一创建评级统计UI组件
+
+    Args:
+        graded_stats: 评级统计数据
+        algorithm_name: 算法名称（None表示单算法模式）
+
+    Returns:
+        list: 包含评级统计UI组件的列表
+    """
+    rows = []
+
+    # 计算总匹配对数（只统计成功匹配的评级）
+    total_count = sum(graded_stats.get(level, {}).get('count', 0)
+                     for level in GRADE_LEVELS)
+
+    if total_count > 0:
+        # 总体统计行
+        total_label = "所有类型的匹配对" if algorithm_name is None else f"{algorithm_name} - 所有类型的匹配对"
+        rows.append(
+            dbc.Row([
+                dbc.Col([
+                    html.Div([
+                        html.H3(f"{total_count}", className="text-info mb-1"),
+                        html.P("总匹配对数", className="text-muted mb-0"),
+                        html.Small(total_label, className="text-muted", style={'fontSize': '10px'})
+                    ], className="text-center")
+                ], width=12)
+            ], className="mb-3")
+        )
+
+        # 评级统计按钮行
+        grade_cols = []
+        for grade_key, grade_name, color_class in GRADE_CONFIGS:
+            grade_data = graded_stats.get(grade_key, {})
+            count = grade_data.get('count', 0)
+            percentage = grade_data.get('percent', 0.0)
+
+            # 构建按钮ID
+            button_index = grade_key if algorithm_name is None else f"{algorithm_name}_{grade_key}"
+
+            grade_cols.append(
+                dbc.Col([
+                    html.Div([
+                        dbc.Button(
+                            f"{count}",
+                            id={'type': 'grade-detail-btn', 'index': button_index},
+                            color=color_class,
+                            size='lg',
+                            className="mb-1",
+                            disabled=(count == 0),
+                            style={'fontSize': '24px', 'fontWeight': 'bold', 'width': '100%'}
+                        ),
+                        html.P(f"{grade_name}", className="text-muted mb-0"),
+                        html.Small(f"{percentage:.1f}%", className="text-muted", style={'fontSize': '10px'})
+                    ], className="text-center")
+                ], width='auto', className="px-2")
+            )
+
+
+        if grade_cols:
+            rows.append(
+                dbc.Row(grade_cols, className="mb-3 justify-content-center")
+            )
+
+    return rows
 
 
 def create_grade_statistics_card(graded_stats, algorithm_name=None):
@@ -18,12 +89,8 @@ def create_grade_statistics_card(graded_stats, algorithm_name=None):
     Returns:
         dbc.Card: 评级统计卡片组件
     """
-    # 使用现有的create_grade_statistics_rows函数
-    from ui.layout_components import create_grade_statistics_rows
-    
     rows = create_grade_statistics_rows(graded_stats, algorithm_name)
-    
-    return dbc.Card([
+    card = dbc.Card([
         dbc.CardHeader([
             html.H4([
                 html.I(className="fas fa-chart-pie me-2", style={'color': '#6f42c1'}),
@@ -32,6 +99,7 @@ def create_grade_statistics_card(graded_stats, algorithm_name=None):
         ]),
         dbc.CardBody(rows)
     ], className="shadow-sm mb-4")
+    return card
 
 
 def create_grade_detail_table_placeholder(table_id='single'):
@@ -45,8 +113,8 @@ def create_grade_detail_table_placeholder(table_id='single'):
         html.Div: 表格占位符
     """
     from dash import dash_table, dcc
-    
-    return html.Div(
+
+    out = html.Div(
         id={'type': 'grade-detail-table', 'index': table_id},
         style={'display': 'none', 'marginTop': '20px'},
         children=[
@@ -88,7 +156,9 @@ def create_grade_detail_table_placeholder(table_id='single'):
                 id={'type': 'grade-detail-datatable', 'index': table_id},
                 columns=[],
                 data=[],
-                page_action='none',
+                page_action='native',  # 启用客户端分页
+                page_current=0,
+                page_size=50,  # 每页显示50条数据
                 fixed_rows={'headers': True},
                 style_table={
                     'maxHeight': '400px',
@@ -171,6 +241,8 @@ def create_grade_detail_table_placeholder(table_id='single'):
             )
         ]
     )
+  
+    return out
 
 
 def create_delay_metrics_card(delay_metrics, algorithm_name=None):
@@ -284,7 +356,7 @@ def create_delay_metrics_card(delay_metrics, algorithm_name=None):
         extreme_metrics
     ])
 
-    return dbc.Card([
+    card = dbc.Card([
         dbc.CardHeader([
             html.H4([
                 html.I(className="fas fa-chart-line me-2", style={'color': '#17a2b8'}),
@@ -294,3 +366,5 @@ def create_delay_metrics_card(delay_metrics, algorithm_name=None):
         ]),
         card_body
     ], className="shadow-sm mb-4")
+   
+    return card

@@ -1,7 +1,7 @@
 """
 瀑布图分析页面
 """
-from dash import html, dcc, callback, Input, Output, State
+from dash import html, dcc, callback, Input, Output, State, no_update
 import dash_bootstrap_components as dbc
 from utils.logger import Logger
 from typing import List, Dict, Any
@@ -383,7 +383,13 @@ def load_waterfall_plot(session_id, session_manager, data_types, selected_keys, 
             return dcc.Graph(
                 id='waterfall-graph',
                 figure=waterfall_fig,
-                config={'displayModeBar': True, 'displaylogo': False},
+                config={
+                    'displayModeBar': True, 
+                    'displaylogo': False,
+                    'scrollZoom': True,  # 启用滚轮缩放
+                    'doubleClick': 'reset',  # 双击重置缩放
+                    'modeBarButtonsToAdd': ['zoomIn2d', 'zoomOut2d', 'autoScale2d', 'resetScale2d']  # 添加缩放按钮
+                },
                 style={'height': '800px'}
             )
         else:
@@ -549,7 +555,7 @@ def _create_key_options_for_dropdown(key_stats: Dict[str, Any]) -> List[Dict]:
             status_icon = "⚪"
 
         # 为下拉框创建更简洁的标签
-        label = f"{status_icon} 按键{key_id} ({total_count}个"
+        label = f"{status_icon} 按键{key_id} ({total_count}对"
         if exception_count > 0:
             label += f", {exception_count}异常"
         label += ")"
@@ -756,6 +762,44 @@ def register_callbacks(app, session_manager):
 
         return []
     
+    # 将跳转参数转换为筛选参数（只输出到Store，避免跨页面组件引用）
+    # 当数据类型改变时，更新按键统计和下拉选项
+    @app.callback(
+        [
+            Output('waterfall-key-stats', 'children', allow_duplicate=True),
+            Output('waterfall-selected-keys', 'options', allow_duplicate=True)
+        ],
+        Input('waterfall-data-types', 'value'),
+        State('session-id', 'data'),
+        prevent_initial_call=True
+    )
+    def update_key_statistics_on_data_type_change(data_types, session_id):
+        """当数据类型改变时，更新按键统计信息"""
+        if not session_id or not data_types:
+            return "", []
+        
+        try:
+            backend = session_manager.get_backend(session_id)
+            if not backend:
+                return "", []
+            
+            # 根据选择的数据类型获取按键统计
+            key_stats = backend.get_waterfall_key_statistics(data_types)
+            
+            # 生成按键统计显示
+            stats_display = _create_key_stats_display(key_stats)
+            
+            # 生成按键选择选项
+            key_options = _create_key_options_for_dropdown(key_stats)
+            
+            logger.info(f"[INFO] 数据类型改变，更新按键统计: {data_types}, 找到 {len(key_options)} 个按键")
+            
+            return stats_display, key_options
+        
+        except Exception as e:
+            logger.error(f"[ERROR] 更新按键统计失败: {e}")
+            return "", []
+
     # 页面初始加载时的默认显示
     @app.callback(
         [
@@ -786,8 +830,8 @@ def register_callbacks(app, session_manager):
             if not backend:
                 return _create_no_backend_alert(), "", []
 
-            # 获取按键统计信息
-            key_stats = backend.get_waterfall_key_statistics()
+            # 获取按键统计信息（默认只统计精确匹配）
+            key_stats = backend.get_waterfall_key_statistics(['matched_pairs'])
 
             # 生成按键统计显示
             stats_display = _create_key_stats_display(key_stats)

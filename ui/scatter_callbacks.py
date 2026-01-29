@@ -49,7 +49,7 @@ def register_scatter_callbacks(app, session_mgr: SessionManager):
     # ==================== Z-Score散点图回调 ====================
     
     @app.callback(
-        Output('key-delay-zscore-scatter-plot', 'figure'),
+        Output({'type': 'scatter-plot', 'id': 'key-delay-zscore-scatter-plot'}, 'figure'),
         [Input('report-content', 'children')],
         [State('session-id', 'data')],
         prevent_initial_call=True
@@ -58,93 +58,129 @@ def register_scatter_callbacks(app, session_mgr: SessionManager):
         """处理按键与延时Z-Score标准化散点图自动生成 - 当报告内容更新时触发"""
         return zscore_handler.generate_zscore_scatter_plot(session_id)
     
+    # ==================== 统一散点图点击回调 (Pattern Matching) ====================
+    
     @app.callback(
         [Output('key-curves-modal', 'style', allow_duplicate=True),
          Output('key-curves-comparison-container', 'children', allow_duplicate=True),
          Output('current-clicked-point-info', 'data', allow_duplicate=True),
-         Output('key-delay-zscore-scatter-plot', 'clickData', allow_duplicate=True)],
-        [Input('key-delay-zscore-scatter-plot', 'clickData'),
+         Output({'type': 'scatter-plot', 'id': ALL}, 'clickData')],
+        [Input({'type': 'scatter-plot', 'id': ALL}, 'clickData'),
          Input('close-key-curves-modal', 'n_clicks'),
          Input('close-key-curves-modal-btn', 'n_clicks')],
         [State('session-id', 'data'),
          State('key-curves-modal', 'style')],
         prevent_initial_call=True
     )
-    def handle_zscore_scatter_click(zscore_scatter_clickData, close_modal_clicks, close_btn_clicks, session_id, current_style):
-        """处理Z-Score标准化散点图点击，显示曲线对比（专用模态框）"""
-        return zscore_handler.handle_zscore_scatter_click(zscore_scatter_clickData, close_modal_clicks, close_btn_clicks, session_id, current_style)
-    
-    # ==================== 锤速散点图回调 ====================
+    def handle_any_scatter_click(all_click_data, close_modal_clicks, close_btn_clicks, session_id, current_style):
+        """统一处理所有散点图的点击逻辑，包括弹窗显示和关闭"""
+        ctx = callback_context
+        if not ctx.triggered:
+            return no_update
+        
+        trigger_info = ctx.triggered[0]['prop_id']
+        trigger_id_raw = trigger_info.split('.')[0]
+        
+        # 1. 处理关闭弹窗逻辑
+        if trigger_id_raw in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
+            new_style = current_style.copy()
+            new_style['display'] = 'none'
+            return new_style, [], no_update, [None] * len(all_click_data)
+
+        # 2. 处理图表点击逻辑 - 提取 Plot ID
+        plot_id = None
+        try:
+            import json
+            if trigger_id_raw.startswith('{'):
+                trigger_id_obj = json.loads(trigger_id_raw)
+                plot_id = trigger_id_obj.get('id')
+            else:
+                plot_id = trigger_id_raw
+        except Exception as e:
+            logger.error(f"[ERROR] 解析触发器 ID 失败: {trigger_id_raw}, error: {e}")
+            return no_update
+
+        # 获取当前触发的点击数据
+        click_data = None
+        for data in all_click_data:
+            if data:
+                click_data = data
+                break
+        
+        if not click_data:
+            logger.warning(f"[WARNING] 触发器为 {plot_id} 但无有效点击数据")
+            return no_update
+
+        # 根据图表 ID 分发到不同的处理器
+        # 注意：由于各处理器的返回值索引不统一，这里需要手动映射每个分支
+        style, children, point_info = no_update, no_update, no_update
+        
+        try:
+            if plot_id == 'key-delay-zscore-scatter-plot':
+                res = zscore_handler.handle_zscore_scatter_click(click_data, None, None, session_id, current_style)
+                # ZScoreHandler 返回 (style, children, no_update, point_info, None)
+                style, children, point_info = res[0], res[1], res[3] if len(res) > 3 else res[2]
+            
+            elif plot_id == 'hammer-velocity-delay-scatter-plot':
+                res = hammer_velocity_handler.handle_hammer_velocity_scatter_click(click_data, None, None, session_id, current_style)
+                # HammerVelocityHandler (delay) 返回 (style, children, point_info)
+                style, children, point_info = res[0], res[1], res[2]
+                
+            elif plot_id == 'hammer-velocity-relative-delay-scatter-plot' or plot_id == 'relative-delay-distribution-plot':
+                res = hammer_velocity_handler.handle_hammer_velocity_relative_delay_plot_click(click_data, None, None, session_id, current_style)
+                # HammerVelocityHandler (relative/distribution) 返回 (style, children, point_info, no_update)
+                style, children, point_info = res[0], res[1], res[2]
+                
+            elif plot_id == 'key-delay-scatter-plot':
+                res = key_delay_handler.handle_key_delay_scatter_click(click_data, None, None, session_id, current_style)
+                # KeyDelayHandler 返回 (style, children, point_info, no_update)
+                style, children, point_info = res[0], res[1], res[2]
+                
+            elif plot_id == 'hammer-velocity-comparison-plot':
+                res = velocity_comparison_handler.handle_hammer_velocity_comparison_click(click_data, None, None, session_id, current_style)
+                # VelocityComparisonHandler 返回 (style, children, point_info, ...)
+                style, children, point_info = res[0], res[1], res[2]
+                
+            elif plot_id == 'key-force-interaction-plot':
+                res = key_force_handler.handle_key_force_interaction_plot_click(click_data, None, None, session_id, current_style)
+                # KeyForceInteractionHandler 返回 (style, children, point_info)
+                style, children, point_info = res[0], res[1], res[2]
+                
+            elif plot_id in ['raw-delay-time-series-plot', 'relative-delay-time-series-plot']:
+                raw_data = click_data if plot_id == 'raw-delay-time-series-plot' else None
+                rel_data = click_data if plot_id == 'relative-delay-time-series-plot' else None
+                res = delay_time_series_handler.handle_delay_time_series_click_multi(raw_data, rel_data, None, None, session_id, current_style)
+                # DelayTimeSeriesHandler 返回 (style, children, point_info, no_update, no_update)
+                style, children, point_info = res[0], res[1], res[2]
+
+            logger.info(f"[OK] 点击处理完成: plot_id={plot_id}, style_display={style.get('display') if isinstance(style, dict) else 'no_style'}")
+            
+            final_resets = [no_update] * len(all_click_data)
+            return style, children, point_info, final_resets
+
+        except Exception as e:
+            logger.error(f"[ERROR] 散点图点击处理失败 (plot_id={plot_id}): {e}")
+            logger.error(traceback.format_exc())
+            return no_update, no_update, no_update, [no_update] * len(all_click_data)
+
+        return no_update
     
     @app.callback(
-        Output('hammer-velocity-delay-scatter-plot', 'figure'),
+        Output({'type': 'scatter-plot', 'id': 'relative-delay-distribution-plot'}, 'figure'),
         [Input('report-content', 'children')],
         [State('session-id', 'data')],
         prevent_initial_call=True
     )
-    def handle_generate_hammer_velocity_scatter_plot(report_content, session_id):
-        """处理锤速与延时Z-Score标准化散点图自动生成 - 当报告内容更新时触发"""
-        return hammer_velocity_handler.generate_hammer_velocity_scatter_plot(session_id)
-    
+    def handle_generate_relative_delay_distribution_plot(report_content, session_id):
+        """处理相对延时分布图自动生成 - 当报告内容更新时触发"""
+        backend = session_mgr.get_backend(session_id)
+        if not backend:
+            return no_update
+        return backend.generate_relative_delay_distribution_plot()
+
+
     @app.callback(
-        Output('hammer-velocity-relative-delay-scatter-plot', 'figure'),
-        [Input('report-content', 'children')],
-        [State('session-id', 'data')],
-        prevent_initial_call=True
-    )
-    def handle_generate_hammer_velocity_relative_delay_scatter_plot(report_content, session_id):
-        """处理锤速与相对延时散点图自动生成 - 当报告内容更新时触发"""
-        return hammer_velocity_handler.generate_hammer_velocity_relative_delay_scatter_plot(session_id)
-    
-    @app.callback(
-        Output('key-curves-modal', 'style', allow_duplicate=True),
-        Output('key-curves-comparison-container', 'children', allow_duplicate=True),
-        Output('current-clicked-point-info', 'data', allow_duplicate=True),
-        Input('hammer-velocity-delay-scatter-plot', 'clickData'),
-        Input('close-key-curves-modal', 'n_clicks'),
-        Input('close-key-curves-modal-btn', 'n_clicks'),
-        State('session-id', 'data'),
-        State('key-curves-modal', 'style'),
-        prevent_initial_call=True
-    )
-    def handle_hammer_velocity_scatter_click(scatter_clickData, close_modal_clicks, close_btn_clicks, session_id, current_style):
-        return hammer_velocity_handler.handle_hammer_velocity_scatter_click(scatter_clickData, close_modal_clicks, close_btn_clicks, session_id, current_style)
-    
-    @app.callback(
-        [Output('key-curves-modal', 'style', allow_duplicate=True),
-         Output('key-curves-comparison-container', 'children', allow_duplicate=True),
-         Output('current-clicked-point-info', 'data', allow_duplicate=True),
-         Output('hammer-velocity-relative-delay-scatter-plot', 'clickData', allow_duplicate=True)],
-        [Input('hammer-velocity-relative-delay-scatter-plot', 'clickData'),
-         Input('close-key-curves-modal', 'n_clicks'),
-         Input('close-key-curves-modal-btn', 'n_clicks')],
-        [State('session-id', 'data'),
-         State('key-curves-modal', 'style')],
-        prevent_initial_call=True
-    )
-    def handle_hammer_velocity_relative_delay_scatter_click(scatter_clickData, close_modal_clicks, close_btn_clicks, session_id, current_style):
-        return hammer_velocity_handler.handle_hammer_velocity_relative_delay_plot_click(scatter_clickData, close_modal_clicks, close_btn_clicks, session_id, current_style)
-    
-    # ==================== 按键延时散点图回调 ====================
-    
-    @app.callback(
-        [Output('key-curves-modal', 'style', allow_duplicate=True),
-         Output('key-curves-comparison-container', 'children', allow_duplicate=True),
-         Output('current-clicked-point-info', 'data', allow_duplicate=True),
-         Output('key-delay-scatter-plot', 'clickData', allow_duplicate=True)],
-        [Input('key-delay-scatter-plot', 'clickData'),
-         Input('close-key-curves-modal', 'n_clicks'),
-         Input('close-key-curves-modal-btn', 'n_clicks')],
-        [State('session-id', 'data'),
-         State('key-curves-modal', 'style')],
-        prevent_initial_call=True
-    )
-    def handle_key_delay_scatter_click(scatter_clickData, close_modal_clicks, close_btn_clicks, session_id, current_style):
-        """处理按键与相对延时散点图点击，显示曲线对比（专用模态框）"""
-        return key_delay_handler.handle_key_delay_scatter_click(scatter_clickData, close_modal_clicks, close_btn_clicks, session_id, current_style)
-    
-    @app.callback(
-        Output('key-delay-scatter-plot', 'figure'),
+        Output({'type': 'scatter-plot', 'id': 'key-delay-scatter-plot'}, 'figure'),
         [Input('report-content', 'children'),
          Input({'type': 'key-delay-scatter-common-keys-only', 'index': ALL}, 'value'),
          Input({'type': 'key-delay-scatter-algorithm-selector', 'index': ALL}, 'value')],
@@ -213,7 +249,7 @@ def register_scatter_callbacks(app, session_mgr: SessionManager):
     # ==================== 锤速对比图回调 ====================
     
     @app.callback(
-        Output('hammer-velocity-comparison-plot', 'figure'),
+        Output({'type': 'scatter-plot', 'id': 'hammer-velocity-comparison-plot'}, 'figure'),
         [Input('report-content', 'children')],
         [State('session-id', 'data')],
         prevent_initial_call=True
@@ -222,72 +258,15 @@ def register_scatter_callbacks(app, session_mgr: SessionManager):
         """处理锤速对比图自动生成 - 当报告内容更新时触发"""
         return velocity_comparison_handler.handle_generate_hammer_velocity_comparison_plot(report_content, session_id)
     
-    @app.callback(
-        [Output('key-curves-modal', 'style', allow_duplicate=True),
-         Output('key-curves-comparison-container', 'children', allow_duplicate=True),
-         Output('main-plot', 'figure', allow_duplicate=True),
-         Output('current-clicked-point-info', 'data', allow_duplicate=True),
-         Output('hammer-velocity-comparison-plot', 'clickData', allow_duplicate=True)],
-        [Input('hammer-velocity-comparison-plot', 'clickData'),
-         Input('close-key-curves-modal', 'n_clicks'),
-         Input('close-key-curves-modal-btn', 'n_clicks')],
-        [State('session-id', 'data'),
-         State('key-curves-modal', 'style')],
-        prevent_initial_call=True
-    )
-    def callback_hammer_velocity_comparison_click(
-        click_data: Optional[Dict[str, Any]],
-        close_modal_clicks: Optional[int],
-        close_btn_clicks: Optional[int],
-        session_id: str,
-        current_style: Dict[str, Any]
-    ) -> Tuple[Dict[str, Any], List[Union[html.Div, dcc.Graph]], Union[Figure, NoUpdate], Dict[str, Any], Optional[Dict[str, Any]]]:
-        """处理锤速对比图点击，显示对应按键的曲线对比（悬浮窗）"""
-        return velocity_comparison_handler.handle_hammer_velocity_comparison_click(
-            click_data, close_modal_clicks, close_btn_clicks, session_id, current_style
-        )
     
     # ==================== 按键-力度交互效应图回调 ====================
     
-    @app.callback(
-        [Output('key-curves-modal', 'style', allow_duplicate=True),
-         Output('key-curves-comparison-container', 'children', allow_duplicate=True),
-         Output('main-plot', 'figure', allow_duplicate=True),
-         Output('current-clicked-point-info', 'data', allow_duplicate=True),
-         Output('key-force-interaction-plot', 'clickData', allow_duplicate=True)],
-        [Input('key-force-interaction-plot', 'clickData'),
-         Input('close-key-curves-modal', 'n_clicks'),
-         Input('close-key-curves-modal-btn', 'n_clicks')],
-        [State('session-id', 'data'),
-         State('key-curves-modal', 'style')],
-        prevent_initial_call=True
-    )
-    def handle_key_force_interaction_plot_click_callback(click_data, close_modal_clicks, close_btn_clicks, session_id, current_style):
-        """处理按键-力度交互效应图点击回调"""
-        return key_force_handler.handle_key_force_interaction_plot_click(click_data, close_modal_clicks, close_btn_clicks, session_id, current_style)
     
     # 注册按键-力度交互效应图回调
     register_key_force_interaction_callbacks(app, session_mgr)
     
     # ==================== 延时时间序列图回调 ====================
 
-    @app.callback(
-        [Output('key-curves-modal', 'style', allow_duplicate=True),
-         Output('key-curves-comparison-container', 'children', allow_duplicate=True),
-         Output('current-clicked-point-info', 'data', allow_duplicate=True),
-         Output('raw-delay-time-series-plot', 'clickData', allow_duplicate=True),
-         Output('relative-delay-time-series-plot', 'clickData', allow_duplicate=True)],
-        [Input('raw-delay-time-series-plot', 'clickData'),
-         Input('relative-delay-time-series-plot', 'clickData'),
-         Input('close-key-curves-modal', 'n_clicks'),
-         Input('close-key-curves-modal-btn', 'n_clicks')],
-        [State('session-id', 'data'),
-         State('key-curves-modal', 'style')],
-        prevent_initial_call=True
-    )
-    def handle_delay_time_series_click_multi(raw_click_data, relative_click_data, close_modal_clicks, close_btn_clicks, session_id, current_style):
-        """处理延时时间序列图点击（多算法模式），显示音符分析曲线（悬浮窗）"""
-        return delay_time_series_handler.handle_delay_time_series_click_multi(raw_click_data, relative_click_data, close_modal_clicks, close_btn_clicks, session_id, current_style)
 
 
 # ==================== 按键-力度交互效应图相关独立函数 ====================
@@ -316,7 +295,7 @@ def _prepare_key_force_interaction_figure(trigger_id: str, backend, current_figu
                 for trace_dict in fig.data:
                     trace_type = trace_dict.get('type', 'scatter')
                     if trace_type == 'scatter':
-                        fig_data.append(go.Scatter(trace_dict))
+                        fig_data.append(go.Scattergl(trace_dict))
                     else:
                         fig_data.append(trace_dict)
                 fig.data = fig_data
@@ -367,7 +346,14 @@ def _update_data_trace_visibility(data_list: List, selected_keys: List[int]):
                                 key_id = int(first_point[2])
                                 algorithm_name = first_point[4] if first_point[4] else None
             except Exception as e:
-                logger.debug(f"[TRACE] 提取按键ID失败: {e}")
+                logger.debug(f"[TRACE] 从customdata提取按键ID失败: {e}")
+        
+        # 兜底：从meta提取
+        if key_id is None:
+            meta = trace.get('meta') if isinstance(trace, dict) else (trace.meta if hasattr(trace, 'meta') else None)
+            if meta and isinstance(meta, dict) and 'key_id' in meta:
+                key_id = meta['key_id']
+                logger.debug(f"[TRACE] 从meta提取按键ID成功: {key_id}")
         
         # 特殊处理：如果是显示图注的trace，始终保持可见
         # 这样图注始终显示，用户可以通过图注控制整个算法的显示
@@ -463,10 +449,16 @@ def update_key_selector_options(figure):
                                 key_id = int(first_point[2])
                                 key_ids.add(key_id)
             except Exception as e:
-                logger.debug(f"[TRACE] 从trace提取按键ID失败: {e}")
+                logger.debug(f"[TRACE] 从customdata提取按键ID失败: {e}")
+        
+        # 兜底：从meta提取
+        meta = trace.get('meta') if isinstance(trace, dict) else (trace.meta if hasattr(trace, 'meta') else None)
+        if meta and isinstance(meta, dict) and 'key_id' in meta:
+            key_ids.add(meta['key_id'])
     
     # 生成下拉选项
     options = [{'label': f'按键 {key_id}', 'value': key_id} for key_id in sorted(key_ids)]
+    logger.info(f"[INFO] 提取到 {len(options)} 个按键选项")
     return options
 
 
@@ -483,10 +475,39 @@ def register_key_force_interaction_callbacks(app, session_manager: SessionManage
     # 更新按键选择器选项
     @app.callback(
         Output('key-force-interaction-key-selector', 'options'),
-        [Input('key-force-interaction-plot', 'figure')],
-        prevent_initial_call=True
+        [Input({'type': 'scatter-plot', 'id': ALL}, 'figure')],
+        prevent_initial_call=False  # 允许初始调用以在图表加载时填充选项
     )
-    def callback_update_key_selector_options(figure):
+    def callback_update_key_selector_options(all_figures):
+        # 查找交互效应图的数据
+        # Note: ctx.triggered 也可以用，但这里遍历 all_figures 更简单
+        # ctx = callback_context
+        # triggered_id = json.loads(ctx.triggered[0]['prop_id'].split('.')[0])['id']
+        
+        # 找到正确的 figure
+        figure = None
+        # 我们这里只有一个 type: scatter-plot 的 Input，但 ID 是 ALL
+        # 实际上我们根据 id 解析
+        ctx = callback_context
+        if not ctx.triggered:
+            return []
+            
+        try:
+            import json
+            for i, figure_data in enumerate(all_figures):
+                # 检查 input 的 id
+                input_id_str = ctx.inputs_list[0][i]['id']
+                if isinstance(input_id_str, str):
+                    input_id = json.loads(input_id_str).get('id')
+                else:
+                    input_id = input_id_str.get('id')
+                    
+                if input_id == 'key-force-interaction-plot':
+                    figure = figure_data
+                    break
+        except Exception as e:
+            logger.error(f"[ERROR] 获取交互效应图数据失败: {e}")
+
         return update_key_selector_options(figure)
     
     # 当下拉菜单选择改变时，更新selected_keys
@@ -500,12 +521,30 @@ def register_key_force_interaction_callbacks(app, session_manager: SessionManage
     
     # 按键-力度交互效应图自动生成和更新回调函数
     @app.callback(
-        Output('key-force-interaction-plot', 'figure'),
+        Output({'type': 'scatter-plot', 'id': 'key-force-interaction-plot'}, 'figure'),
         [Input('report-content', 'children'),
          Input('key-force-interaction-selected-keys', 'data')],
         [State('session-id', 'data'),
-         State('key-force-interaction-plot', 'figure')],
+         State({'type': 'scatter-plot', 'id': ALL}, 'figure')],
         prevent_initial_call=True
     )
-    def callback_handle_generate_key_force_interaction_plot(report_content, selected_keys, session_id, current_figure):
+    def callback_handle_generate_key_force_interaction_plot(report_content, selected_keys, session_id, all_figures):
+        # 找到当前的 figure (如果有)
+        current_figure = None
+        ctx = callback_context
+        try:
+            import json
+            for i, figure_data in enumerate(all_figures):
+                state_id_str = ctx.states_list[0][i]['id']
+                if isinstance(state_id_str, str):
+                    state_id = json.loads(state_id_str).get('id')
+                else:
+                    state_id = state_id_str.get('id')
+                    
+                if state_id == 'key-force-interaction-plot':
+                    current_figure = figure_data
+                    break
+        except Exception:
+            pass
+            
         return handle_generate_key_force_interaction_plot_with_session(session_manager, report_content, selected_keys, session_id, current_figure)

@@ -62,24 +62,33 @@ class ZScoreScatterHandler(ScatterHandlerBase):
             return backend.plot_generator._create_empty_plot(f"生成Z-Score散点图失败: {str(e)}")
     
     def handle_zscore_scatter_click(self, zscore_scatter_clickData, close_modal_clicks, close_btn_clicks, session_id, current_style):
-        """处理Z-Score标准化散点图点击，显示曲线对比（悬浮窗）并支持跳转到瀑布图"""
+        """处理Z-Score标准化散点图点击，显示曲线对比（悬浮窗）"""
         # 检测触发源
         ctx = callback_context
         if not ctx.triggered:
             logger.debug("[WARNING] Z-Score散点图点击回调：没有触发源")
             return no_update, no_update, no_update, no_update
         
-        trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
+        trigger_id_raw = ctx.triggered[0]['prop_id'].split('.')[0]
+        
+        # 1. 解析 Plot ID (支持字符串和模式匹配字典)
+        plot_id = trigger_id_raw
+        if trigger_id_raw.startswith('{'):
+            try:
+                import json
+                plot_id = json.loads(trigger_id_raw).get('id', trigger_id_raw)
+            except Exception:
+                pass
         
         # 如果点击了关闭按钮，只有当模态框是由本回调打开时才处理
-        if trigger_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
+        if plot_id in ['close-key-curves-modal', 'close-key-curves-modal-btn']:
             if current_style and current_style.get('display') == 'block' and zscore_scatter_clickData is not None:
                 return self._handle_zscore_modal_close()
             else:
                 return no_update, no_update, no_update, no_update
         
         # 如果是Z-Score散点图点击
-        if trigger_id == 'key-delay-zscore-scatter-plot':
+        if plot_id == 'key-delay-zscore-scatter-plot':
             if not zscore_scatter_clickData or 'points' not in zscore_scatter_clickData:
                 logger.warning("[WARNING] Z-Score标准化散点图点击 - clickData无效")
                 return no_update, no_update, no_update, no_update
