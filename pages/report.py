@@ -212,6 +212,45 @@ def load_report_content(session_id, session_manager):
         # 5. 生成偏移对齐条形图 (不再在主加载函数中生成，改为回调按需加载)
         # 容器已在 alignment_sections 中初始化
 
+        # 6. 波形一致性分析 (移至评级详情下方)
+        consistency_sections = [
+            html.H5("🌊 按键波形一致性分析", className="mt-4 mb-3 text-secondary"),
+            dbc.Card([
+                dbc.CardBody([
+                    dbc.Row([
+                        dbc.Col([
+                            html.Label("选择按键 ID:", className="fw-bold"),
+                            dcc.Dropdown(
+                                id='consistency-key-dropdown',
+                                options=[],
+                                placeholder="请选择按键...",
+                                className="mb-3"
+                            ),
+                        ], md=3),
+                        dbc.Col([
+                            html.Label("选择曲线范围:", className="fw-bold"),
+                            dcc.RangeSlider(
+                                id='consistency-index-slider',
+                                min=0,
+                                max=0,
+                                step=1,
+                                value=[0, 0],
+                                marks=None,
+                                tooltip={"placement": "bottom", "always_visible": True}
+                            ),
+                            html.Div(id='consistency-curve-count-label', className="text-muted small mt-1")
+                        ], md=9),
+                    ]),
+                    dcc.Graph(
+                        id='consistency-waveform-graph', 
+                        style={'height': '800px'},
+                        config={'scrollZoom': True, 'displayModeBar': True}
+                    ),
+                ])
+            ], className="shadow-sm mb-5 border-light"),
+            html.Hr(className="my-5")
+        ]
+
         # 组合最终报告组件
         report_components = overview_sections + error_sections
         
@@ -220,6 +259,7 @@ def load_report_content(session_id, session_manager):
         
         if has_grade_data:
             report_components.extend(grade_sections)
+            report_components.extend(consistency_sections)
             
         if has_alignment_data:
             report_components.extend(alignment_sections)
@@ -1009,7 +1049,6 @@ def register_callbacks(app, session_manager):
             session_id, session_manager
         )
     
-    # 6. 按需加载偏移对齐条形图
     @app.callback(
         Output('alignment-plots-container', 'children'),
         Input('load-alignment-plots-btn', 'n_clicks'),
@@ -1018,44 +1057,52 @@ def register_callbacks(app, session_manager):
     )
     def load_alignment_plots(n_clicks, session_id):
         """当用户点击按钮时加载统计图表"""
-        if not n_clicks:
-            return no_update
-        
-        logger.info(f"[PROCESS] 用户请求加载延时分析条形图 (session={session_id})")
-        backend = session_manager.get_backend(session_id)
-        if not backend:
-            return dbc.Alert("会话已失效，请重新上传或选择历史记录", color="danger")
-        
-        try:
-            alignment_result = backend.generate_offset_alignment_plot()
-            if not alignment_result:
-                return dbc.Alert("暂无符合条件的延时对齐数据", color="warning")
-            
-            children = []
-            if isinstance(alignment_result, list):
-                for item in alignment_result:
-                    fig = item.get('figure')
-                    title = item.get('title', '')
-                    children.append(
-                        dbc.Card([
-                            dbc.CardHeader(html.H5(title, className="mb-0")),
-                            dbc.CardBody(dcc.Graph(figure=fig, style={'height': '500px'}))
-                        ], className="shadow-sm mb-4")
-                    )
-            else:
-                children.append(
-                    dbc.Card([
-                        dbc.CardBody(dcc.Graph(figure=alignment_result, style={'height': '500px'}))
-                    ], className="shadow-sm mb-4")
-                )
-            
-            logger.info("[OK] 延时分析条形图加载完成")
-            return children
-            
-        except Exception as e:
-            logger.error(f"[ERROR] 动态加载延时分析图表失败: {e}")
-            logger.error(traceback.format_exc())
-            return dbc.Alert(f"加载图表失败: {str(e)}", color="danger")
+        return _handle_load_alignment_plots(n_clicks, session_id, session_manager)
     
 
-
+def _handle_load_alignment_plots(n_clicks, session_id, session_manager):
+    """处理加载延时分析图表的逻辑"""
+    if not n_clicks:
+        from dash import no_update
+        return no_update
+    
+    from dash import no_update
+    import dash_bootstrap_components as dbc
+    from dash import dcc, html
+    import traceback
+    
+    logger.info(f"[PROCESS] 用户请求加载延时分析条形图 (session={session_id})")
+    backend = session_manager.get_backend(session_id)
+    if not backend:
+        return dbc.Alert("会话已失效，请重新上传或选择历史记录", color="danger")
+    
+    try:
+        alignment_result = backend.generate_offset_alignment_plot()
+        if not alignment_result:
+            return dbc.Alert("暂无符合条件的延时对齐数据", color="warning")
+        
+        children = []
+        if isinstance(alignment_result, list):
+            for item in alignment_result:
+                fig = item.get('figure')
+                title = item.get('title', '')
+                children.append(
+                    dbc.Card([
+                        dbc.CardHeader(html.H5(title, className="mb-0")),
+                        dbc.CardBody(dcc.Graph(figure=fig, style={'height': '500px'}))
+                    ], className="shadow-sm mb-4")
+                )
+        else:
+            children.append(
+                dbc.Card([
+                    dbc.CardBody(dcc.Graph(figure=alignment_result, style={'height': '500px'}))
+                ], className="shadow-sm mb-4")
+            )
+        
+        logger.info("[OK] 延时分析条形图加载完成")
+        return children
+        
+    except Exception as e:
+        logger.error(f"[ERROR] 动态加载延时分析图表失败: {e}")
+        logger.error(traceback.format_exc())
+        return dbc.Alert(f"加载图表失败: {str(e)}", color="danger")

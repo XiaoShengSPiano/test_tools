@@ -13,6 +13,8 @@ from backend.session_manager import SessionManager
 from ui.callbacks import register_callbacks
 from utils.logger import Logger
 
+logger = Logger.get_logger()
+
 # 运行常量
 HOST = '0.0.0.0'
 PORT = 10000
@@ -74,6 +76,7 @@ class ApplicationManager:
             dcc.Store(id='multi-algorithm-files-store', data={'contents': [], 'filenames': []}),
             dcc.Store(id='algorithm-list-trigger', data=0),
             dcc.Store(id='algorithm-management-trigger', data=0),
+            dcc.Store(id='active-algorithm-store', storage_type='session'),
             dcc.Store(id='grade-detail-datatable-indices', data=[]),
             create_navbar(),
             self._create_global_file_management(),
@@ -208,10 +211,15 @@ class ApplicationManager:
         from pages.report import register_callbacks as register_report_callbacks
         from pages.waterfall import register_callbacks as register_waterfall_callbacks
         from pages.scatter_analysis import register_callbacks as register_scatter_callbacks
+        from ui.consistency_callbacks import register_callbacks as register_consistency_callbacks
+        from ui.waterfall_consistency_callbacks import register_callbacks as register_waterfall_consistency_callbacks
 
         register_report_callbacks(app, self.session_manager)
         register_waterfall_callbacks(app, self.session_manager)
         register_scatter_callbacks(app, self.session_manager)
+        register_consistency_callbacks(app, self.session_manager)
+        register_waterfall_consistency_callbacks(app, self.session_manager)
+        logger.info("[OK] Waterfall Consistency callbacks registered")
 
     def _handle_page_routing(self, pathname: str):
         """根据 pathname 返回对应页面布局"""

@@ -454,6 +454,43 @@ def layout():
             id="key-curve-modal",
             size="xl",
             is_open=False,
-        )
+        ),
+
+        # --- 🌊 音轨对比一致性分析 (新增) ---
+        html.H5("🌊 音轨对比一致性分析", className="mt-5 mb-3 text-secondary"),
+        dbc.Card([
+            dbc.CardBody([
+                dbc.Row([
+                    dbc.Col([
+                        html.Label("选择按键 ID:", className="fw-bold"),
+                        dcc.Dropdown(
+                            id='track-comparison-consistency-key-dropdown',
+                            options=[],
+                            placeholder="请选择按键...",
+                            className="mb-3"
+                        ),
+                    ], md=3),
+                    dbc.Col([
+                        html.Label("选择曲线范围:", className="fw-bold"),
+                        dcc.RangeSlider(
+                            id='track-comparison-consistency-index-slider',
+                            min=0,
+                            max=0,
+                            step=1,
+                            value=[0, 0],
+                            marks=None,
+                            tooltip={"placement": "bottom", "always_visible": True}
+                        ),
+                        html.Div(id='track-comparison-consistency-curve-count-label', className="text-muted small mt-1")
+                    ], md=9),
+                ]),
+                dcc.Graph(
+                    id='track-comparison-consistency-waveform-graph', 
+                    style={'height': '800px'},
+                    config={'scrollZoom': True, 'displayModeBar': True}
+                ),
+            ])
+        ], className="shadow-sm mb-5 border-light"),
+        html.Hr(className="my-5"),
 
     ], fluid=True, className="py-4")
