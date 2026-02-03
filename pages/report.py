@@ -12,7 +12,7 @@ from utils.logger import Logger
     
 
 # 导入评级详情相关函数
-from grade_detail_callbacks import get_grade_detail_data
+from ui.grade_detail_callbacks import get_grade_detail_data
 
 logger = Logger.get_logger()
 
@@ -82,9 +82,6 @@ def layout():
                 )
             ])
         ], className="shadow-sm"),
-        
-        # 存储跳转来源图表ID，用于返回时滚动定位（与其他页面保持一致）
-        dcc.Store(id='jump-source-plot-id', data=None),
         
     ], fluid=True, className="mt-3")
 

@@ -441,10 +441,11 @@ class RelativeDelayDistributionHandler:
         target_algorithm = None
         for algorithm in active_algorithms:
             if algorithm.metadata.algorithm_name == algorithm_name:
-                # 验证matched_pairs中是否有此匹配对
-                if algorithm.analyzer and hasattr(algorithm.analyzer, 'matched_pairs'):
-                    for r_idx, p_idx, r_note, p_note in algorithm.analyzer.matched_pairs:
-                        if r_idx == record_index and p_idx == replay_index:
+                if algorithm.analyzer:
+                    # 获取匹配对（使用 get_matched_pairs 确保格式一致为 2-tuple）
+                    matched_pairs = algorithm.analyzer.get_matched_pairs()
+                    for rec_note, rep_note in matched_pairs:
+                        if rec_note.offset == record_index and rep_note.offset == replay_index:
                             target_algorithm = algorithm
                             break
                 if target_algorithm:

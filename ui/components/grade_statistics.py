@@ -330,22 +330,40 @@ def create_delay_metrics_card(delay_metrics, algorithm_name=None):
     # 第三行：极值指标
     extreme_metrics = dbc.Row([
         dbc.Col([
-            html.Div([
-                html.H3(f"{delay_metrics.get('max_error', 0)/10:.2f}", className="text-warning mb-1"),
-                html.P("最大偏差(ms)", className="text-muted mb-0 small"),
-            ], className="text-center p-2 border rounded")
+            dbc.Button([
+                html.Div(f"{delay_metrics.get('max_error', 0)/10:.2f}", 
+                         className="fw-bold", 
+                         style={'fontSize': '24px', 'color': '#ffc107'}),
+                html.Div("最大偏差(ms)", className="text-muted small"),
+            ],
+            id={'type': 'delay-metric-btn', 'algorithm': algorithm_name or 'single', 'metric': 'max'},
+            n_clicks=0,
+            color="light",
+            className="text-center p-2 border rounded w-100 shadow-sm",
+            style={'backgroundColor': '#fff', 'border': '1px solid #dee2e6', 'textTransform': 'none'}
+            )
+        ], width=4),
+        dbc.Col([
+            dbc.Button([
+                html.Div(f"{delay_metrics.get('min_error', 0)/10:.2f}", 
+                         className="fw-bold", 
+                         style={'fontSize': '24px', 'color': '#17a2b8'}),
+                html.Div("最小偏差(ms)", className="text-muted small"),
+            ],
+            id={'type': 'delay-metric-btn', 'algorithm': algorithm_name or 'single', 'metric': 'min'},
+            n_clicks=0,
+            color="light",
+            className="text-center p-2 border rounded w-100 shadow-sm",
+            style={'backgroundColor': '#fff', 'border': '1px solid #dee2e6', 'textTransform': 'none'}
+            )
         ], width=4),
         dbc.Col([
             html.Div([
-                html.H3(f"{delay_metrics.get('min_error', 0)/10:.2f}", className="text-info mb-1"),
-                html.P("最小偏差(ms)", className="text-muted mb-0 small"),
-            ], className="text-center p-2 border rounded")
-        ], width=4),
-        dbc.Col([
-            html.Div([
-                html.H3(f"{(delay_metrics.get('max_error', 0) - delay_metrics.get('min_error', 0))/10:.2f}", className="text-secondary mb-1"),
+                html.H3(f"{(delay_metrics.get('max_error', 0) - delay_metrics.get('min_error', 0))/10:.2f}", 
+                        className="text-secondary mb-1",
+                        style={'fontSize': '24px'}),
                 html.P("偏差范围(ms)", className="text-muted mb-0 small"),
-            ], className="text-center p-2 border rounded")
+            ], className="text-center p-2 border rounded bg-white shadow-sm")
         ], width=4),
     ], className="mb-3")
 

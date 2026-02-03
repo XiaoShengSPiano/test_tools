@@ -1350,8 +1350,10 @@ class NoteMatcher:
             duration_offset = replay_duration - record_duration
 
             offset_data.append({
-                'record_index': record_note.offset,  # 使用offset作为唯一标识
+                'record_index': record_note.offset,  # 这里的index其实是offset
                 'replay_index': replay_note.offset,
+                'record_uuid': record_note.uuid,      # 增加UUID以供精确查找
+                'replay_uuid': replay_note.uuid,
                 'record_id': record_note.id,
                 'replay_id': replay_note.id,
                 'record_keyon': record_keyon,

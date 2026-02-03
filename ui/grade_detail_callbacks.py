@@ -16,8 +16,10 @@ from spmid.spmid_reader import Note
 from utils.constants import GRADE_RANGE_CONFIG
 from backend.force_curve_analyzer import ForceCurveAnalyzer
 
+from utils.logger import Logger
+
 # 日志记录器
-logger = logging.getLogger(__name__)
+logger = Logger.get_logger()
 
 # ==========================================
 # 1. 数据工具函数 (Utilities)
@@ -201,6 +203,7 @@ def _process_note_data(session_manager, session_id, row_data, table_index, activ
         global_idx = row_data.get('global_index') or row_data.get('index')
         data_type = row_data.get('data_type') or row_data.get('row_type')
         
+        
         backend = session_manager.get_backend(session_id)
         matcher = get_note_matcher_from_backend(backend, table_index)
         
@@ -338,7 +341,6 @@ def _create_similarity_content(rec_note, rep_note, backend) -> List[Any]:
         
     except Exception as e:
         logger.error(f"创建相似度内容失败: {e}")
-        import traceback
         logger.error(traceback.format_exc())
         return [html.Div(f"相似度分析出错: {e}", className="alert alert-danger")]
 
@@ -391,9 +393,22 @@ def _create_curves_subplot(backend, key_id, algorithm_name, matched_pair):
     rec_note, rep_note, match_type, error_ms = matched_pair
 
     # 获取平均延时用于对齐
-    delay = (backend.get_global_average_delay() if not algorithm_name else
-             next(alg.analyzer.get_global_average_delay() for alg in backend.get_active_algorithms() 
-                  if alg.metadata.algorithm_name == algorithm_name)) / 10.0
+    delay = 0.0
+    try:
+        if not algorithm_name or algorithm_name == 'single':
+            delay = backend.get_global_average_delay()
+        else:
+            active_algs = backend.get_active_algorithms()
+            target_alg = next((alg for alg in active_algs if alg.metadata.algorithm_name == algorithm_name), None)
+            if target_alg and target_alg.analyzer:
+                delay = target_alg.analyzer.get_global_average_delay()
+            else:
+                delay = backend.get_global_average_delay()
+    except Exception as e:
+        logger.warning(f"获取对齐偏移量失败 (alg={algorithm_name}): {e}")
+        delay = 0.0
+    
+    delay = delay / 10.0
 
     # 创建原始对比图（偏移前）
     fig_original = go.Figure()
@@ -438,79 +453,134 @@ def register_grade_detail_callbacks(app, session_manager: SessionManager):
          Output('grade-detail-curves-comparison-container', 'children'),
          Output('current-clicked-point-info', 'data')],
         [Input({'type': 'grade-detail-datatable', 'index': dash.ALL}, 'active_cell'),
+         Input({'type': 'delay-metric-btn', 'algorithm': dash.ALL, 'metric': dash.ALL}, 'n_clicks'),
          Input('close-grade-detail-curves-modal', 'n_clicks')],
         [State({'type': 'grade-detail-datatable', 'index': dash.ALL}, 'data'),
          State({'type': 'grade-detail-datatable', 'index': dash.ALL}, 'page_current'),
          State({'type': 'grade-detail-datatable', 'index': dash.ALL}, 'page_size'),
+         State({'type': 'delay-metric-btn', 'algorithm': dash.ALL, 'metric': dash.ALL}, 'id'),
          State('grade-detail-datatable-indices', 'data'),
          State('session-id', 'data'),
          State('grade-detail-curves-modal', 'style')],
         prevent_initial_call=True
     )
-    def handle_click(cells, n_clicks, table_data_list, page_current_list, page_size_list, indices, session_id, current_style):
+    def handle_click(cells, metric_clicks, n_clicks, table_data_list, page_current_list, page_size_list, metric_ids, indices, session_id, current_style):
         ctx = dash.callback_context
         if not ctx.triggered:
             return current_style, [], no_update
 
-        triggered = ctx.triggered[0]['prop_id']
-        if 'close-grade-detail-curves-modal' in triggered:
+        triggered_id_str = ctx.triggered[0]['prop_id']
+        
+        # --- 1. 处理弹窗关闭 ---
+        if 'close-grade-detail-curves-modal' in triggered_id_str:
             return _create_modal_style(False), [], no_update
-        if 'active_cell' not in triggered:
-            return current_style, [], no_update
 
-        try:
-            target_idx = json.loads(triggered.split('.')[0])['index']
-            active_cell = ctx.triggered[0].get('value')
-        except Exception as e:
-            logger.error("handle_click: 解析 triggered 失败: %s", e)
-            return current_style, [], no_update
+        # --- 2. 处理延时误差极值指标点击 ---
+        if 'delay-metric-btn' in triggered_id_str:
+            try:
+                # 解析 ID 信息
+                triggered_id = json.loads(triggered_id_str.split('.')[0])
+                alg_name = triggered_id['algorithm']
+                metric_type = triggered_id['metric'] # 'max' 或 'min'
 
-        # 若 triggered 的 value 为空（如表格重绘清空选中），用 ALL 列表 cells[pos] 兜底
-        if not active_cell or (isinstance(active_cell, dict) and active_cell.get('row') is None and active_cell.get('row_id') is None):
-            if indices and isinstance(indices, list) and target_idx in indices and cells is not None:
-                try:
-                    pos = indices.index(target_idx)
-                    if pos < len(cells):
-                        fallback = cells[pos]
-                        if fallback and (fallback.get('row') is not None or fallback.get('row_id') is not None):
-                            active_cell = fallback
-                except Exception:
-                    pass
-            if not active_cell or (isinstance(active_cell, dict) and active_cell.get('row') is None and active_cell.get('row_id') is None):
-                return current_style, [], no_update
+                # 校验点击值
+                click_value = ctx.triggered[0].get('value')
+                
+                # [补丁] 对于 Pattern-match ID，有时 ctx.triggered 中的 value 为 None
+                # 尝试从 Input 列表 (metric_clicks) 中通过 State 列表 (metric_ids) 找回真实值
+                if (click_value is None or click_value == 0) and metric_ids:
+                    try:
+                        if triggered_id in metric_ids:
+                            idx = metric_ids.index(triggered_id)
+                            click_value = metric_clicks[idx]
+                    except Exception:
+                        pass
+                
+                # Dash 某些情况下会触发 value=0 (如组件初始化)，只有真实点击才执行
+                if click_value is None or click_value == 0:
+                    return current_style, [], no_update
 
-        row_val = active_cell.get('row') if active_cell.get('row') is not None else active_cell.get('row_id')
-        if row_val is None:
-            return current_style, [], no_update
-        try:
-            page_row = int(row_val)
-        except (TypeError, ValueError):
-            return current_style, [], no_update
-        active_cell = dict(active_cell)
-        active_cell['row'] = page_row
+                
+                backend = session_manager.get_backend(session_id)
+                if not backend: 
+                    logger.warning(f" [WARN] Backend not found for session_id: {session_id}")
+                    return current_style, [], no_update
+                
+                # 获取音符数据
+                res = backend.get_notes_by_delay_type(alg_name, metric_type)
+                if not res:
+                    logger.warning(f" [WARN] No notes found for {metric_type} deviation")
+                    return _create_modal_style(True), [html.Div(f"未找到 {metric_type} 偏差对应的音符数据")], no_update
+                
+                rec_note, rep_note, rec_idx, rep_idx = res
+                
+                # 构建虚拟 row_data 以复用组件渲染逻辑
+                row_data = {
+                    'keyId': rec_note.id,
+                    'data_type': '录制',
+                    'global_index': rec_note.uuid,
+                    'record_uuid': rec_note.uuid,
+                    'replay_uuid': rep_note.uuid,
+                }
+                
+                return _process_note_data(session_manager, session_id, row_data, alg_name)
+                
+            except Exception as e:
+                logger.error(f" [ERROR] Failed to handle delay metric click: {e}")
+                logger.error(traceback.format_exc())
+                return _create_modal_style(True), [html.Div(f"处理极值点击失败: {e}")], no_update
 
-        if not indices or not isinstance(indices, list):
-            return _create_modal_style(True), [html.Div("请先选择评级")], no_update
-        if target_idx not in indices:
-            return _create_modal_style(True), [html.Div("无法定位当前表格，请先选择评级")], no_update
+        # --- 3. 处理详细表格单元格点击 ---
+        if 'active_cell' in triggered_id_str:
+            try:
+                # A. 解析目标表格索引
+                target_idx = json.loads(triggered_id_str.split('.')[0])['index']
+                active_cell = ctx.triggered[0].get('value')
+                
+                # B. 数据有效性初步检测与兜底 (解决表格重绘导致的选中丢失)
+                if not active_cell or (isinstance(active_cell, dict) and active_cell.get('row') is None):
+                    if indices and isinstance(indices, list) and target_idx in indices and cells:
+                        pos = indices.index(target_idx)
+                        if pos < len(cells) and cells[pos]:
+                            active_cell = cells[pos]
+                            logger.info(f" [FALLBACK] Using fallback cell for table: {target_idx}")
+                
+                if not active_cell or (isinstance(active_cell, dict) and active_cell.get('row') is None):
+                    return current_style, [], no_update
 
-        pos = indices.index(target_idx)
-        if not table_data_list or pos >= len(table_data_list):
-            return _create_modal_style(True), [html.Div("表格数据未就绪，请先选择评级")], no_update
+                # C. 提取行号
+                row_val = active_cell.get('row') if active_cell.get('row') is not None else active_cell.get('row_id')
+                if row_val is None: return current_style, [], no_update
+                page_row = int(row_val)
+                
+                # D. 校验状态一致性
+                if not indices or target_idx not in indices:
+                    return _create_modal_style(True), [html.Div("无法定位表格，请刷新")], no_update
+                
+                pos = indices.index(target_idx)
+                if not table_data_list or pos >= len(table_data_list):
+                    return _create_modal_style(True), [html.Div("数据未就绪")], no_update
+                
+                # E. 获取当前页数据并计算全局索引
+                data = table_data_list[pos] or []
+                page_current = (page_current_list[pos] if page_current_list and pos < len(page_current_list) else 0) or 0
+                page_size = (page_size_list[pos] if page_size_list and pos < len(page_size_list) else 50) or 50
+                
+                if not data: return _create_modal_style(True), [html.Div("暂无数据")], no_update
 
-        data = table_data_list[pos] or []
-        page_current = (page_current_list[pos] if page_current_list and pos < len(page_current_list) else None) or 0
-        page_size = (page_size_list[pos] if page_size_list and pos < len(page_size_list) else None) or 50
+                global_row_idx = page_current * page_size + page_row
+                if global_row_idx < 0 or global_row_idx >= len(data):
+                    return _create_modal_style(True), [html.Div("行索引越界")], no_update
+                
+                row = data[global_row_idx]
+                return _process_note_data(session_manager, session_id, row, target_idx, active_cell)
+                
+            except Exception as e:
+                logger.error(f" [ERROR] Table cell click failed: {e}")
+                logger.error(traceback.format_exc())
+                return _create_modal_style(True), [html.Div(f"处理表格点击失败: {e}")], no_update
 
-        if not data:
-            return _create_modal_style(True), [html.Div("暂无数据")], no_update
-
-        global_row_idx = page_current * page_size + page_row
-        if global_row_idx < 0 or global_row_idx >= len(data):
-            return _create_modal_style(True), [html.Div("行索引越界，请刷新后重试")], no_update
-
-        row = data[global_row_idx]
-        return _process_note_data(session_manager, session_id, row, target_idx, active_cell)
+        return current_style, [], no_update
 
     # 按钮点击 -> 展开/切换评级详情
     # 注意：为了避免 Output 重叠冲突，此回调不再直接输出 'data'，
@@ -578,33 +648,9 @@ def register_grade_detail_callbacks(app, session_manager: SessionManager):
         
         return out_styles, out_cols, out_opts, out_vals, out_states, indices
 
-def register_grade_detail_return_callbacks(app, session_manager: SessionManager):
-    """返回逻辑"""
-    @app.callback(
-        Output('btn-return-to-grade-detail', 'style'),
-        Input('jump-source-plot-id', 'data'),
-        prevent_initial_call=True
-    )
-    def update_btn(source):
-        return {'display': 'inline-block'} if source == 'grade-detail-curves-modal' else {'display': 'none'}
-
-    @app.callback(
-        [Output('grade-detail-curves-modal', 'style', allow_duplicate=True),
-         Output('main-tabs', 'value', allow_duplicate=True),
-         Output('grade-detail-return-scroll-trigger', 'data'),
-         Output('grade-detail-section-scroll-trigger', 'data')],
-        Input('btn-return-to-grade-detail', 'n_clicks'),
-        State('current-clicked-point-info', 'data'),
-        prevent_initial_call=True
-    )
-    def back(n, info):
-        if not n: return no_update, no_update, None, None
-        return _create_modal_style(True), "report-tab", info, {'scroll_to': 'grade_detail_section'}
-
 def register_all_callbacks(app, session_manager: SessionManager):
     """聚合注册所有评级详情相关的交互"""
     register_grade_detail_callbacks(app, session_manager)
-    register_grade_detail_return_callbacks(app, session_manager)
     
     # 【核心：数据渲染与过滤逻辑】
     # 使用 MATCH 模式，监听下拉框 value 和 状态 Store，输出到对应的表格 data

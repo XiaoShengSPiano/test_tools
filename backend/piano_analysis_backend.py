@@ -23,7 +23,6 @@ from .data_manager import DataManager
 from .plot_generator import PlotGenerator
 from .plot_service import PlotService
 from .key_filter import KeyFilter
-from .time_filter import TimeFilter
 from .table_data_generator import TableDataGenerator
 from .history_manager import HistoryManager
 from .delay_analysis import DelayAnalysis
@@ -51,7 +50,6 @@ class PianoAnalysisBackend:
         self.data_manager = DataManager()
         self.key_filter = KeyFilter()
         self.plot_generator = PlotGenerator(self.key_filter)
-        self.time_filter = TimeFilter()
 
         # 初始化多算法图表生成器（复用实例，避免重复初始化）
         from backend.multi_algorithm_plot_generator import MultiAlgorithmPlotGenerator
@@ -321,7 +319,6 @@ class PianoAnalysisBackend:
         current_analyzer = self._get_current_analyzer()
         self.plot_generator.set_data(valid_record_data, valid_replay_data, analyzer=current_analyzer)
         self.key_filter.set_data(valid_record_data, valid_replay_data)
-        self.time_filter.set_data(valid_record_data, valid_replay_data)
         
         # 同步分析结果到各个模块
         self._sync_analysis_results()
@@ -374,7 +371,6 @@ class PianoAnalysisBackend:
         # 同步到各个模块
         self.key_filter.set_data(valid_record_data, valid_replay_data)
         self.plot_generator.set_data(valid_record_data, valid_replay_data, matched_pairs, analyzer=self._get_current_analyzer())
-        self.time_filter.set_data(valid_record_data, valid_replay_data)
 
         logger.info(f"错误数据统计: 丢锤={len(drop_hammers)}, 多锤={len(multi_hammers)}")
 
@@ -513,16 +509,15 @@ class PianoAnalysisBackend:
         """生成按键与锤速的散点图（委托给PlotService）"""
         return self.plot_service.generate_key_hammer_velocity_scatter_plot()
     
-    def generate_waterfall_plot(self, data_types: List[str] = None, key_ids: List[int] = None, time_filter=None, key_filter=None) -> Any:
+    def generate_waterfall_plot(self, data_types: List[str] = None, key_ids: List[int] = None, key_filter=None) -> Any:
         """生成瀑布图（委托给PlotService）
 
         Args:
             data_types: 要显示的数据类型列表，默认显示所有类型
             key_ids: 要显示的按键ID列表，默认显示所有按键
-            time_filter: 时间筛选条件
             key_filter: 按键筛选条件
         """
-        return self.plot_service.generate_waterfall_plot(data_types, key_ids, time_filter, key_filter)
+        return self.plot_service.generate_waterfall_plot(data_types, key_ids, key_filter)
 
     def get_waterfall_key_statistics(self, data_types: List[str] = None) -> Dict[str, Any]:
         """获取瀑布图按键统计信息
@@ -571,13 +566,6 @@ class PianoAnalysisBackend:
             return target
         return None
     
-    def _find_notes_by_indices(self, matched_pairs: List, record_index: int, replay_index: int) -> Optional[Tuple]:
-        """根据索引在matched_pairs中查找音符"""
-        for r_idx, p_idx, r_note, p_note in matched_pairs:
-            if r_idx == record_index and p_idx == replay_index:
-                return (r_note, p_note)
-        return None
-    
     def get_notes_by_delay_type(self, algorithm_name: str, delay_type: str) -> Optional[Tuple[Any, Any, int, int]]:
         """
         根据延迟类型（最大/最小）获取对应的音符
@@ -598,7 +586,7 @@ class PianoAnalysisBackend:
             
             note_matcher = algorithm.analyzer.note_matcher
             
-            # 获取数据
+            # 获取对齐数据（注意：record_index/replay_index 在此处实际存储的是 UUID）
             offset_data = note_matcher.get_offset_alignment_data()
             if not offset_data:
                 logger.warning("没有匹配数据")
@@ -610,18 +598,25 @@ class PianoAnalysisBackend:
                 logger.warning(f"未找到{delay_type}延迟项")
                 return None
             
-            record_index = target_item.get('record_index')
-            replay_index = target_item.get('replay_index')
+            # 从对齐数据中提取 UUID
+            # 从对齐数据中提取 UUID（使用新增的明确字段名）
+            record_uuid = target_item.get('record_uuid')
+            replay_uuid = target_item.get('replay_uuid')
             
-            # 查找音符对象
-            matched_pairs = note_matcher.get_matched_pairs()
-            notes = self._find_notes_by_indices(matched_pairs, record_index, replay_index)
-            if not notes:
-                logger.warning(f"未找到匹配对: record_index={record_index}, replay_index={replay_index}")
+            # 兼容性：如果新字段不存在，尝试回退到 record_index
+            if not record_uuid: record_uuid = target_item.get('record_index')
+            if not replay_uuid: replay_uuid = target_item.get('replay_index')
+            
+            # 通过 UUID 在匹配器中查找完整的匹配对对象
+            matched = note_matcher.find_matched_pair_by_uuid(str(record_uuid), str(replay_uuid))
+            if not matched:
+                logger.warning(f"未找到匹配对: record_uuid={record_uuid}, replay_uuid={replay_uuid}")
                 return None
             
-            record_note, replay_note = notes
-            return (record_note, replay_note, record_index, replay_index)
+            record_note, rep_note, match_type, error_ms = matched
+            
+            # 返回 Note 对象及其内部偏移量（整数索引）
+            return (record_note, rep_note, record_note.offset, rep_note.offset)
             
         except Exception as e:
             logger.error(f"获取{delay_type}延迟音符失败: {e}")
@@ -662,50 +657,17 @@ class PianoAnalysisBackend:
             Dict包含：
             - key_filter: 按键过滤状态
             - available_keys: 可用按键列表
-            - time_filter: 时间过滤状态
-            - time_range: 时间范围信息
-            - display_time_range: 显示时间范围
         """
         return {
             'key_filter': self.key_filter.get_key_filter_status(),
             'available_keys': self.key_filter.get_available_keys(),
-            'time_filter': self.time_filter.get_time_filter_status(),
-            'time_range': self.time_filter.get_time_range(),
-            'display_time_range': self.time_filter.get_display_time_range(),
-            'time_range_info': self.time_filter.get_time_range_info()
+            # time_filter 接口已移除
         }
     
-    def apply_time_filter(self, time_range: Optional[Tuple[float, float]]) -> None:
-        """应用时间范围过滤
-
-        Args:
-            time_range: 时间范围元组 (start_time, end_time)，None表示清除过滤
-        """
-        self.time_filter.set_time_filter(time_range)
-
-    def update_time_filter_from_input(self, start_time: float, end_time: float) -> Tuple[bool, str]:
-        """从用户输入更新时间范围过滤
-
-        Args:
-            start_time: 开始时间
-            end_time: 结束时间
-
-        Returns:
-            Tuple[bool, str]: (是否成功, 消息)
-        """
-        success = self.time_filter.update_time_range_from_input(start_time, end_time)
-        if success:
-            return True, "时间范围更新成功"
-        else:
-            return False, "时间范围更新失败"
-
     def reset_time_filter(self) -> None:
-        """重置时间范围过滤"""
-        self.time_filter.reset_display_time_range()
+        """重置时间范围过滤 (接口已弃用)"""
+        pass
     
-    def get_filtered_data(self) -> Dict[str, Any]:
-        """获取过滤后的数据"""
-        return self.data_filter.get_filtered_data()
     
     # ==================== 表格数据相关方法 ====================
     

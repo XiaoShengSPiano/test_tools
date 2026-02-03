@@ -228,13 +228,12 @@ class PlotService:
 
     # ==================== 瀑布图 ====================
     
-    def generate_waterfall_plot(self, data_types: List[str] = None, key_ids: List[int] = None, time_filter=None, key_filter=None) -> Any:
+    def generate_waterfall_plot(self, data_types: List[str] = None, key_ids: List[int] = None, key_filter=None) -> Any:
         """生成瀑布图（根据SPMID文件数量自动处理）
 
         Args:
             data_types: 要显示的数据类型列表，默认显示所有类型
             key_ids: 要显示的按键ID列表，默认显示所有按键
-            time_filter: 时间筛选条件
             key_filter: 按键筛选条件
         """
         active_algorithms = self.backend.get_active_algorithms()
@@ -252,7 +251,6 @@ class PlotService:
             self.backend,                # 后端实例
             analyzers,                   # 分析器列表
             algorithm_names,             # 算法名称列表
-            time_filter or self.backend.time_filter,    # 时间过滤器
             key_filter or (self.backend.key_filter.key_filter if self.backend.key_filter else None),  # 按键过滤器
             data_types,                 # 数据类型选择
             key_ids                     # 按键ID选择
@@ -302,13 +300,13 @@ class PlotService:
             self.logger.warning("分析器或匹配器不存在，无法生成详细曲线图")
             return None, None, None
         
-        # 从precision_matched_pairs中查找对应的Note对象（确保只使用精确匹配对）
-        precision_matched_pairs = analyzer.note_matcher.precision_matched_pairs
+        # 从匹配对中查找对应的Note对象
+        matched_pairs = analyzer.get_matched_pairs()
         record_note = None
         play_note = None
         
-        for r_idx, p_idx, r_note, p_note in precision_matched_pairs:
-            if r_idx == record_index and p_idx == replay_index:
+        for r_note, p_note in matched_pairs:
+            if r_note.offset == record_index and p_note.offset == replay_index:
                 record_note = r_note
                 play_note = p_note
                 break
@@ -433,13 +431,12 @@ class PlotService:
                     mean_delays[alg.metadata.algorithm_name] = 0.0
                 
                 # 在该算法的匹配对中查找匹配到同一个record_index (UUID) 的播放音符
-                if hasattr(alg.analyzer, 'matched_pairs'):
-                    alg_matched_pairs = alg.analyzer.matched_pairs
-                    for rec_note, rep_note, _, _ in alg_matched_pairs:
-                        if str(rec_note.uuid) == str(record_index):
-                            other_algorithm_notes.append((alg.metadata.algorithm_name, rep_note))
-                            self.logger.info(f"找到算法 '{alg.metadata.algorithm_name}' 中匹配到 record_uuid={record_index} 的播放音符")
-                            break
+                alg_matched_pairs = alg.analyzer.get_matched_pairs()
+                for rec_note, rep_note in alg_matched_pairs:
+                    if str(rec_note.uuid) == str(record_index):
+                        other_algorithm_notes.append((alg.metadata.algorithm_name, rep_note))
+                        self.logger.info(f"找到算法 '{alg.metadata.algorithm_name}' 中匹配到 record_uuid={record_index} 的播放音符")
+                        break
 
         # 使用plot_generator生成详细图表（包含其他算法的播放曲线）
         detail_figure1 = self.plot_generator.generate_note_comparison_plot(
@@ -486,17 +483,17 @@ class PlotService:
             self.logger.warning(f"算法 {algorithm_name} 的分析器或匹配器不存在")
             return None, None, None
 
-        # 从precision_matched_pairs中查找对应的Note对象
-        precision_matched_pairs = analyzer.note_matcher.precision_matched_pairs
+        # 从匹配对中查找对应的Note对象
+        matched_pairs = analyzer.get_matched_pairs()
         record_note = None
         play_note = None
         
-        for r_idx, p_idx, r_note, p_note in precision_matched_pairs:
-            if is_record and r_idx == index:
+        for r_note, p_note in matched_pairs:
+            if is_record and r_note.offset == index:
                 record_note = r_note
                 play_note = p_note
                 break
-            elif not is_record and p_idx == index:
+            elif not is_record and p_note.offset == index:
                 record_note = r_note
                 play_note = p_note
                 break

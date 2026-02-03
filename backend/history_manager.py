@@ -1,16 +1,185 @@
 import sqlite3
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, asdict
 from datetime import datetime
 import threading
 import os
 import json
 import hashlib
 import traceback
+from typing import List, Optional, Any, Dict, Tuple
 from utils.logger import Logger
 
 logger = Logger.get_logger()
 
+@dataclass
+class HistoryRecord:
+    """SPMID 历史记录数据模型"""
+    filename: str
+    motor_type: str           # D3 / D4
+    algorithm: str            # PID / SMC
+    date_str: str             # yyyy-mm-dd-hh-mm-ss
+    record_track_path: str    # 录制音轨存储地址 (parquet)
+    playback_track_path: str  # 播放音轨存储地址 (parquet)
+    id: Optional[int] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+class BaseHistoryManager(ABC):
+    """历史记录管理器抽象基类"""
+
+    @abstractmethod
+    def init_storage(self) -> None:
+        """初始化存储（如创建表、检查目录等）"""
+        pass
+
+    @abstractmethod
+    def save_record(self, record: HistoryRecord) -> Optional[int]:
+        """保存历史记录并返回 ID"""
+        pass
+
+    @abstractmethod
+    def get_record(self, record_id: int) -> Optional[HistoryRecord]:
+        """通过 ID 获取单条记录"""
+        pass
+
+    @abstractmethod
+    def get_history_list(self, limit: int = 50) -> List[HistoryRecord]:
+        """获取历史记录列表"""
+        pass
+
+    @abstractmethod
+    def delete_record(self, record_id: int) -> bool:
+        """删除指定 ID 的记录"""
+        pass
+
+    @abstractmethod
+    def clear_all_records(self) -> int:
+        """清空所有记录并返回删除的数量"""
+        pass
+
+class SQLiteHistoryManager(BaseHistoryManager):
+    """基于 SQLite 的实现 """
+
+    def __init__(self, db_path: Optional[str] = None, table_name: str = "spmid_v2_history"):
+        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        self.db_path = db_path or os.path.join(backend_dir, "history_spmid_v2.db")
+        self.table_name = table_name
+        self._lock = threading.RLock()
+        self.init_storage()
+
+    def init_storage(self) -> None:
+        """初始化数据库表结构"""
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute(f'''
+                CREATE TABLE IF NOT EXISTS {self.table_name} (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    filename TEXT NOT NULL,
+                    motor_type TEXT,
+                    algorithm TEXT,
+                    date_str TEXT,
+                    record_track_path TEXT,
+                    playback_track_path TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            conn.commit()
+            conn.close()
+
+    def save_record(self, record: HistoryRecord) -> Optional[int]:
+        """保存记录到数据库"""
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            try:
+                cursor.execute(f'''
+                    INSERT INTO {self.table_name} 
+                    (filename, motor_type, algorithm, date_str, record_track_path, playback_track_path)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (
+                    record.filename, record.motor_type, record.algorithm, 
+                    record.date_str, record.record_track_path, record.playback_track_path
+                ))
+                record_id = cursor.lastrowid
+                conn.commit()
+                return record_id
+            except Exception as e:
+                logger.error(f"❌ 插入记录失败: {e}")
+                return None
+            finally:
+                conn.close()
+
+    def get_record(self, record_id: int) -> Optional[HistoryRecord]:
+        """获取单条记录"""
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            try:
+                cursor.execute(f'SELECT * FROM {self.table_name} WHERE id = ?', (record_id,))
+                row = cursor.fetchone()
+                if row:
+                    return HistoryRecord(
+                        id=row[0], filename=row[1], motor_type=row[2], 
+                        algorithm=row[3], date_str=row[4], 
+                        record_track_path=row[5], playback_track_path=row[6]
+                    )
+                return None
+            finally:
+                conn.close()
+
+    def get_history_list(self, limit: int = 50) -> List[HistoryRecord]:
+        """获取所有记录列表"""
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            try:
+                cursor.execute(f'''
+                    SELECT * FROM {self.table_name} 
+                    ORDER BY created_at DESC LIMIT ?
+                ''', (limit,))
+                rows = cursor.fetchall()
+                return [
+                    HistoryRecord(
+                        id=row[0], filename=row[1], motor_type=row[2], 
+                        algorithm=row[3], date_str=row[4], 
+                        record_track_path=row[5], playback_track_path=row[6]
+                    ) for row in rows
+                ]
+            finally:
+                conn.close()
+
+    def delete_record(self, record_id: int) -> bool:
+        """删除一条记录"""
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            try:
+                cursor.execute(f'DELETE FROM {self.table_name} WHERE id = ?', (record_id,))
+                success = cursor.rowcount > 0
+                conn.commit()
+                return success
+            finally:
+                conn.close()
+
+    def clear_all_records(self) -> int:
+        """清空所有记录"""
+        with self._lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            try:
+                cursor.execute(f'DELETE FROM {self.table_name}')
+                count = cursor.rowcount
+                conn.commit()
+                return count
+            finally:
+                conn.close()
+
+
 class HistoryManager:
-    """历史记录管理器 spmid_history表"""
+    """历史上记录管理器 spmid_history表 (Legacy Implementation)"""
 
     def __init__(self, db_path=None, disable_database=False):
         """

@@ -47,7 +47,6 @@ class MultiAlgorithmPlotGenerator:
         backend,                        # 后端实例，用于获取全局平均延时
         analyzers: List[Any],           # 分析器列表，根据SPMID文件数量自动处理
         algorithm_names: List[str],     # 算法名称列表
-        time_filter=None,
         key_filter=None,
         data_types: List[str] = None,   # 要显示的数据类型列表
         key_ids: List[int] = None       # 要显示的按键ID列表
@@ -63,7 +62,6 @@ class MultiAlgorithmPlotGenerator:
             backend: 后端实例
             analyzers: 分析器列表
             algorithm_names: 算法名称列表
-            time_filter: 时间过滤器
             key_filter: 按键过滤器
             
         Returns:

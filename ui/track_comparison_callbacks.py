@@ -1208,6 +1208,7 @@ def register_callbacks(app, session_manager):
         
         # ========== 阶段4: 获取数据 ==========
         if not store_data:
+            logger.warning("⚠️ [DEBUG] store_data 为空")
             return default_hidden
         
         # 使用优化3的字典索引

@@ -130,16 +130,9 @@ def register_file_upload_callbacks(app, session_manager: SessionManager):
         if not is_valid:
             return error_span
 
-        logger.info(f"[DEBUG] file_upload_callbacks - session_manager地址: {id(session_manager)}")
-        logger.info(f"[DEBUG] file_upload_callbacks - session_manager.backends: {list(session_manager.backends.keys())}")
+    
         backend = session_manager.get_backend(session_id)
         
-        logger.info(f"[DEBUG] 文件上传使用的backend: {backend}")
-        if backend:
-            logger.info(f"[DEBUG] backend.multi_algorithm_manager: {backend.multi_algorithm_manager}")
-            logger.info(f"[DEBUG] backend.file_upload_service: {backend.file_upload_service}")
-            logger.info(f"[DEBUG] backend.file_upload_service.multi_algorithm_manager: {backend.file_upload_service.multi_algorithm_manager}")
-
         try:
             upload_handler = MultiFileUploadHandler()
             file_id = button_id['index']

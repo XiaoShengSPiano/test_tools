@@ -374,7 +374,6 @@ def load_waterfall_plot(session_id, session_manager, data_types, selected_keys, 
         waterfall_fig = backend.generate_waterfall_plot(
             data_types=data_types,
             key_ids=key_ids,
-            time_filter=time_filter,
             key_filter=key_filter
         )
 
