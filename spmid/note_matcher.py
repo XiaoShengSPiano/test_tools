@@ -291,8 +291,8 @@ class NoteMatcher:
         return matched_pairs
     
     def _build_matching_heaps(self, key_id: int,
-                              record_notes: List[Note],
-                              replay_notes: List[Note]) -> Tuple[List, List]:
+                               record_notes: List[Note],
+                               replay_notes: List[Note]) -> Tuple[List, List]:
         """
         构建录制和播放的最小堆
         
@@ -304,26 +304,27 @@ class NoteMatcher:
         Returns:
             Tuple[List, List]: (record_heap, replay_heap)
         """
-        # 堆元素格式: (key_on_ms, note_object, split_seq)
+        # 堆元素格式: (key_on_ms, uuid, note_object, split_seq)
         # key_on_ms: 用于堆排序
+        # uuid: 唯一识别号，防止同时间点时比较Note对象（会导致Pandas Series比较错误）
         # split_seq: None=原始数据, 0/1/2...=拆分序号
 
         # 录制堆
         record_heap = []
         for note in record_notes:
-            heapq.heappush(record_heap, (note.key_on_ms, note, None))
+            heapq.heappush(record_heap, (note.key_on_ms, note.uuid, note, None))
 
         # 播放堆
         replay_heap = []
         for note in replay_notes:
-            heapq.heappush(replay_heap, (note.key_on_ms, note, None))
+            heapq.heappush(replay_heap, (note.key_on_ms, note.uuid, note, None))
 
         
         return record_heap, replay_heap
     
     def _process_record_notes(self, key_id: int, record_heap: List, replay_heap: List,
-                               used_replay_uuids: set, skipped_replay_uuids: set,
-                               matched_pairs: List) -> Tuple[int, int]:
+                                used_replay_uuids: set, skipped_replay_uuids: set,
+                                matched_pairs: List) -> Tuple[int, int]:
         """
         处理所有录制数据的主循环
 
@@ -343,7 +344,7 @@ class NoteMatcher:
         
         while record_heap:
             # 取出录制数据
-            rec_keyon, rec_note, rec_split_seq = heapq.heappop(record_heap)
+            rec_keyon, rec_uuid, rec_note, rec_split_seq = heapq.heappop(record_heap)
             
             logger.debug(f"    处理录制Note: UUID={rec_note.uuid[:8]}..., key_on={rec_note.key_on_ms:.2f}ms, split_seq={rec_split_seq}")
             
@@ -388,7 +389,7 @@ class NoteMatcher:
     def _clean_used_replay_notes(self, replay_heap: List, used_replay_uuids: set):
         """清理播放堆顶的已使用数据（惰性删除）"""
         while replay_heap:
-            _, rep_note, _ = replay_heap[0]  # 堆元素: (key_on_ms, note, split_seq)
+            _, _, rep_note, _ = replay_heap[0]  # 堆元素: (key_on_ms, uuid, note, split_seq)
 
             if rep_note.uuid in used_replay_uuids:
                 heapq.heappop(replay_heap)
@@ -423,7 +424,7 @@ class NoteMatcher:
         
         # 【第一道防线】循环跳过"提前过多"的播放数据（>200ms，极端情况）+ 锤速异常检测
         while replay_heap:
-            _, rep_note, _ = replay_heap[0]
+            _, _, rep_note, _ = replay_heap[0]
             rep_keyon = rep_note.key_on_ms
             
             # 检查条件1：播放是否"提前"过多？
@@ -477,7 +478,7 @@ class NoteMatcher:
         candidates = []
         
         for i in range(window_size):
-            rep_keyon, rep_note, rep_split_seq = replay_heap[i]
+            rep_keyon, rep_uuid, rep_note, rep_split_seq = replay_heap[i]
             candidates.append({
                 'heap_index': i,
                 'keyon': rep_keyon,
@@ -498,11 +499,11 @@ class NoteMatcher:
         # 4. 跳过前面的次优候选
         if best_index > 0:
             for i in range(best_index):
-                _, rep_note, _ = heapq.heappop(replay_heap)
+                _, _, rep_note, _ = heapq.heappop(replay_heap)
                 skipped_replay_uuids.add(rep_note.uuid)
 
         # 5. 返回最佳候选（现在在堆顶）
-        _, rep_note, _ = replay_heap[0]
+        _, _, rep_note, _ = replay_heap[0]
         keyon_error_ms = best['error']
 
         return (rep_note, keyon_error_ms)
@@ -698,7 +699,7 @@ class NoteMatcher:
             rep_note: 播放音符
             record_heap: 录制堆
             replay_heap: 播放堆
-            used_replay_notes: 已使用的播放音符集合
+            used_replay_uuids: 已使用的播放音符集合
             rec_duration: 录制持续时间
             rep_duration: 播放持续时间
         
@@ -784,13 +785,13 @@ class NoteMatcher:
         )
         
         # 将note_b加入堆（note_a用于立即匹配）
-        heapq.heappush(target_heap, (note_b.key_on_ms, note_b, note_b.split_seq if note_b.split_seq is not None else 0))
+        heapq.heappush(target_heap, (note_b.key_on_ms, note_b.uuid, note_b, note_b.split_seq if note_b.split_seq is not None else 0))
         
         # ⚠️ 重要：不要将 note_b 标记为 used_uuids！
         # note_b 是拆分后的第二部分，需要在后续循环中重新匹配
         # 如果标记为 used，它会在 _clean_used_replay_notes 中被删除
         
-        logger.debug(f"        ✓ 拆分成功，note_b (UUID={note_b.uuid[:8]}...) 已加入堆，等待重新匹配")
+        logger.debug(f"[DEBUG]        ✓ 拆分成功，note_b (UUID={note_b.uuid[:8]}...) 已加入堆，等待重新匹配")
         
         return (note_a, note_b)
     

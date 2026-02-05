@@ -10,7 +10,7 @@ from plotly.graph_objects import Figure
 from utils.logger import Logger
 from utils.constants import GRADE_LEVELS
 
-# Dash UI imports for report generation
+
 import dash_bootstrap_components as dbc
 from dash import html
 
@@ -24,7 +24,6 @@ from .plot_generator import PlotGenerator
 from .plot_service import PlotService
 from .key_filter import KeyFilter
 from .table_data_generator import TableDataGenerator
-from .history_manager import HistoryManager
 from .delay_analysis import DelayAnalysis
 from .multi_algorithm_manager import MultiAlgorithmManager, AlgorithmDataset, AlgorithmStatus
 from .force_curve_analyzer import ForceCurveAnalyzer
@@ -68,7 +67,7 @@ class PianoAnalysisBackend:
         self.multi_algorithm_manager = MultiAlgorithmManager(max_algorithms=None)
         
         # 初始化文件上传服务（统一的文件上传处理）
-        self.file_upload_service = FileUploadService(self.multi_algorithm_manager)
+        self.file_upload_service = FileUploadService(self.multi_algorithm_manager, self.history_manager)
         
         # 初始化绘图服务（统一管理所有图表生成）
         self.plot_service = PlotService(self)
@@ -83,7 +82,7 @@ class PianoAnalysisBackend:
         # 用于存储上传的文件二进制数据，减少 dcc.Store 的负载
         self.temp_file_cache: Dict[str, bytes] = {}
         
-        logger.info(f"PianoAnalysisBackend初始化完成 (Session: {session_id})")
+        logger.debug(f"[DEBUG]PianoAnalysisBackend初始化完成 (Session: {session_id})")
 
 
     # ==================== 数据管理相关方法 ====================
@@ -282,32 +281,68 @@ class PianoAnalysisBackend:
         """
         return self.history_manager.process_history_selection(history_id, self)
     
-    def load_spmid_data(self, spmid_bytes: bytes) -> bool:
+    async def load_algorithm_from_history(self, record_id: int) -> Tuple[bool, str]:
         """
-        加载SPMID数据
+        从历史记录加载算法到当前会话
         
         Args:
-            spmid_bytes: SPMID文件字节数据
+            record_id: 数据库记录 ID
             
         Returns:
-            bool: 是否加载成功
+            Tuple[bool, str]: (成功与否, 算法名或错误信息)
         """
         try:
-            # 使用数据管理器加载数据
-            success = self.data_manager.load_spmid_data(spmid_bytes)
+            # 1. 获取记录
+            record = self.history_manager.get_record_by_id(record_id)
+            if not record:
+                return False, f"未找到记录 ID: {record_id}"
+            
+            # 2. 从 Parquet 加载数据
+            from database.history_manager import ParquetDataLoader
+            tracks = ParquetDataLoader.load_from_record(record)
+            
+            if len(tracks) < 2:
+                return False, "历史数据音轨不足"
+            
+            # 3. 转换为 Note 列表并进行二次过滤 (Ensuring quality criteria for historical data)
+            # 注意：历史数据存储的是 OptimizedNote
+            raw_record_notes = [note.to_standard_note() for note in tracks[0]]
+            raw_replay_notes = [note.to_standard_note() for note in tracks[1]]
+            
+            # [新增] 重新应用最新的过滤规则 (User Requirement)
+            from spmid.data_filter import DataFilter
+            data_filter = DataFilter()
+            record_notes, replay_notes, _ = data_filter.filter_notes(raw_record_notes, raw_replay_notes)
+            
+            logger.info(f"💾 从历史加载并重新过滤: 录制({len(raw_record_notes)}->{len(record_notes)}), 播放({len(raw_replay_notes)}->{len(replay_notes)})")
+
+            # 4. 生成算法名称 (如果用户没给，用文件名+电机/算法标记)
+            display_name = f"{record['filename']}_{record['motor_type']}_{record['algorithm']}"
+            
+            # 5. 添加到管理器
+            success, result = await self.multi_algorithm_manager.add_algorithm_async(
+                display_name,
+                record['filename'],
+                record_notes,
+                replay_notes,
+                filter_collector=None # 历史加载通常不重复展示过滤详细日志
+            )
             
             if success:
-                # 同步数据到各个模块
-                self._sync_data_to_modules()
-                logger.info("SPMID数据加载成功")
+                # 自动激活
+                unique_name = result
+                alg = self.multi_algorithm_manager.get_algorithm(unique_name)
+                if alg:
+                    alg.is_active = True
+                return True, unique_name
             else:
-                logger.error("SPMID数据加载失败")
-            
-            return success
-            
+                return False, result
+                
         except Exception as e:
-            logger.error(f"SPMID数据加载异常: {e}")
-            return False
+            logger.error(f"从历史加载失败: {e}")
+            logger.error(traceback.format_exc())
+            return False, str(e)
+
             
     def _sync_data_to_modules(self) -> None:
         """同步数据到各个模块"""
@@ -597,9 +632,8 @@ class PianoAnalysisBackend:
             if not target_item:
                 logger.warning(f"未找到{delay_type}延迟项")
                 return None
-            
+
             # 从对齐数据中提取 UUID
-            # 从对齐数据中提取 UUID（使用新增的明确字段名）
             record_uuid = target_item.get('record_uuid')
             replay_uuid = target_item.get('replay_uuid')
             

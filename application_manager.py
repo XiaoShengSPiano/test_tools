@@ -8,7 +8,7 @@ import dash
 import dash_bootstrap_components as dbc
 from dash import html, dcc, Input, Output, State
 
-from backend.history_manager import HistoryManager
+from database.history_manager import SQLiteHistoryManager
 from backend.session_manager import SessionManager
 from ui.callbacks import register_callbacks
 from utils.logger import Logger
@@ -25,7 +25,7 @@ class ApplicationManager:
     """应用管理器 - 使用单例模式管理核心组件"""
 
     _instance: Optional['ApplicationManager'] = None
-    _history_manager: Optional[HistoryManager] = None
+    _history_manager: Optional[SQLiteHistoryManager] = None
     _session_manager: Optional[SessionManager] = None
     _app: Optional[dash.Dash] = None
 
@@ -35,11 +35,10 @@ class ApplicationManager:
         return cls._instance
 
     @property
-    def history_manager(self) -> HistoryManager:
-        """获取历史管理器单例"""
+    def history_manager(self) -> SQLiteHistoryManager:
+        """获取历史管理器单例 (Parquet & Database)"""
         if self._history_manager is None:
-            disable_db = os.environ.get('DISABLE_DATABASE', 'false').lower() == 'true'
-            self._history_manager = HistoryManager(disable_database=disable_db)
+            self._history_manager = SQLiteHistoryManager()
         return self._history_manager
 
     @property
@@ -213,13 +212,15 @@ class ApplicationManager:
         from pages.scatter_analysis import register_callbacks as register_scatter_callbacks
         from ui.consistency_callbacks import register_callbacks as register_consistency_callbacks
         from ui.waterfall_consistency_callbacks import register_callbacks as register_waterfall_consistency_callbacks
+        from ui.history_callbacks import register_history_callbacks
 
         register_report_callbacks(app, self.session_manager)
         register_waterfall_callbacks(app, self.session_manager)
         register_scatter_callbacks(app, self.session_manager)
         register_consistency_callbacks(app, self.session_manager)
         register_waterfall_consistency_callbacks(app, self.session_manager)
-        logger.info("[OK] Waterfall Consistency callbacks registered")
+        register_history_callbacks(app, self.session_manager)
+        logger.debug("[DEBUG] History and Waterfall Consistency callbacks registered")
 
     def _handle_page_routing(self, pathname: str):
         """根据 pathname 返回对应页面布局"""

@@ -15,9 +15,10 @@ def register_callbacks(app, session_manager):
     @app.callback(
         Output('track-comparison-consistency-key-dropdown', 'options'),
         [Input('session-id', 'data'),
-         Input('active-algorithm-store', 'data')]
+         Input('active-algorithm-store', 'data'),
+         Input('algorithm-management-trigger', 'data')]
     )
-    def update_key_options(session_id, active_algorithm_name):
+    def update_key_options(session_id, active_algorithm_name, management_trigger):
         return _handle_update_key_options(session_id, active_algorithm_name, session_manager)
 
 
@@ -161,7 +162,7 @@ def _handle_update_consistency_graph(slider_value, key_id, session_id, active_al
     sliced_base_notes = full_key_replay_notes[start_idx : end_idx + 1]
     
     # 2. 提取所有算法的 Replay 数据并统计
-    replay_sources = []
+    data_sources = []
     stats_list = []
     
     # 确定时间范围
@@ -170,6 +171,7 @@ def _handle_update_consistency_graph(slider_value, key_id, session_id, active_al
 
     for alg in active_algorithms:
         alg_name = alg.metadata.algorithm_name
+        display_name = alg.metadata.display_name or alg_name
         analyzer = alg.analyzer
         
         alg_replay_data = analyzer.get_initial_valid_replay_data() or []
@@ -184,19 +186,19 @@ def _handle_update_consistency_graph(slider_value, key_id, session_id, active_al
              if n.key_on_ms is not None and (min_ts - 500 <= n.key_on_ms <= max_ts + 500)
         ]
         
-        replay_sources.append({
-            'label': f"播放 ({alg_name})",
-            'notes': sliced_replay_notes
+        data_sources.append({
+            'name': display_name,
+            'record_notes': [], # 不显示录制音轨
+            'replay_notes': sliced_replay_notes
         })
         
         stats_list.append(f"{alg_name}: {total_alg_key_count}")
 
-    # 3. 生成图表 (不传入 record_notes)
+    # 3. 生成图表
     fig = ConsistencyPlotter.generate_key_waveform_consistency_plot(
-        record_notes=[], # 不显示录制音轨
-        replay_sources=replay_sources,
+        data_sources=data_sources,
         key_id=key_id,
-        total_record_count=0 # 录制数据量设为0
+        title_suffix=" (仅播放音轨对比)"
     )
     
     # 修正标题，因为没有 Record

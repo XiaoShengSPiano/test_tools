@@ -142,9 +142,10 @@ def register_callbacks(app, session_manager):
         [
             Input('session-id', 'data'),
             Input('scatter-analysis-type-selector', 'value'),
+            Input('algorithm-management-trigger', 'data'),
         ]
     )
-    def update_scatter_plot(session_id, analysis_type):
+    def update_scatter_plot(session_id, analysis_type, management_trigger):
         if not session_id:
             return _create_no_data_alert()
         

@@ -240,17 +240,17 @@ class SPMIDLoader:
                 time_span = 0
                 condition2 = True
 
-            # 如果满足任一条件，则过滤掉并记录
+            # 如果力度过小 或者 持续时间过短，判定为无效数据并过滤 (User Requirement)
             if condition1 or condition2:
                 if condition1 and condition2:
-                    reason = 'low_after_value'
-                    detail = f"after_touch最大值={max_after_val}(<500), 持续时间={time_span*0.1:.1f}ms(<30ms)"
+                    reason = 'low_quality_note'
+                    detail = f"力度过小且持续时间过短: max_after={max_after_val}(<500), duration={time_span*0.1:.1f}ms(<30ms)"
                 elif condition1:
                     reason = 'low_after_value'
-                    detail = f"after_touch最大值={max_after_val}(<500)"
+                    detail = f"力度过小: max_after={max_after_val}(<500)"
                 else:
                     reason = 'short_duration'
-                    detail = f"持续时间={time_span*0.1:.1f}ms(<30ms)"
+                    detail = f"持续时间过短: duration={time_span*0.1:.1f}ms(<30ms)"
                 
                 self.filter_collector.add_filtered_note(
                     note, i, reason, detail=detail
@@ -305,7 +305,6 @@ class SPMIDLoader:
             uuid=opt_note.uuid,
             hammers=hammers,
             after_touch=after_touch,
-            # 时间属性会在 __post_init__ 中自动计算
             key_on_ms=None,
             key_off_ms=None,
             duration_ms=None,

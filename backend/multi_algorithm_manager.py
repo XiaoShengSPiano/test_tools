@@ -14,6 +14,7 @@ from enum import Enum
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
+import os
 import json
 import time
 from utils.logger import Logger
@@ -79,7 +80,7 @@ class AlgorithmDataset:
         self.record_data: List[Note] = []
         self.replay_data: List[Note] = []
         
-        logger.info(f"✅ AlgorithmDataset初始化: {algorithm_name} (文件: {filename})")
+        logger.debug(f"✅[DEBUG] AlgorithmDataset初始化: {algorithm_name} (文件: {filename})")
     
     def load_data(self, record_data: List[Note], replay_data: List[Note], filter_collector=None) -> bool:
         """
@@ -96,35 +97,35 @@ class AlgorithmDataset:
         try:
             perf_load_start = time.time()
             self.metadata.status = AlgorithmStatus.LOADING
-            logger.info(f"                📊 [Dataset] 开始加载数据...")
+            logger.debug(f"[DEBUG]                📊 [Dataset] 开始加载数据...")
 
             # ============ 保存原始数据 ============
             perf_save_start = time.time()
             self.record_data = record_data
             self.replay_data = replay_data
             perf_save_end = time.time()
-            logger.info(f"                ⏱️  [性能] Dataset-保存数据: {(perf_save_end - perf_save_start)*1000:.2f}ms")
+            logger.debug(f"[DEBUG]                ⏱️  [性能] Dataset-保存数据: {(perf_save_end - perf_save_start)*1000:.2f}ms")
 
             # ============ 创建分析器并执行分析 ============
             perf_analyze_start = time.time()
-            logger.info(f"                🔬 开始执行SPMIDAnalyzer分析...")
+            logger.debug(f"[DEBUG]                🔬 开始执行SPMIDAnalyzer分析...")
             self.analyzer = SPMIDAnalyzer()
             self.analyzer.analyze(record_data, replay_data, filter_collector)
             perf_analyze_end = time.time()
             analyze_time_ms = (perf_analyze_end - perf_analyze_start) * 1000
-            logger.info(f"                ⏱️  [性能] Dataset-SPMIDAnalyzer分析: {analyze_time_ms:.2f}ms")
+            logger.debug(f"[DEBUG]                ⏱️  [性能] Dataset-SPMIDAnalyzer分析: {analyze_time_ms:.2f}ms")
 
             self.metadata.status = AlgorithmStatus.READY
             
             perf_load_end = time.time()
             total_time_ms = (perf_load_end - perf_load_start) * 1000
-            logger.info(f"                🏁 [Dataset] 数据加载完成，总耗时: {total_time_ms:.2f}ms")
+            logger.debug(f"[DEBUG]                🏁 [Dataset] 数据加载完成，总耗时: {total_time_ms:.2f}ms")
             return True
             
         except Exception as e:
             self.metadata.status = AlgorithmStatus.ERROR
             self.metadata.error_message = str(e)
-            logger.error(f"                ❌ 算法 {self.metadata.algorithm_name} 数据加载失败: {e}")
+            logger.error(f"[ERROR]                ❌ 算法 {self.metadata.algorithm_name} 数据加载失败: {e}")
             return False
     
     def get_statistics(self) -> Dict[str, Any]:
@@ -253,7 +254,6 @@ class MultiAlgorithmManager:
         Returns:
             str: 唯一的算法名称
         """
-        import os
         # 去掉路径和扩展名，只保留文件名（无扩展名）
         basename = os.path.basename(filename)
         filename_without_ext = os.path.splitext(basename)[0]
@@ -330,11 +330,11 @@ class MultiAlgorithmManager:
             
             perf_manager_end = time.time()
             total_time_ms = (perf_manager_end - perf_manager_start) * 1000
-            logger.info(f"            🏁 [Manager] 算法添加完成，总耗时: {total_time_ms:.2f}ms")
-            logger.info(f"            ✅ 算法 '{algorithm_name}' (文件: {filename}) 添加成功，唯一标识: {unique_algorithm_name}")
-            logger.info(f"            [DEBUG] MultiAlgorithmManager对象地址: {self}")
-            logger.info(f"            [DEBUG] 添加后的算法总数: {len(self.algorithms)}")
-            logger.info(f"            [DEBUG] 当前所有算法: {list(self.algorithms.keys())}")
+            logger.debug(f"            🏁 [Manager] 算法添加完成，总耗时: {total_time_ms:.2f}ms")
+            logger.debug(f"            ✅ 算法 '{algorithm_name}' (文件: {filename}) 添加成功，唯一标识: {unique_algorithm_name}")
+            logger.debug(f"            [DEBUG] MultiAlgorithmManager对象地址: {self}")
+            logger.debug(f"            [DEBUG] 添加后的算法总数: {len(self.algorithms)}")
+            logger.debug(f"            [DEBUG] 当前所有算法: {list(self.algorithms.keys())}")
             return True, unique_algorithm_name  # 返回唯一标识符
         else:
             error_msg = algorithm.metadata.error_message or "未知错误"

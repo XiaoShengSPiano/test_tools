@@ -42,7 +42,6 @@ class SPMIDAnalyzer:
         # 初始化各个组件
         self.data_filter: DataFilter()
         self.note_matcher: NoteMatcher()
-        # ErrorDetector已移除，功能已集成到NoteMatcher中
         
         # 分析结果（现在直接从NoteMatcher获取）
         self.multi_hammers: List[ErrorNote] = []
@@ -96,7 +95,7 @@ class SPMIDAnalyzer:
             self.invalid_statistics = FilterIntegrator.integrate_filter_data(
                 filter_collector, record_data, replay_data
             )
-            logger.info(f"✅ 已整合加载阶段的过滤信息: {self.invalid_statistics}")
+            logger.debug(f"[DEBUG] 已整合加载阶段的过滤信息: {self.invalid_statistics}")
         else:
             # 如果没有提供过滤器，创建空的统计对象
             self.invalid_statistics = InvalidNotesStatistics()
@@ -105,13 +104,17 @@ class SPMIDAnalyzer:
             self.invalid_statistics.replay_total = len(replay_data)
             self.invalid_statistics.replay_valid = len(replay_data)
         
-        # 步骤3：执行按键匹配（现在包含错误检测）
+        # 直接使用初次过滤后的数据（来自 SPMIDLoader）
+        # initial_valid_xxx_data 用于一致性分析波形展示
+        self.initial_valid_record_data = record_data
+        self.initial_valid_replay_data = replay_data
+
+        # 步骤3：执行按键匹配 (使用初次过滤后的数据)
         matching_start_time = time.time()
         
         # NoteMatcher现在在匹配过程中直接进行错误检测和分类
-        # 执行匹配（会直接设置note_matcher.matched_pairs，包含评级信息）
         self.note_matcher.find_all_matched_pairs(record_data, replay_data)
-        # matched_pairs 已在匹配过程中被正确填充，直接引用即可
+        # matched_pairs 已在匹配过程中被正确填充
         self.matched_pairs = self.note_matcher.matched_pairs
 
         matching_end_time = time.time()
@@ -126,23 +129,12 @@ class SPMIDAnalyzer:
         self.multi_hammers = self.note_matcher.multi_hammers
         self.abnormal_matches = self.note_matcher.abnormal_matches
         
-        logger.info(f"    ✅ 匹配与错误检测完成: 耗时{matching_duration:.3f}秒")
-        logger.info(f"       - 精确匹配对: {len(self.matched_pairs)}个")
-        logger.info(f"       - 丢锤: {len(self.drop_hammers)}个")
-        logger.info(f"       - 多锤: {len(self.multi_hammers)}个")
-        logger.info(f"       - 异常匹配对: {len(self.abnormal_matches)}个")
-        
-        # # 步骤4：数据过滤（用于统计无效音符信息）
-        # filter_start_time = time.time()
-        # _, _, self.invalid_statistics = self.data_filter.filter_notes(record_data, replay_data)
-        # filter_end_time = time.time()
-        # filter_duration = filter_end_time - filter_start_time
-        # logger.info(f"数据过滤完成: 耗时{filter_duration:.3f}秒")
-        
-        # 步骤4.5：保存初始有效数据（用于错误详情展示）
-        # 这些是原始输入数据，未经过匹配过滤
-        self.initial_valid_record_data = record_data
-        self.initial_valid_replay_data = replay_data
+        logger.debug(f"[DEBUG]    ✅ 匹配与错误检测完成: 耗时{matching_duration:.3f}秒")
+        logger.debug(f"[DEBUG]       - 精确匹配对: {len(self.matched_pairs)}个")
+        logger.debug(f"[DEBUG]       - 丢锤: {len(self.drop_hammers)}个")
+        logger.debug(f"[DEBUG]       - 多锤: {len(self.multi_hammers)}个")
+        logger.debug(f"[DEBUG]       - 异常匹配对: {len(self.abnormal_matches)}个")
+
         
         # 步骤5：从精确匹配对中提取音符数据（用于后续分析）
         # matched_pairs 是 List[Tuple[Note, Note, MatchType, float]]，提取前两个元素即可
@@ -169,16 +161,16 @@ class SPMIDAnalyzer:
                 self.valid_record_data, self.valid_replay_data,
                 self.invalid_statistics, self.matched_pairs)
     
-    def _initialize_components(self) -> None:
+    def _initialize_components(self):
         """初始化各个分析组件"""
         
         # 初始化各个组件
         self.data_filter = DataFilter()
         self.note_matcher = NoteMatcher()
         
-        logger.info("所有分析组件初始化完成")
+        logger.debug("所有分析组件初始化完成")
     
-    def _log_invalid_notes_statistics(self, record_data: List[Note], replay_data: List[Note]) -> None:
+    def _log_invalid_notes_statistics(self, record_data: List[Note], replay_data: List[Note]):
         """记录无效音符统计信息"""
         if self.invalid_statistics is None:
             logger.warning("无效音符统计对象未初始化，跳过统计日志")
@@ -197,7 +189,7 @@ class SPMIDAnalyzer:
             f"无效 {summary['replay']['invalid']} 个"
         )
     
-    def _generate_analysis_stats(self) -> None:
+    def _generate_analysis_stats(self):
         """生成分析统计信息"""
         # 获取无效音符数
         record_invalid = self.invalid_statistics.record_invalid_count if self.invalid_statistics else 0

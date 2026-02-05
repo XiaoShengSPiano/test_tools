@@ -13,7 +13,6 @@ import threading
 import os
 from typing import Dict, Optional, Tuple
 from backend.piano_analysis_backend import PianoAnalysisBackend
-from backend.history_manager import HistoryManager
 import os
 from utils.logger import Logger
 
@@ -28,7 +27,7 @@ class SessionManager:
     每个会话都有独立的backend实例，确保数据隔离。
     """
     
-    def __init__(self, history_manager: HistoryManager):
+    def __init__(self, history_manager):
         """
         初始化会话管理器
         

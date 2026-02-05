@@ -100,122 +100,6 @@ def _handle_plot_update_error(error: Exception, backend) -> Tuple[Figure, html.D
     return error_fig, error_report
 
 
-def _create_migration_alert(existing_filename: str) -> dbc.Alert:
-    """
-    创建数据迁移提示UI
-
-    Args:
-        existing_filename: 现有文件的名称
-
-    Returns:
-        dbc.Alert: 迁移提示组件
-    """
-    return dbc.Alert([
-        html.H6("检测到现有分析数据", className="mb-2", style={'fontWeight': 'bold'}),
-        html.P(f"文件: {existing_filename}", style={'fontSize': '14px', 'marginBottom': '10px'}),
-        html.P("请为这个算法输入名称，以便在多算法模式下进行对比：", style={'fontSize': '14px', 'marginBottom': '10px'}),
-        html.Div(id='migration-components-placeholder', children=[
-            html.P("请在下方输入算法名称并点击确认迁移按钮", style={'fontSize': '12px', 'color': '#6c757d'})
-        ])
-    ], color='info', className='mb-3')
-
-
-def _create_error_alert(message: str, title: str = "迁移失败") -> dbc.Alert:
-    """
-    创建错误提示UI
-
-    Args:
-        message: 错误消息
-        title: 错误标题
-
-    Returns:
-        dbc.Alert: 错误提示组件
-    """
-    return dbc.Alert([
-        html.H6(title, className="mb-2", style={'fontWeight': 'bold', 'color': '#dc3545'}),
-        html.P(message, style={'fontSize': '14px'})
-    ], color='danger', className='mb-3')
-
-
-def _check_existing_data(backend) -> Tuple[bool, Optional[str]]:
-    """
-    检查是否有现有分析数据
-
-    Args:
-        backend: 后端实例
-
-    Returns:
-        Tuple[bool, Optional[str]]: (是否有数据, 文件名)
-    """
-    try:
-        analyzer = backend._get_current_analyzer()
-        if analyzer and analyzer.note_matcher and hasattr(analyzer, 'matched_pairs') and len(analyzer.matched_pairs) > 0:
-            data_source_info = backend.get_data_source_info()
-            existing_filename = data_source_info.get('filename', '未知文件')
-            logger.info(f"[OK] 检测到现有分析数据: {existing_filename}")
-            return True, existing_filename
-    except Exception as e:
-        logger.warning(f"[WARNING] 检查现有数据时出错: {e}")
-
-    return False, None
-
-
-def _handle_session_trigger(backend) -> Tuple[dict, Optional[dbc.Alert]]:
-    """
-    处理会话初始化触发
-
-    Args:
-        backend: 后端实例
-
-    Returns:
-        Tuple[dict, Optional[dbc.Alert]]: (样式, 组件)
-    """
-    logger.info("[INFO] 多算法模式始终启用")
-
-    has_existing_data, existing_filename = _check_existing_data(backend)
-
-    if has_existing_data:
-        migration_area = _create_migration_alert(existing_filename)
-        logger.info("[OK] 显示迁移提示区域")
-        return {'display': 'block'}, migration_area
-    else:
-        logger.info("[INFO] 没有现有数据需要迁移")
-        return {'display': 'none'}, None
-
-
-def _handle_migration_trigger(backend, algorithm_name: str) -> Tuple[Any, Optional[dbc.Alert]]:
-    """
-    处理迁移按钮触发
-
-    Args:
-        backend: 后端实例
-        algorithm_name: 算法名称
-
-    Returns:
-        Tuple[Any, Optional[dbc.Alert]]: (样式更新, 错误组件)
-    """
-    try:
-        # multi_algorithm_manager 在初始化时已创建
-
-        algorithm_name = algorithm_name.strip()
-        logger.info(f"📤 开始迁移现有数据到算法: {algorithm_name}")
-        success, error_msg = backend.migrate_existing_data_to_algorithm(algorithm_name)
-
-        if success:
-            logger.info("[OK] 数据迁移成功")
-            return {'display': 'none'}, None
-        else:
-            logger.error(f"[ERROR] 数据迁移失败: {error_msg}")
-            error_alert = _create_error_alert(f"错误: {error_msg}")
-            return no_update, error_alert
-
-    except Exception as e:
-        logger.error(f"[ERROR] 迁移数据时发生异常: {e}")
-        logger.error(traceback.format_exc())
-        error_alert = _create_error_alert(f"异常: {str(e)}")
-        return no_update, error_alert
-
-
 def _ensure_algorithm_active(backend, alg_name: str, display_name: str) -> bool:
     """
     确保算法激活状态
@@ -459,11 +343,13 @@ def _update_file_list_after_algorithm_change(
         contents_list = store_data.get('contents', [])
         filenames_list = store_data.get('filenames', [])
         file_ids = store_data.get('file_ids', [])
+        history_hints = store_data.get('history_hints', [])
 
         # 过滤出未添加的文件
         filtered_contents = []
         filtered_filenames = []
         filtered_file_ids = []
+        filtered_history_hints = []
 
         for i, filename in enumerate(filenames_list):
             if filename not in added_filenames:
@@ -472,20 +358,25 @@ def _update_file_list_after_algorithm_change(
                 filtered_filenames.append(filename)
                 if i < len(file_ids):
                     filtered_file_ids.append(file_ids[i])
+                if i < len(history_hints):
+                    filtered_history_hints.append(history_hints[i])
+                else:
+                    filtered_history_hints.append(None)
 
         # 更新存储数据
         updated_store_data = {
             'contents': filtered_contents,
             'filenames': filtered_filenames,
-            'file_ids': filtered_file_ids
+            'file_ids': filtered_file_ids,
+            'history_hints': filtered_history_hints
         }
 
         # 生成文件列表UI
         upload_handler = MultiFileUploadHandler()
         file_items = []
-        for content, filename, file_id in zip(filtered_contents, filtered_filenames, filtered_file_ids):
+        for content, filename, file_id, history_hint in zip(filtered_contents, filtered_filenames, filtered_file_ids, filtered_history_hints):
             if filename not in added_filenames:
-                file_card = upload_handler.create_file_card(file_id, filename)
+                file_card = upload_handler.create_file_card(file_id, filename, existing_record=history_hint)
                 file_items.append(file_card)
 
         file_list_children = html.Div(file_items) if file_items else []
@@ -571,32 +462,16 @@ def register_algorithm_callbacks(app, session_manager: SessionManager):
         return file_list_children, upload_status_text, updated_store_data
 
     @app.callback(
-        [Output('algorithm-list-trigger', 'data', allow_duplicate=True),
-         Output('algorithm-management-trigger', 'data', allow_duplicate=True)],
-        [Input({'type': 'algorithm-status', 'index': dash.dependencies.ALL}, 'children'),
-         Input('confirm-migrate-existing-data-btn', 'n_clicks')],
+        Output('algorithm-list-trigger', 'data', allow_duplicate=True),
+        [Input({'type': 'algorithm-upload-success', 'index': dash.dependencies.ALL}, 'data')],
         [State('session-id', 'data')],
         prevent_initial_call=True
     )
-    def trigger_algorithm_list_update(status_children, migrate_clicks, session_id):
-        """当算法状态改变时触发算法列表和文件列表更新"""
+    def trigger_algorithm_list_update(upload_success_data, session_id):
+        """当新的算法上传成功时触发列表更新"""
         trigger_value = time.time()
-        logger.info(f"[PROCESS] 触发算法列表更新")
-        return trigger_value, trigger_value
-
-    # 多页面架构：禁用旧的瀑布图+报告联合更新回调
-    # 新架构中，报告和瀑布图在各自的页面中独立更新
-    # @app.callback(
-    #     [Output('main-plot', 'figure', allow_duplicate=True),
-    #      Output('report-content', 'children', allow_duplicate=True)],
-    #     [Input('algorithm-list-trigger', 'data'),
-    #      Input({'type': 'algorithm-toggle', 'index': dash.dependencies.ALL}, 'value')],
-    #     [State('session-id', 'data')],
-    #     prevent_initial_call=True
-    # )
-    # def update_plot_on_algorithm_change(...):
-    #     """旧架构回调 - 已禁用"""
-    #     pass
+        logger.info(f"[PROCESS] 收到算法上传成功信号，触发列表更新")
+        return trigger_value
     
     # 新架构：算法变化时触发报告内容更新
     @app.callback(
@@ -612,134 +487,31 @@ def register_algorithm_callbacks(app, session_manager: SessionManager):
         新架构：通过更新 algorithm-management-trigger 来通知报告页面刷新
         """
         return time.time()
-    
-    # 保留原有的错误处理代码结构（但实际回调已禁用）
-    def _old_update_plot_on_algorithm_change_logic(
-        trigger_data: Any,
-        toggle_values: List[Any],
-        session_id: str
-    ) -> Tuple[Union[Figure, Any], Union[html.Div, Any]]:
-        """
-        旧架构逻辑（已禁用） - 保留供参考
-        
-        当算法添加/删除/切换时，自动更新瀑布图和报告
-
-        Args:
-            trigger_data: 触发数据
-            toggle_values: 切换值列表
-            session_id: 会话ID
-
-        Returns:
-            Tuple[Union[Figure, Any], Union[html.Div, Any]]: (图表, 报告内容)
-        """
-        backend = session_manager.get_backend(session_id)
-        if not backend:
-            return no_update, no_update
-
-        # multi_algorithm_manager 在初始化时已创建
-
-        # 检查是否有激活的算法
-        active_algorithms = backend.get_active_algorithms()
-        if not active_algorithms:
-            # 没有激活的算法，显示空图表
-            empty_fig = create_empty_figure("请至少激活一个算法以查看瀑布图")
-            return empty_fig, html.Div("暂无数据", style={'display': 'none'})
-
-        try:
-            # 生成图表和报告
-            return _generate_plot_and_report(backend, active_algorithms)
-
-        except Exception as e:
-            # 处理错误情况
-            return _handle_plot_update_error(e, backend)
-
-    @app.callback(
-        [Output('existing-data-migration-area', 'style'),
-         Output('existing-data-migration-area', 'children')],
-        [Input('session-id', 'data'),
-         Input('confirm-migrate-existing-data-btn', 'n_clicks')],
-        [State('existing-data-algorithm-name-input', 'value')],
-        prevent_initial_call=True
-    )
-    def handle_existing_data_migration(
-        session_id_trigger: Optional[str],
-        migrate_clicks: Optional[int],
-        algorithm_name: Optional[str]
-    ) -> Tuple[dict, Optional[dbc.Alert]]:
-        """
-        处理现有数据迁移区域的显示和迁移操作
-
-        Args:
-            session_id_trigger: 会话ID触发器
-            migrate_clicks: 迁移按钮点击次数
-            algorithm_name: 算法名称
-
-        Returns:
-            Tuple[dict, Optional[dbc.Alert]]: (样式, 组件)
-        """
-        logger.info(f"[PROCESS] handle_existing_data_migration: migrate_clicks={migrate_clicks}")
-
-        # 从 session_id_trigger 获取 session_id（它可能是 None 或实际值）
-        session_id = session_id_trigger if session_id_trigger else None
-
-        backend = session_manager.get_backend(session_id)
-        if not backend:
-            logger.warning("[WARNING] 无法获取backend实例（handle_existing_data_migration）")
-            return {'display': 'none'}, None
-
-        ctx = callback_context
-        if not ctx.triggered:
-            return {'display': 'none'}, None
-
-        trigger_id = ctx.triggered[0]['prop_id']
-        logger.info(f"🔍 触发源: {trigger_id}")
-
-        try:
-            # 处理不同的触发源
-            if 'session-id' in trigger_id:
-                return _handle_session_trigger(backend)
-            elif 'confirm-migrate-existing-data-btn' in trigger_id:
-                if not migrate_clicks or not algorithm_name or not algorithm_name.strip():
-                    return no_update, no_update
-                return _handle_migration_trigger(backend, algorithm_name)
-            else:
-                # 未知触发源
-                logger.warning(f"[WARNING] 未知触发源: {trigger_id}")
-                return {'display': 'none'}, None
-
-        except Exception as e:
-            logger.error(f"[ERROR] handle_existing_data_migration 发生异常: {e}")
-            logger.error(traceback.format_exc())
-            return {'display': 'none'}, None
 
     @app.callback(
         [Output('algorithm-list', 'children', allow_duplicate=True),
-         Output('algorithm-management-status', 'children', allow_duplicate=True)],
+         Output('algorithm-management-status', 'children', allow_duplicate=True),
+         Output('active-algo-count-badge', 'children')],
         [Input('algorithm-list-trigger', 'data')],
         [State('session-id', 'data')],
         prevent_initial_call=True
     )
-    def update_algorithm_list(trigger_data: Any, session_id: str) -> Tuple[List[dbc.Card], html.Span]:
+    def update_algorithm_list(trigger_data: Any, session_id: str) -> Tuple[List[dbc.Card], html.Span, str]:
         """
-        更新算法列表显示
-
-        Args:
-            trigger_data: 触发数据
-            session_id: 会话ID
-
-        Returns:
-            Tuple[List[dbc.Card], html.Span]: (算法列表, 状态文本)
+        更新算法列表显示及角标数量
         """
         backend = session_manager.get_backend(session_id)
         if not backend:
-            return [], html.Span("")
+            return [], html.Span(""), "0"
 
         try:
             algorithms = backend.get_all_algorithms()
             logger.info(f"[PROCESS] 更新算法列表: 共 {len(algorithms)} 个算法")
+            
+            algo_count = str(len(algorithms))
 
             if not algorithms:
-                return [], html.Span("暂无算法，请上传文件", style={'color': '#6c757d'})
+                return [], html.Span("暂无算法，请上传文件", style={'color': '#6c757d'}), algo_count
 
             algorithm_items = []
             for alg_info in algorithms:
@@ -756,12 +528,12 @@ def register_algorithm_callbacks(app, session_manager: SessionManager):
             # 创建状态文本
             status_text = html.Span(f"共 {len(algorithms)} 个算法", style={'color': '#6c757d'})
 
-            return algorithm_items, status_text
+            return algorithm_items, status_text, algo_count
 
         except Exception as e:
             logger.error(f"[ERROR] 更新算法列表失败: {e}")
             logger.error(traceback.format_exc())
-            return [], html.Span(f"更新失败: {str(e)}", style={'color': '#dc3545'})
+            return [], html.Span(f"更新失败: {str(e)}", style={'color': '#dc3545'}), "0"
 
     @app.callback(
         [Output('algorithm-list-trigger', 'data', allow_duplicate=True),
@@ -831,11 +603,10 @@ def register_algorithm_callbacks(app, session_manager: SessionManager):
             algorithm_deleted = False
 
             if 'algorithm-toggle' in trigger_id:
-                logger.info(f"[PROCESS] 切换算法显示状态: {algorithm_name}")
+                logger.debug(f"[DEBUG] 切换算法显示状态: {algorithm_name}")
                 _handle_toggle_action(backend, algorithm_name, toggle_values, toggle_ids)
             elif 'algorithm-delete-btn' in trigger_id:
-                logger.info(f"[PROCESS] 处理算法删除: {algorithm_name}")
-                
+                logger.debug(f"[DEBUG] 处理算法删除: {algorithm_name}")
                 # 使用delete_clicks_list来检查是否有点击
                 # 找到对应算法的索引
                 clicked = False

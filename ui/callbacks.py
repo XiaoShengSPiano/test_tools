@@ -38,7 +38,6 @@ from plotly.subplots import make_subplots
 from ui.layout_components import empty_figure, create_multi_algorithm_upload_area, create_multi_algorithm_management_area
 from backend.session_manager import SessionManager
 from utils.ui_helpers import create_empty_figure
-from ui.duration_diff_click_handler import DurationDiffClickHandler
 from ui.grade_detail_callbacks import register_all_callbacks
 from utils.logger import Logger
 # 后端类型导入

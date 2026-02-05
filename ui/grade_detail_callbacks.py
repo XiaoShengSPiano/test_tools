@@ -479,7 +479,7 @@ def register_grade_detail_callbacks(app, session_manager: SessionManager):
         if 'delay-metric-btn' in triggered_id_str:
             try:
                 # 解析 ID 信息
-                triggered_id = json.loads(triggered_id_str.split('.')[0])
+                triggered_id = json.loads(triggered_id_str.rsplit('.', 1)[0])
                 alg_name = triggered_id['algorithm']
                 metric_type = triggered_id['metric'] # 'max' 或 'min'
 
@@ -534,7 +534,7 @@ def register_grade_detail_callbacks(app, session_manager: SessionManager):
         if 'active_cell' in triggered_id_str:
             try:
                 # A. 解析目标表格索引
-                target_idx = json.loads(triggered_id_str.split('.')[0])['index']
+                target_idx = json.loads(triggered_id_str.rsplit('.', 1)[0])['index']
                 active_cell = ctx.triggered[0].get('value')
                 
                 # B. 数据有效性初步检测与兜底 (解决表格重绘导致的选中丢失)
@@ -605,7 +605,7 @@ def register_grade_detail_callbacks(app, session_manager: SessionManager):
         if not ctx.triggered:
             return _no_update_all()
 
-        btn_index = json.loads(ctx.triggered[0]['prop_id'].split('.')[0])['index']
+        btn_index = json.loads(ctx.triggered[0]['prop_id'].rsplit('.', 1)[0])['index']
         if '_' in btn_index:
             alg_name, actual_grade = btn_index.rsplit('_', 1)
         else:
@@ -667,7 +667,7 @@ def register_all_callbacks(app, session_manager: SessionManager):
         grade_key = state['grade_key']
         # 确定索引 (多算法 vs 单算法)
         trigger_id = dash.callback_context.triggered[0]['prop_id']
-        target_idx = json.loads(trigger_id.split('.')[0])['index']
+        target_idx = json.loads(trigger_id.rsplit('.', 1)[0])['index']
         alg = None if target_idx == 'single' else target_idx
         
         backend = session_manager.get_backend(sid)

@@ -121,45 +121,31 @@ class DataFilter:
         """
         验证单个音符的有效性
         
-        对单个音符进行全面的有效性检查，包括数据完整性、锤速、持续时间等条件。
-        
         Args:
             note: 待检查的音符对象
             
         Returns:
             Tuple[bool, str]: (是否有效, 无效原因代码)
-                无效原因代码：
-                - 'empty_data': 数据为空
-                - 'silent_notes': 不发声（锤速为0）
-                - 'duration_too_short': 持续时间过短
-                - 'other_errors': 其他错误
-                - 'valid': 有效
         """
         try:
-            # 1. 检查数据完整性
+            # 1. 检查按键范围 (1-88)
+            if not (1 <= note.id <= 88):
+                return False, 'invalid_key'
+
+            # 2. 检查数据完整性
             if len(note.after_touch) == 0 or len(note.hammers) == 0:
                 return False, 'empty_data'
 
-            # 2. 检查锤速（第一个锤击的速度）
-            # 获取时间上最早的锤速值
-            min_timestamp = note.hammers.index.min()
-            first_hammer_velocity = note.hammers.loc[min_timestamp]
-
-            if first_hammer_velocity == 0:
-                return False, 'silent_notes'
-
-            # 3. 检查持续时间
-            try:
-                duration_ms = note.key_off_ms - note.key_on_ms
-                if duration_ms < 10:  # 最短持续时间：10ms
-                    return False, 'duration_too_short'
-            except (AttributeError, TypeError) as e:
-                raise ValueError(f"音符ID {note.id} 的时间数据无效: {e}") from e
+            # 3. 检查录制质量 (User Requirement)
+            # 过滤条件: after_touch的最大值 < 500 或者 持续时间 < 30ms
+            max_at = note.after_touch.max()
+            duration_ms = note.key_off_ms - note.key_on_ms
             
-            # 所有检查通过
+            if max_at < 500 or duration_ms < 30:
+                return False, 'low_quality_note'
+
             return True, 'valid'
             
         except Exception as e:
-            # 未预期的错误
             logger.debug(f"验证音符 {note.id} 时发生错误: {e}")
             return False, 'other_errors'

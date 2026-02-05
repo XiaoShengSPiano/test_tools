@@ -5,11 +5,9 @@
 数据管理模块
 负责数据加载、文件上传处理等核心功能
 """
-
+import traceback
 from typing import Optional, Tuple, Dict, Any
 from utils.logger import Logger
-from backend.history_manager import HistoryManager
-
 # 导入各个专门的处理模块
 from .spmid_loader import SPMIDLoader
 
@@ -49,12 +47,6 @@ class DataManager:
         self.spmid_loader.clear_data()
         logger.info("✅ 数据状态已清理")
     
-    def clear_upload_state(self) -> None:
-        """清理上传状态，允许重新上传同一文件"""
-        # 注意：这里不直接访问backend的私有属性，
-        # 而是通过调用backend的方法来清理
-        logger.info("✅ 上传状态已清理")
-    
     def set_upload_data_source(self, filename: str) -> None:
         """设置上传数据源信息"""
         self.data_source_info = {
@@ -93,26 +85,9 @@ class DataManager:
         """判断是否为上传数据源"""
         return self.data_source_info.get('type') == 'upload'
 
-    def get_upload_data_source_info(self) -> Dict[str, Any]:
-        """获取上传数据源信息"""
-        return self.data_source_info.copy()
-    
     def is_history_source(self) -> bool:
         """判断是否为历史数据源"""
         return self.data_source_info.get('type') == 'history'
-    
-    def set_analysis_results(self, valid_record_data, valid_replay_data):
-        """设置分析结果数据"""
-        self.valid_record_data = valid_record_data
-        self.valid_replay_data = valid_replay_data
-    
-    def get_valid_record_data(self):
-        """获取有效录制数据"""
-        return self.valid_record_data
-    
-    def get_valid_replay_data(self):
-        """获取有效回放数据"""
-        return self.valid_replay_data
     
     def load_spmid_data(self, spmid_bytes: bytes) -> bool:
         """
@@ -137,92 +112,3 @@ class DataManager:
     def get_filter_collector(self):
         """获取过滤信息收集器"""
         return self.spmid_loader.get_filter_collector()
-    
-    # ==================== 文件上传处理相关方法 ====================
-    
-    def process_file_upload(self, contents: Optional[str], filename: Optional[str], history_manager: Optional[HistoryManager]) -> Tuple[bool, Optional[Dict[str, Any]], Optional[str]]:
-        """
-        处理文件上传
-        
-        Args:
-            contents: 上传文件的内容（二进制数据）
-            filename: 上传文件的文件名
-            history_manager: 历史记录管理器
-            
-        Returns:
-            tuple: (success, data, error_msg)
-                   - success: 是否成功
-                   - data: 成功时的数据字典，包含filename, record_count, replay_count, history_id
-                   - error_msg: 失败时的错误信息
-        """
-        try:
-            logger.info(f"📁 数据管理器处理文件: {filename}")
-            
-            # 注意：输入验证已在UploadManager中完成，这里直接处理
-            
-            # 初始化上传状态（总是允许重新上传）
-            self._initialize_upload_state(filename)
-            
-            # 直接使用文件内容（已经是解码后的二进制数据）
-            decoded_bytes = contents
-            
-            # 加载SPMID数据
-            success, error_msg = self._load_spmid_data(decoded_bytes)
-            
-            if success:
-                # 处理上传成功的情况
-                return self._handle_upload_success(filename, history_manager)
-            else:
-                # 处理上传失败的情况
-                return False, None, error_msg
-
-        except Exception as e:
-            logger.error(f"❌ 文件处理错误: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return False, None, str(e)
-    
-    def _initialize_upload_state(self, filename):
-        """初始化文件上传状态"""
-        self.clear_data_state()
-        self.set_upload_data_source(filename)
-
-
-    def _load_spmid_data(self, decoded_bytes):
-        """加载SPMID数据"""
-        success = False
-        error_msg = None
-        
-        try:
-            success = self.spmid_loader.load_spmid_data(decoded_bytes)
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"❌ 文件处理错误: {error_msg}")
-            import traceback
-            logger.error(traceback.format_exc())
-        
-        return success, error_msg
-
-    def _handle_upload_success(self, filename, history_manager):
-        """处理文件上传成功的情况"""
-        # 保存分析结果到历史记录
-        history_id = history_manager.save_analysis_result(filename, self)
-        
-        # 记录成功信息
-        self._log_upload_success(filename, history_id)
-        
-        # 返回成功数据
-        data = {
-            'filename': filename,
-            'record_count': len(self.get_record_data()),
-            'replay_count': len(self.get_replay_data()),
-            'history_id': history_id
-        }
-        
-        return True, data, None
-
-    def _log_upload_success(self, filename, history_id):
-        """记录文件上传成功信息"""
-        logger.info(f"✅ 文件上传处理完成 - {filename}")
-        logger.info(f"📊 数据统计: 录制 {len(self.get_record_data())} 个音符, 播放 {len(self.get_replay_data())} 个音符")
-        logger.info(f"💾 历史记录ID: {history_id}")

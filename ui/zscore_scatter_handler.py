@@ -54,7 +54,7 @@ class ZScoreScatterHandler(ScatterHandlerBase):
                 logger.warning("[WARNING] Z-Score图表验证失败")
                 return no_update
             
-            logger.info("[OK] Z-Score散点图生成成功")
+            logger.debug("[DEBUG] Z-Score散点图生成成功")
             return fig
         except Exception as e:
             logger.error(f"[ERROR] 生成Z-Score散点图失败: {e}")

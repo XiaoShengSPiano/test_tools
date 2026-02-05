@@ -43,79 +43,122 @@ empty_figure.update_layout(
 
 
 def create_multi_algorithm_upload_area():
-    """创建多算法上传区域"""
+    """创建多算法上传区域 (现代精致卡片风格 - 回归原生结构)"""
+    
+    # 未激活标签：简洁文字风格，带悬停效果
+    tab_style = {
+        'padding': '12px 20px',
+        'fontSize': '14px',
+        'fontWeight': '500',
+        'color': '#6c757d',
+        'backgroundColor': 'transparent',
+        'border': 'none',
+        'borderBottom': '3px solid transparent',
+        'transition': 'all 0.3s ease',
+        'cursor': 'pointer',
+    }
+    
+    # 激活标签：带亮蓝色下划线的现代风格
+    active_tab_style = {
+        'padding': '12px 20px',
+        'fontSize': '14px',
+        'fontWeight': 'bold',
+        'color': '#0d6efd',
+        'backgroundColor': 'transparent',
+        'border': 'none',
+        'borderBottom': '3px solid #0d6efd',
+    }
+
+    return dbc.Card([
+        dbc.Tabs([
+            # --- 标签页 1: 上传 ---
+            dbc.Tab(
+                label="📤 本地解析", 
+                tab_id="tab-upload", 
+                label_style=tab_style,
+                active_label_style=active_tab_style,
+                children=[
+                    dbc.CardBody([
+                        dbc.Row([
+                            dbc.Col([
+                                dcc.Upload(
+                                    id='upload-multi-algorithm-data',
+                                    children=html.Div([
+                                        html.I(className="fas fa-cloud-upload-alt",
+                                              style={'fontSize': '32px', 'color': '#0d6efd', 'marginBottom': '10px'}),
+                                        html.Br(),
+                                        html.Span('点击选择 或 拖拽 SPMID 文件至此处', 
+                                                 style={'fontSize': '14px', 'color': '#495057'})
+                                    ], style={
+                                        'textAlign': 'center', 'padding': '30px', 'border': '2px dashed #0d6efd',
+                                        'borderRadius': '12px', 'backgroundColor': '#f8fbff', 'cursor': 'pointer',
+                                    }),
+                                    multiple=True
+                                )
+                            ], width=9),
+                            dbc.Col([
+                                dbc.Button(
+                                    [html.I(className="fas fa-redo me-2"), "重置"],
+                                    id='reset-multi-algorithm-upload',
+                                    color='secondary', outline=True, size='md',
+                                    style={'height': '105px', 'width': '100%'},
+                                )
+                            ], width=3)
+                        ]),
+                        html.Div(id='multi-algorithm-upload-status', className="mt-3", 
+                                children=html.Span("等待上传文件...", style={'color': '#6c757d', 'fontSize': '12px'})),
+                        html.Div(id='multi-algorithm-file-list', 
+                                style={'marginTop': '15px', 'maxHeight': '450px', 'overflowY': 'auto'})
+                    ])
+                ]
+            ),
+            
+            # --- 标签页 2: 历史 ---
+            dbc.Tab(
+                label="🏛️ 历史记录", 
+                tab_id="tab-history", 
+                label_style=tab_style,
+                active_label_style=active_tab_style,
+                children=[
+                    dbc.CardBody([
+                        html.Div(id='history-browser-container', children=create_history_browser_area())
+                    ])
+                ]
+            ),
+        ], id="file-management-tabs", active_tab="tab-upload", className="px-3 pt-2 bg-light border-bottom")
+    ], className="shadow-sm mb-4 border-light", style={'borderRadius': '12px', 'overflow': 'hidden'})
+
+
+def create_history_browser_area():
+    """创建并刷新历史记录浏览器"""
     return html.Div([
-        html.Label("多算法上传", style={
-            'fontWeight': 'bold',
-            'color': '#2c3e50',
-            'marginBottom': '10px',
-            'fontSize': '16px'
-        }),
         dbc.Row([
             dbc.Col([
-                dcc.Upload(
-                    id='upload-multi-algorithm-data',
-                    children=html.Div([
-                        html.I(className="fas fa-upload",
-                              style={'fontSize': '32px', 'color': '#28a745', 'marginBottom': '10px'}),
-                        html.Br(),
-                        html.Span('上传算法文件（支持多选）', style={'fontSize': '14px', 'color': '#6c757d'})
-                    ], style={
-                        'textAlign': 'center',
-                        'padding': '20px',
-                        'border': '2px dashed #28a745',
-                        'borderRadius': '8px',
-                        'backgroundColor': '#f8f9fa',
-                        'cursor': 'pointer'
-                    }),
-                    multiple=True
-                )
-            ], width=10),
+                dbc.Input(id='history-search-input', placeholder='搜索文件名...', size='sm', className='mb-2')
+            ], width=8),
             dbc.Col([
-                dbc.Button(
-                    "🔄 重置",
-                    id='reset-multi-algorithm-upload',
-                    color='secondary',
-                    size='sm',
-                    n_clicks=0,
-                    style={'height': '100%', 'width': '100%'},
-                    title='如果重复上传同一文件没有反应，请点击此按钮重置上传区域'
-                )
-            ], width=2)
+                dbc.Button("刷新", id='refresh-history-btn', color='info', size='sm', className='w-100')
+            ], width=4)
         ]),
-        html.Div(id='multi-algorithm-upload-status', style={'marginTop': '10px', 'fontSize': '12px'}),
-        # 文件列表区域（上传后显示）
-        html.Div(id='multi-algorithm-file-list', style={'marginTop': '15px'})
+        html.Div(id='history-table-container', children=[
+            # 这里将来由回调填充 DataTable
+            html.Div("正在连接数据库...", className='text-muted small text-center p-3')
+        ], style={'maxHeight': '400px', 'overflowY': 'auto'})
     ])
 
 
 def create_multi_algorithm_management_area():
-    """创建多算法管理区域"""
+    """创建多算法管理区域 (当前已加载到内存中的算法)"""
     return html.Div([
-        html.Label("📊 算法管理", style={
-            'fontWeight': 'bold',
-            'color': '#2c3e50',
-            'marginBottom': '10px',
-            'fontSize': '16px'
-        }),
-        # 现有数据迁移提示区域（默认隐藏，由回调动态更新）
-        html.Div(id='existing-data-migration-area', style={'display': 'none'}, className='mb-3'),
-        # 迁移相关的组件（始终存在，但默认隐藏，由回调控制显示）
-        dbc.Input(
-            id='existing-data-algorithm-name-input',
-            type='text',
-            placeholder='输入算法名称',
-            style={'display': 'none', 'marginBottom': '10px'}
-        ),
-        dbc.Button(
-            "确认迁移",
-            id='confirm-migrate-existing-data-btn',
-            color='primary',
-            size='sm',
-            n_clicks=0,
-            style={'display': 'none'}
-        ),
-        html.Div(id='algorithm-list', children=[]),
+        html.Div([
+            html.I(className="fas fa-microchip me-2", style={'color': '#17a2b8'}),
+            html.Span("当前活跃算法 ", className="fw-bold text-info", style={'fontSize': '14px'}),
+            dbc.Badge(id='active-algo-count-badge', color="info", pill=True, className="ms-2", children="0")
+        ], className="mb-3 p-2 bg-light rounded border"),
+        
+        # 算法列表展示
+        html.Div(id='algorithm-list', children=[], style={'maxHeight': '500px', 'overflowY': 'auto'}),
+        
         html.Div(id='algorithm-management-status', 
                 style={'fontSize': '12px', 'color': '#6c757d', 'marginTop': '10px'})
     ])

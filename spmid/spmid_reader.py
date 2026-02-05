@@ -159,7 +159,6 @@ class OptimizedSPMidReader:
     特点：
     - 使用 NumPy 批量读取，避免逐个创建 Pandas Series
     - 使用 np.frombuffer 零拷贝解析
-    - 解析速度比原版快 50-100 倍
     - 返回 OptimizedNote，可按需转换为标准 Note
     """
     

@@ -791,7 +791,7 @@ def register_callbacks(app, session_manager):
             # 生成按键选择选项
             key_options = _create_key_options_for_dropdown(key_stats)
             
-            logger.info(f"[INFO] 数据类型改变，更新按键统计: {data_types}, 找到 {len(key_options)} 个按键")
+            logger.debug(f"[DEBUG] 数据类型改变，更新按键统计: {data_types}, 找到 {len(key_options)} 个按键")
             
             return stats_display, key_options
         
@@ -806,10 +806,13 @@ def register_callbacks(app, session_manager):
             Output('waterfall-key-stats', 'children'),
             Output('waterfall-selected-keys', 'options')
         ],
-        Input('session-id', 'data'),
+        [
+            Input('session-id', 'data'),
+            Input('algorithm-management-trigger', 'data')
+        ],
         prevent_initial_call='initial_duplicate'  # 允许初始调用时的重复输出
     )
-    def initialize_waterfall_display(session_id):
+    def initialize_waterfall_display(session_id, management_trigger):
         """
         页面初始加载时的显示内容和按键信息
 

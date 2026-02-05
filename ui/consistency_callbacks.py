@@ -15,9 +15,10 @@ def register_callbacks(app, session_manager):
     @app.callback(
         Output('consistency-key-dropdown', 'options'),
         [Input('session-id', 'data'),
-         Input('active-algorithm-store', 'data')]
+         Input('active-algorithm-store', 'data'),
+         Input('algorithm-management-trigger', 'data')]
     )
-    def update_key_options(session_id, active_algorithm_name):
+    def update_key_options(session_id, active_algorithm_name, management_trigger):
         return _handle_update_key_options(session_id, active_algorithm_name, session_manager)
 
 
@@ -79,25 +80,43 @@ def _handle_update_key_options(session_id, active_algorithm_name, session_manage
     
     return options
 
-def _handle_update_slider_range(key_id, session_id, active_algorithm_name, session_manager):
+def _get_base_consistency_data(key_id, session_id, session_manager, active_algorithm_name=None):
+    """
+    获取一致性分析所需的基础数据（算法列表和指定按键的录制数据）
+    优先使用 active_algorithm_name 指定的算法作为基准
+    """
     if key_id is None or not session_id:
-        return 0, [0, 0], None, ""
+        return None, None
         
     backend = session_manager.get_backend(session_id)
     if not backend:
-        return 0, [0, 0], None, ""
+        return None, None
         
     active_algorithms = backend.get_active_algorithms()
     if not active_algorithms:
-        return 0, [0, 0], None, ""
+        return None, None
         
-    # 取第一个算法作为基准（假设所有文件录制音轨一致）
-    base_analyzer = active_algorithms[0].analyzer
+    # 确定基准算法
+    target_alg = active_algorithms[0]
+    if active_algorithm_name:
+        found = next((a for a in active_algorithms if a.metadata.algorithm_name == active_algorithm_name), None)
+        if found:
+            target_alg = found
+            
+    base_analyzer = target_alg.analyzer
     if not base_analyzer:
-        return 0, [0, 0], None, ""
+        return None, None
         
     record_data = base_analyzer.get_initial_valid_record_data() or []
     key_record_notes = sorted([n for n in record_data if n.id == key_id], key=lambda x: x.offset)
+    
+    return active_algorithms, key_record_notes
+
+def _handle_update_slider_range(key_id, session_id, active_algorithm_name, session_manager):
+    active_algorithms, key_record_notes = _get_base_consistency_data(key_id, session_id, session_manager, active_algorithm_name)
+    
+    if key_record_notes is None:
+        return 0, [0, 0], None, ""
     count = len(key_record_notes)
     
     if count == 0:
@@ -132,70 +151,83 @@ def _handle_update_slider_range(key_id, session_id, active_algorithm_name, sessi
     return max_val, [0, max_val], marks, label_text
 
 def _handle_update_consistency_graph(slider_value, key_id, session_id, active_algorithm_name, session_manager):
-    if key_id is None or not session_id:
-        return no_update, no_update
-        
+    # 获取后端
     backend = session_manager.get_backend(session_id)
     if not backend:
         return no_update, no_update
         
     active_algorithms = backend.get_active_algorithms()
     if not active_algorithms:
-        return no_update, no_update
-        
-    # 1. 提取 Record 数据 (取第一个算法作为基准)
-    base_analyzer = active_algorithms[0].analyzer
-    full_record_data = base_analyzer.get_initial_valid_record_data() or []
-    full_key_record_notes = sorted([n for n in full_record_data if n.id == key_id], key=lambda x: x.offset)
+        return no_update, "无活跃算法"
+
+    logger.debug(f"[DEBUG] ConsistencyPlot: 活跃算法数量: {len(active_algorithms)}")
+
+    # 收集所有数据源
+    data_sources = []
     
-    total_record_count = len(full_key_record_notes)
-    if total_record_count == 0:
-        return no_update, "无录制数据"
-        
-    # 解析范围
+    # 解析范围（基于索引）
     start_idx = 0
-    end_idx = total_record_count - 1
+    end_idx = float('inf')
+    
     if isinstance(slider_value, list) and len(slider_value) == 2:
         start_idx = max(0, slider_value[0])
-        end_idx = min(total_record_count - 1, slider_value[1])
+        # slider 的值就是索引
+        end_idx = slider_value[1]
     
-    sliced_record_notes = full_key_record_notes[start_idx : end_idx + 1]
-    
-    # 2. 提取所有算法的 Replay 数据
-    replay_sources = []
-    min_ts = sliced_record_notes[0].key_on_ms if sliced_record_notes and sliced_record_notes[0].key_on_ms else -1
-    max_ts = sliced_record_notes[-1].key_on_ms if sliced_record_notes and sliced_record_notes[-1].key_on_ms else float('inf')
+    # [DEBUG] 打印索引范围
+    logger.info(f"ConsistencyPlot: 选中索引范围: {start_idx} - {end_idx}")
 
+    # 遍历提取所有算法的数据
     for alg in active_algorithms:
         alg_name = alg.metadata.algorithm_name
+        display_name = alg.metadata.display_name or alg_name
+        
         analyzer = alg.analyzer
         
-        full_replay_data = analyzer.get_initial_valid_replay_data() or []
-        key_replay_notes = sorted([n for n in full_replay_data if n.id == key_id], key=lambda x: x.offset)
+        # 1. 提取 Record (Ground Truth)
+        # 注意：这里我们使用 get_initial_valid_record_data 获取所有有效数据
+        full_rec = analyzer.get_initial_valid_record_data() or []
+        key_rec = [n for n in full_rec if n.id == key_id]
+        key_rec.sort(key=lambda x: x.offset)
         
-        # 按时间范围切片 Replay
-        sliced_replay_notes = [
-             n for n in key_replay_notes 
-             if n.key_on_ms is not None and (min_ts - 500 <= n.key_on_ms <= max_ts + 500)
-        ]
+        # 2. 提取 Replay
+        full_rep = analyzer.get_initial_valid_replay_data() or []
+        key_rep = [n for n in full_rep if n.id == key_id]
+        key_rep.sort(key=lambda x: x.offset)
         
-        replay_sources.append({
-            'label': f"Replay ({alg_name})",
-            'notes': sliced_replay_notes
+        # 3. 按索引切片 (独立切片，确保每个算法的对应索引数据都能显示)
+        # 无论时间是否对齐，我们都展示该段索引的数据
+        curr_rec_len = len(key_rec)
+        curr_rep_len = len(key_rep)
+        
+        rec_end_actual = min(curr_rec_len - 1, int(end_idx))
+        rep_end_actual = min(curr_rep_len - 1, int(end_idx))
+        
+        sliced_rec = []
+        if start_idx < curr_rec_len:
+             sliced_rec = key_rec[int(start_idx) : rec_end_actual + 1]
+             
+        sliced_rep = []
+        if start_idx < curr_rep_len:
+             sliced_rep = key_rep[int(start_idx) : rep_end_actual + 1]
+        
+        # [DEBUG] 打印该算法的数据统计
+        rec_range = f"{sliced_rec[0].key_on_ms:.1f}-{sliced_rec[-1].key_on_ms:.1f}" if sliced_rec else "None"
+        logger.info(f"ConsistencyPlot: 算法 {display_name}: Rec总数={len(key_rec)}, 切片后Rec={len(sliced_rec)} (Range:{rec_range}), Rep={len(sliced_rep)}")
+        
+        data_sources.append({
+            'name': display_name,
+            'record_notes': sliced_rec,
+            'replay_notes': sliced_rep
         })
 
-    # 3. 生成图表
+    # 生成图表
     fig = ConsistencyPlotter.generate_key_waveform_consistency_plot(
-        record_notes=sliced_record_notes,
-        replay_sources=replay_sources,
-        key_id=key_id,
-        total_record_count=total_record_count
+        data_sources=data_sources,
+        key_id=key_id
     )
     
-    # 4. 计算显示标签
-    current_count = len(sliced_record_notes)
-    start_str = "N/A"
-    end_str = "N/A"
+    return fig, "" # Label text handled by slider callback mostly, or could update here if needed
     if sliced_record_notes:
         n1 = sliced_record_notes[0]
         n2 = sliced_record_notes[-1]
