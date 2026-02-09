@@ -31,8 +31,6 @@ class DelayAnalysis:
     
     def analyze_key_force_interaction(self) -> Dict[str, Any]:
         """
-        生成按键与力度的交互效应图数据
-
         生成按键-力度交互效应图所需的数据，用于可视化分析按键和力度对延时的联合影响。
 
         Returns:

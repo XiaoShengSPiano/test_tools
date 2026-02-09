@@ -63,18 +63,19 @@ class ParquetUtility:
         for track_idx in sorted(df['track'].unique()):
             track_df = df[df['track'] == track_idx]
             track_notes = []
-            for _, row in track_df.iterrows():
+            # 使用 itertuples 替代 iterrows 提升性能
+            for row in track_df.itertuples(index=False):
                 note = OptimizedNote(
-                    offset=int(row['note_offset']),
-                    id=int(row['note_id']),
-                    finger=int(row['finger']),
-                    velocity=int(row['velocity']),
-                    uuid=row['uuid'],
+                    offset=int(row.note_offset),
+                    id=int(row.note_id),
+                    finger=int(row.finger),
+                    velocity=int(row.velocity),
+                    uuid=row.uuid,
                     # 从 bytes 还原为指定的 NumPy 类型
-                    hammers_ts=np.frombuffer(row['hammers_ts'], dtype=np.uint32).copy(),
-                    hammers_val=np.frombuffer(row['hammers_val'], dtype=np.uint16).copy(),
-                    after_ts=np.frombuffer(row['after_ts'], dtype=np.uint32).copy(),
-                    after_val=np.frombuffer(row['after_val'], dtype=np.uint16).copy()
+                    hammers_ts=np.frombuffer(row.hammers_ts, dtype=np.uint32).copy(),
+                    hammers_val=np.frombuffer(row.hammers_val, dtype=np.uint16).copy(),
+                    after_ts=np.frombuffer(row.after_ts, dtype=np.uint32).copy(),
+                    after_val=np.frombuffer(row.after_val, dtype=np.uint16).copy()
                 )
                 track_notes.append(note)
             tracks.append(track_notes)

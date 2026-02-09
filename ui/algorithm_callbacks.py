@@ -453,7 +453,7 @@ def register_algorithm_callbacks(app, session_manager: SessionManager):
             return no_update, no_update, no_update
 
         algorithms = backend.get_all_algorithms()
-        logger.info(f"[PROCESS] 算法添加成功，更新文件列表")
+        logger.debug(f"[DEBUG] 算法添加成功，更新文件列表")
 
         file_list_children, upload_status_text, updated_store_data = _update_file_list_after_algorithm_change(
             backend, algorithms, False, store_data
@@ -470,7 +470,7 @@ def register_algorithm_callbacks(app, session_manager: SessionManager):
     def trigger_algorithm_list_update(upload_success_data, session_id):
         """当新的算法上传成功时触发列表更新"""
         trigger_value = time.time()
-        logger.info(f"[PROCESS] 收到算法上传成功信号，触发列表更新")
+        logger.debug(f"[DEBUG] 收到算法上传成功信号，触发列表更新")
         return trigger_value
     
     # 新架构：算法变化时触发报告内容更新
@@ -582,7 +582,6 @@ def register_algorithm_callbacks(app, session_manager: SessionManager):
             logger.warning("[WARNING] handle_algorithm_management: 无法获取backend")
             return no_update, no_update, no_update, no_update
 
-        # multi_algorithm_manager 在初始化时已创建
 
         ctx = callback_context
         if not ctx.triggered:

@@ -3,6 +3,7 @@ Z-Score散点图处理器 - 处理Z-Score标准化散点图的生成和交互
 """
 
 import traceback
+import json
 from typing import Optional, Tuple, List, Any, Union, Dict, TypedDict
 
 from dash import dcc, no_update
@@ -33,7 +34,6 @@ class ZScoreScatterHandler(ScatterHandlerBase):
     
     负责处理Z-Score标准化散点图的生成、点击交互和数据管理
     """
-    
     def generate_zscore_scatter_plot(self, session_id: str) -> Union[Any, NoUpdate]:
         """生成按键与延时Z-Score标准化散点图"""
         backend = self.session_manager.get_backend(session_id)
@@ -75,7 +75,7 @@ class ZScoreScatterHandler(ScatterHandlerBase):
         plot_id = trigger_id_raw
         if trigger_id_raw.startswith('{'):
             try:
-                import json
+                
                 plot_id = json.loads(trigger_id_raw).get('id', trigger_id_raw)
             except Exception:
                 pass

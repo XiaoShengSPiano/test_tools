@@ -1,4 +1,5 @@
 import sqlite3
+import mysql.connector
 import os
 import threading
 from dataclasses import dataclass, asdict
@@ -10,7 +11,7 @@ from abc import ABC, abstractmethod
 
 @dataclass
 class ParquetRecord:
-    """Parquet 存储记录模型 - 最终设计版"""
+    """Parquet 存储记录模型"""
     filename: str            # 原始文件名
     file_md5: str             # 文件 MD5 值
     motor_type: str           # 电机类型 (D3/D4)
@@ -29,8 +30,10 @@ class BaseHistoryManager(ABC):
         pass
 
     @abstractmethod
-    def save_record(self, record: ParquetRecord) -> Optional[int]:
-        """保存历史记录并返回 ID，若已存在则返回现有 ID"""
+    def save_record(self, filename: str, file_md5: str, motor_type: str, 
+                   algorithm: str, piano_type: str, file_date: str, 
+                   track_data: List[List['OptimizedNote']]) -> Optional[int]:
+        """根据音轨数据和元数据保存记录"""
         pass
 
     @abstractmethod
@@ -87,7 +90,7 @@ class SQLiteHistoryManager(BaseHistoryManager):
                    algorithm: str, piano_type: str, file_date: str, 
                    track_data: List[List['OptimizedNote']]) -> Optional[int]:
         """
-        保存记录到数据库及 Parquet 文件 (V3 高级接口)
+        保存记录到数据库及 Parquet 文件
         
         此方法会自动：
         1. 检查 MD5 是否已存在
@@ -210,6 +213,195 @@ class SQLiteHistoryManager(BaseHistoryManager):
             deleted = cursor.rowcount > 0
             
             conn.commit()
+            conn.close()
+            
+            # 3. 删除物理文件
+            if deleted and delete_file and file_path and os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except Exception as e:
+                    print(f"警告: 数据库记录已删除，但无法删除 Parquet 文件: {e}")
+            
+            return deleted
+
+class MySQLHistoryManager(BaseHistoryManager):
+    """基于 MySQL 的历史记录管理器实现"""
+    
+    def __init__(self, host="localhost", user="root", password="", database="piano_analysis", port=3306):
+        self.config = {
+            'host': host,
+            'user': user,
+            'password': password,
+            'database': database,
+            'port': port,
+            'use_unicode': True,
+            'charset': 'utf8mb4'
+        }
+        self.table_name = "track_data"
+        self._lock = threading.RLock()
+        self.init_storage()
+
+    def _get_connection(self):
+        try:
+            return mysql.connector.connect(**self.config)
+        except ImportError:
+            raise ImportError("请安装 mysql-connector-python: pip install mysql-connector-python")
+
+    def init_storage(self) -> None:
+        """初始化数据库表结构"""
+        with self._lock:
+            # 1. 尝试创建数据库
+            config_no_db = self.config.copy()
+            db_name = config_no_db.pop('database')
+            
+            try:
+                conn = mysql.connector.connect(**config_no_db)
+                cursor = conn.cursor()
+                cursor.execute(f"CREATE DATABASE IF NOT EXISTS {db_name} CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci")
+                conn.commit()
+                cursor.close()
+                conn.close()
+            except Exception:
+                # 忽略权限不足等导致无法创建数据库的错误，由后续子查询抛出连接异常
+                pass
+
+            # 2. 正常连接并创建表
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(f'''
+                CREATE TABLE IF NOT EXISTS {self.table_name} (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    filename TEXT,
+                    file_md5 VARCHAR(255) UNIQUE,
+                    motor_type TEXT,
+                    algorithm TEXT,
+                    piano_type TEXT,
+                    file_date TEXT,
+                    track_data_path TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            ''')
+            conn.commit()
+            cursor.close()
+            conn.close()
+
+    def save_record(self, filename: str, file_md5: str, motor_type: str, 
+                   algorithm: str, piano_type: str, file_date: str, 
+                   track_data: List[List['OptimizedNote']]) -> Optional[int]:
+        """保存记录到 MySQL 及 Parquet 文件"""
+        with self._lock:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            
+            # 1. 查重
+            cursor.execute(f"SELECT id FROM {self.table_name} WHERE file_md5 = %s", (file_md5,))
+            row = cursor.fetchone()
+            
+            if row:
+                cursor.close()
+                conn.close()
+                return row[0]
+
+            # 2. 准备 Parquet 存储路径
+            storage_dir = Path("track_data_storage")
+            storage_dir.mkdir(exist_ok=True)
+            parquet_path = storage_dir / f"{file_md5}.parquet"
+            
+            # 3. 保存 Parquet 文件
+            from .parquet_utility import ParquetUtility
+            try:
+                ParquetUtility.save_parquet(track_data, str(parquet_path))
+            except Exception as e:
+                cursor.close()
+                conn.close()
+                raise IOError(f"Failed to save Parquet file: {e}")
+
+            # 4. 插入数据库
+            try:
+                cursor.execute(f'''
+                    INSERT INTO {self.table_name} 
+                    (filename, file_md5, motor_type, algorithm, piano_type, file_date, track_data_path)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ''', (
+                    filename, file_md5, motor_type, algorithm, piano_type, file_date, str(parquet_path.absolute())
+                ))
+                record_id = cursor.lastrowid
+                conn.commit()
+                return record_id
+            except Exception as e:
+                conn.rollback()
+                raise e
+            finally:
+                cursor.close()
+                conn.close()
+
+    def get_all_records(self, limit: int = 20) -> List[dict]:
+        """获取最近的历史记录"""
+        with self._lock:
+            conn = self._get_connection()
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute(f"SELECT * FROM {self.table_name} ORDER BY id DESC LIMIT %s", (limit,))
+            rows = cursor.fetchall()
+            cursor.close()
+            conn.close()
+            return rows
+
+    def get_record_by_id(self, record_id: int) -> Optional[dict]:
+        """通过 ID 获取记录"""
+        with self._lock:
+            conn = self._get_connection()
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute(f"SELECT * FROM {self.table_name} WHERE id = %s", (record_id,))
+            row = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            return row
+
+    def get_record_by_md5(self, file_md5: str) -> Optional[dict]:
+        """通过 MD5 获取单条记录"""
+        with self._lock:
+            conn = self._get_connection()
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute(f"SELECT * FROM {self.table_name} WHERE file_md5 = %s", (file_md5,))
+            row = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            return row
+
+    def get_records_by_filename(self, filename: str) -> List[dict]:
+        """通过文件名筛选记录"""
+        with self._lock:
+            conn = self._get_connection()
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute(f"SELECT * FROM {self.table_name} WHERE filename = %s ORDER BY created_at DESC", (filename,))
+            rows = cursor.fetchall()
+            cursor.close()
+            conn.close()
+            return rows
+
+    def delete_record_by_id(self, record_id: int, delete_file: bool = True) -> bool:
+        """通过 ID 删除记录"""
+        with self._lock:
+            conn = self._get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            # 1. 查找文件路径
+            cursor.execute(f"SELECT track_data_path FROM {self.table_name} WHERE id = %s", (record_id,))
+            row = cursor.fetchone()
+            
+            if not row:
+                cursor.close()
+                conn.close()
+                return False
+                
+            file_path = row['track_data_path']
+            
+            # 2. 从数据库删除记录
+            cursor.execute(f"DELETE FROM {self.table_name} WHERE id = %s", (record_id,))
+            deleted = cursor.rowcount > 0
+            
+            conn.commit()
+            cursor.close()
             conn.close()
             
             # 3. 删除物理文件

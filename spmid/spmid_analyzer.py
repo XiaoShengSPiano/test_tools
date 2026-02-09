@@ -214,9 +214,11 @@ class SPMIDAnalyzer:
         """获取分析统计信息"""
         return self.analysis_stats.copy()
     
-    def get_matched_pairs(self) -> List[Tuple[int, int, Note, Note]]:
-        """获取匹配对信息"""
-        return self.matched_pairs.copy()
+    def get_matched_pairs(self) -> List[Tuple[Note, Note]]:
+        """获取匹配对信息 (仅返回 Record Note 和 Replay Note)"""
+        if self.note_matcher:
+            return self.note_matcher.get_matched_pairs()
+        return []
     
     
     def get_data_filter(self) -> Optional[DataFilter]:

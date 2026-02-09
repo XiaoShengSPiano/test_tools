@@ -134,8 +134,6 @@ class MultiAlgorithmPlotGenerator:
                 bars = alg_data['bars']
                 algorithm_name = alg_data['algorithm_name']
 
-                logger.info(f"算法 '{algorithm_name}': 准备绘制 {len(bars)} 个bars")
-
                 for bar in bars:
                     total_bars += 1
                     data_type = bar.get('data_type', '')
@@ -364,12 +362,13 @@ class MultiAlgorithmPlotGenerator:
 
     def _calculate_match_grading(self, result, record_note, replay_note, avg_delay_ms: float):
         """
-        计算匹配结果的评级和延时信息
+        计算匹配结果的评级和延时信息（已统一使用全局标准）
 
         Returns:
             tuple: (grade_name, color_intensity, delay_ms, relative_delay_ms)
         """
-        grade_name = "未知"
+        from utils.constants import get_grade_by_delay, GRADE_NAMES
+        
         delay_ms = 0.0
         relative_delay_ms = 0.0
 
@@ -378,23 +377,19 @@ class MultiAlgorithmPlotGenerator:
             if record_note.key_on_ms is not None and replay_note.key_on_ms is not None:
                 delay_ms = replay_note.key_on_ms - record_note.key_on_ms
                 relative_delay_ms = delay_ms - avg_delay_ms
-            else:
-                delay_ms = 0.0
-                relative_delay_ms = 0.0
 
-            # 评级
-            if delay_ms <= 20:
-                color_intensity, grade_name = 0.8, "优秀"
-            elif delay_ms <= 30:
-                color_intensity, grade_name = 0.6, "良好"
-            elif delay_ms <= 50:
-                color_intensity, grade_name = 0.4, "一般"
-            elif delay_ms <= 1000:
-                color_intensity, grade_name = 0.3, "较差"
-            else:
-                color_intensity, grade_name = 0.2, "严重"
+            # 使用全局统一评级函数
+            grade_key = get_grade_by_delay(relative_delay_ms)
+            grade_name = GRADE_NAMES.get(grade_key, "未知")
+            
+            # 颜色强度映射 (与 constants 逻辑保持直觉一致)
+            intensity_map = {
+                'excellent': 0.8, 'good': 0.6, 'fair': 0.4, 'poor': 0.3, 'severe': 0.2, 'failed': 0.1
+            }
+            color_intensity = intensity_map.get(grade_key, 0.1)
         else:
-            color_intensity, grade_name = 0.1, "失败"
+            grade_name = GRADE_NAMES.get('failed', '失败')
+            color_intensity = 0.1
             relative_delay_ms = 0.0 - avg_delay_ms
 
         return grade_name, color_intensity, delay_ms, relative_delay_ms
@@ -2799,7 +2794,7 @@ class MultiAlgorithmPlotGenerator:
         
         for alg in ready_algorithms:
             try:
-                matched_pairs = alg.analyzer.note_matcher.get_matched_pairs()
+                matched_pairs = self._get_matched_pairs(alg)
                 for record_idx, replay_idx, record_note, replay_note in matched_pairs:
                     if len(replay_note.hammers) > 0 and len(replay_note.hammers.values) > 0:
                         vel = replay_note.hammers.values[0]

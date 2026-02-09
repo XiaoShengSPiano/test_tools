@@ -99,7 +99,7 @@ class PianoAnalysisBackend:
         # 清理临时文件缓存
         self.clear_temp_cache()
 
-        logger.info("✅ 所有数据状态已清理")
+        logger.debug("[DEBUG] 所有数据状态已清理")
     
     def _get_algorithms_to_analyze(self) -> List[Any]:
         """
@@ -157,7 +157,7 @@ class PianoAnalysisBackend:
     def clear_temp_cache(self) -> None:
         """清理临时文件缓存"""
         self.temp_file_cache.clear()
-        logger.info("✅ 临时文件缓存已清理")
+        logger.debug("[DEBUG] 临时文件缓存已清理")
 
     def _analyze_single_algorithm(self, algorithm) -> bool:
         """
@@ -363,7 +363,7 @@ class PianoAnalysisBackend:
         # 获取分析结果
         multi_hammers = analyzer.multi_hammers
         drop_hammers = analyzer.drop_hammers
-        # 不再直接获取 invalid_notes_table_data 字典
+
         # 统计数据现在由 invalid_statistics 对象管理
         matched_pairs = analyzer.matched_pairs
 
@@ -695,13 +695,7 @@ class PianoAnalysisBackend:
         return {
             'key_filter': self.key_filter.get_key_filter_status(),
             'available_keys': self.key_filter.get_available_keys(),
-            # time_filter 接口已移除
         }
-    
-    def reset_time_filter(self) -> None:
-        """重置时间范围过滤 (接口已弃用)"""
-        pass
-    
     
     # ==================== 表格数据相关方法 ====================
     
@@ -1324,6 +1318,8 @@ class PianoAnalysisBackend:
         Returns:
             Dict[str, Any]: 包含各级别误差统计的数据
         """
+        from utils.constants import GRADE_LEVELS
+        
         try:
             # 如果指定了算法，使用该算法的数据
             if algorithm:
@@ -1342,13 +1338,8 @@ class PianoAnalysisBackend:
 
             # 多算法模式：汇总所有激活算法的评级统计
             if is_multi_algorithm:
-                total_stats = {
-                    'correct': {'count': 0, 'percent': 0.0},
-                    'minor': {'count': 0, 'percent': 0.0},
-                    'moderate': {'count': 0, 'percent': 0.0},
-                    'large': {'count': 0, 'percent': 0.0},
-                    'severe': {'count': 0, 'percent': 0.0}
-                }
+                # 动态初始化
+                total_stats = {level: {'count': 0, 'percent': 0.0} for level in GRADE_LEVELS}
 
                 total_count = 0
                 for algorithm in active_algorithms:
@@ -1362,24 +1353,19 @@ class PianoAnalysisBackend:
 
                 # 计算百分比，确保总和为100%（保留4位小数）
                 if total_count > 0:
-                    # 先计算原始百分比
                     raw_percentages = {}
                     for level in GRADE_LEVELS:
                         raw_percentages[level] = (total_stats[level]['count'] / total_count) * 100.0
 
-                    # 保留4位小数并四舍五入
                     rounded_percentages = {}
                     for level in GRADE_LEVELS:
                         rounded_percentages[level] = round(raw_percentages[level], 4)
 
-                    # 调整最后一个百分比以确保总和为100%
                     total_rounded = sum(rounded_percentages.values())
                     if total_rounded != 100.0:
-                        # 找出最大的百分比进行调整
                         max_level = max(rounded_percentages.keys(), key=lambda x: rounded_percentages[x])
                         rounded_percentages[max_level] += (100.0 - total_rounded)
 
-                    # 设置最终百分比
                     for level in GRADE_LEVELS:
                         total_stats[level]['percent'] = rounded_percentages[level]
 
@@ -1391,10 +1377,8 @@ class PianoAnalysisBackend:
                 if not single_algorithm.analyzer or not single_algorithm.analyzer.note_matcher:
                     return {'error': '算法没有有效的分析器或音符匹配器'}
 
-                stats = single_algorithm.analyzer.note_matcher.get_graded_error_stats()
-            return stats
+                return single_algorithm.analyzer.note_matcher.get_graded_error_stats()
 
         except Exception as e:
             logger.error(f"获取分级误差统计失败: {e}")
             return {'error': str(e)}
-

@@ -440,7 +440,7 @@ def _create_grade_detail_table_content(detail_data, grade_key: str, algorithm_na
     page_count = (total_count + page_size - 1) // page_size if page_size > 0 else 0
 
     # 创建表格列定义
-    if grade_key == 'major':
+    if grade_key == 'failed':
         # 匹配失败的列定义
         columns = [
             {"name": "算法名称", "id": "algorithm_name"},

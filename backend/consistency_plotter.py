@@ -1,5 +1,6 @@
 import plotly.graph_objects as go
 from typing import List, Tuple, Any
+from utils.colors import ALGORITHM_COLOR_PALETTE
 
 class ConsistencyPlotter:
     @staticmethod
@@ -17,12 +18,20 @@ class ConsistencyPlotter:
         color: str,
         hammer_symbol: str = 'circle',
         hammer_size: int = 8,
-        hammer_opacity: float = 1.0
+        hammer_opacity: float = 1.0,
+        max_display_count: int = 100  # 限制显示数量，防止卡死
     ):
-        """通用逻辑：处理音符并添加波形与锤速 Trace"""
+        """通用逻辑：处理音符并添加波形与锤速 Trace (带数量限制)"""
         if not notes:
             return
 
+        # 数量限制检查
+        total_count = len(notes)
+        if total_count > max_display_count:
+            notes = notes[:max_display_count]
+            # 更新图例名称以提示用户
+            label = f"{label} (前{max_display_count}/{total_count}条)"
+        
         wave_x, wave_y, wave_text = [], [], []
         ham_x, ham_y, ham_text = [], [], []
 
@@ -34,7 +43,9 @@ class ConsistencyPlotter:
             text_list.extend(text_data)
             text_list.append("")
 
+        # 确保按时间排序，方便查看前N条
         notes.sort(key=lambda n: n.offset)
+        
         for i, note in enumerate(notes):
             idx = getattr(note, 'global_sequence', i + 1)
             uuid_str = getattr(note, 'uuid', 'N/A')
@@ -57,7 +68,7 @@ class ConsistencyPlotter:
                 ham_y.extend(h_vals)
                 ham_text.extend(h_texts)
 
-        # 添加波形 Trace
+        # 添加波形 Trace (使用 Scattergl 加速渲染)
         if wave_x:
             fig.add_trace(go.Scattergl(
                 x=wave_x, y=wave_y,
@@ -102,12 +113,8 @@ class ConsistencyPlotter:
             
         fig = go.Figure()
         
-        # 颜色列表
-        colors = [
-            'rgba(31, 119, 180, 0.9)', 'rgba(255, 127, 14, 0.9)', 'rgba(44, 160, 44, 0.9)',
-            'rgba(214, 39, 40, 0.9)', 'rgba(148, 103, 189, 0.9)', 'rgba(140, 86, 75, 0.9)',
-            'rgba(227, 119, 194, 0.9)', 'rgba(127, 127, 127, 0.9)', 'rgba(188, 189, 34, 0.9)'
-        ]
+        # 使用全局统一色盘
+        colors = ALGORITHM_COLOR_PALETTE
         
         all_notes = []
         total_rec_count = 0
@@ -120,7 +127,7 @@ class ConsistencyPlotter:
             # 颜色分配策略优化：
             # Record (录制) 使用统一的深灰色，作为基准
             # Replay (回放) 使用 Plotly 默认色盘循环，确保对比度高 (Blue, Orange, Green, Red...)
-            record_color = 'rgba(50, 50, 50, 0.8)'
+            record_color = 'rgba(50, 50, 50, 1.0)'
             replay_color = colors[idx % len(colors)]
             
             # Record (只绘制一次)
@@ -137,7 +144,7 @@ class ConsistencyPlotter:
             rep_notes = source.get('replay_notes', [])
             total_rep_count += len(rep_notes)
             ConsistencyPlotter._add_note_traces(
-                fig, rep_notes, f"{name} Replay", replay_color, hammer_symbol='star', hammer_size=10, hammer_opacity=0.6
+                fig, rep_notes, f"{name} Replay", replay_color, hammer_symbol='star', hammer_size=10, hammer_opacity=0.9
             )
             all_notes.extend(rep_notes)
 

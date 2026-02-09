@@ -32,7 +32,7 @@ SPMID音符匹配器
 3. _generate_candidates_for_note() - 候选生成
    ├── 第一阶段：阈值内候选 (_generate_sorted_candidates_within_threshold)
    ├── 第二阶段：如无候选则扩展到全局 (_generate_all_candidates_sorted)
-   └── 第三阶段：应用扩展阈值过滤 (≤300ms)
+   └── 第三阶段：应用扩展阈值过滤 (≤200ms)
 
 
 
@@ -51,18 +51,15 @@ import statistics
 
 logger = Logger.get_logger()
 
-# 匹配阈值常量 (0.1ms单位) - 六等级匹配系统
-# 优秀匹配：≤20ms
-EXCELLENT_THRESHOLD = 200.0
-# 良好匹配：20-30ms
-GOOD_THRESHOLD = 300.0
-# 一般匹配：30-50ms
-FAIR_THRESHOLD = 500.0
-# 较差匹配：50-100ms
-POOR_THRESHOLD = 1000.0
-# 严重匹配：100-200ms
-SEVERE_THRESHOLD = 2000.0
-# 失败匹配：>200ms
+from utils.constants import GRADE_THRESHOLDS, get_grade_by_delay
+
+# 匹配阈值常量 (0.1ms单位) - 统一从 utils.constants 获取
+EXCELLENT_THRESHOLD = GRADE_THRESHOLDS['excellent'] * 10.0
+GOOD_THRESHOLD = GRADE_THRESHOLDS['good'] * 10.0
+FAIR_THRESHOLD = GRADE_THRESHOLDS['fair'] * 10.0
+POOR_THRESHOLD = GRADE_THRESHOLDS['poor'] * 10.0
+SEVERE_THRESHOLD = GRADE_THRESHOLDS['severe'] * 10.0
+# 失败匹配：> SEVERE_THRESHOLD (200ms)
 
 # 多锤检测阈值 (ms) - 播放提前录制的阈值
 # 如果播放keyon < 录制keyon - ADVANCE_THRESHOLD，认为是可疑的多锤
@@ -163,7 +160,7 @@ class MatchStatistics:
     """匹配统计信息 - 六等级系统"""
 
     def __init__(self):
-        # 六等级匹配统计
+        # 六等级匹配统计 (使用统一 key)
         self.excellent_matches = 0    # 优秀匹配 (≤20ms)
         self.good_matches = 0         # 良好匹配 (20-30ms)
         self.fair_matches = 0         # 一般匹配 (30-50ms)
@@ -236,9 +233,6 @@ class NoteMatcher:
             )
             all_matched_pairs.extend(key_matched_pairs)
 
-        # ❌ 不要覆盖 self.matched_pairs！
-        # self.matched_pairs 已在 _create_successful_match 中被正确填充（包含评级信息）
-        # all_matched_pairs 是空的或只包含2元组的兼容性返回值
         
         # 输出最终统计信息
         logger.info(f"📊 匹配完成统计:")
@@ -840,8 +834,8 @@ class NoteMatcher:
             
         Note:
             KeySplitter使用通用的参数命名：
-            - short_note: 短数据（参考数据）
-            - long_note: 长数据（要拆分的合并数据）
+            - short_note: 短数据 (参考数据)
+            - long_note: 长数据 (要拆分的合并数据)
             这适用于录制和播放数据的任意组合
         """
         try:
@@ -1156,27 +1150,13 @@ class NoteMatcher:
 
     def _evaluate_match_quality(self, error_ms: float) -> MatchType:
         """
-        根据误差评估匹配质量 - 六等级标准
-
-        Args:
-            error_ms: 误差(毫秒)
-
-        Returns:
-            MatchType: 匹配类型
+        根据误差评估匹配质量 - 统一六等级标准
         """
-        error_units = error_ms * 10.0  # 转换为内部单位
-
-        if error_units <= EXCELLENT_THRESHOLD:
-            return MatchType.EXCELLENT
-        elif error_units <= GOOD_THRESHOLD:
-            return MatchType.GOOD
-        elif error_units <= FAIR_THRESHOLD:
-            return MatchType.FAIR
-        elif error_units <= POOR_THRESHOLD:
-            return MatchType.POOR
-        elif error_units <= SEVERE_THRESHOLD:
-            return MatchType.SEVERE
-        else:
+        grade_key = get_grade_by_delay(error_ms)
+        # 将 constants 中的 key 映射到 MatchType 枚举值
+        try:
+            return MatchType(grade_key)
+        except ValueError:
             return MatchType.FAILED
 
     def _create_match_result(self, match_type: MatchType, record_index: int,
@@ -1480,32 +1460,27 @@ class NoteMatcher:
         获取分级误差统计 - 成功匹配质量评级
 
         只统计成功匹配对的质量分布（不包括失败匹配）：
-        - correct: 优秀 (误差 ≤ 20ms) = EXCELLENT
-        - minor: 良好 (20ms < 误差 ≤ 30ms) = GOOD
-        - moderate: 一般 (30ms < 误差 ≤ 50ms) = FAIR
-        - large: 较差 (50ms < 误差 ≤ 100ms) = POOR
-        - severe: 严重 (100ms < 误差 ≤ 200ms) = SEVERE
-
-        注意：只统计成功匹配的质量分布，失败匹配不参与评级统计
+        - excellent: 优秀 (误差 ≤ 20ms)
+        - good: 良好 (20ms < 误差 ≤ 30ms)
+        - fair: 一般 (30ms < 误差 ≤ 50ms)
+        - poor: 较差 (50ms < 误差 ≤ 100ms)
+        - severe: 严重 (100ms < 误差 ≤ 200ms)
 
         Returns:
             Dict: 包含各级别的计数和百分比
         """
-        # 直接从 match_statistics 获取统计数据
+        # 直接从 match_statistics 获取统计数据 (使用统一 key)
         stats = {
-            'correct': self.match_statistics.excellent_matches,    # 优秀 (≤20ms)
-            'minor': self.match_statistics.good_matches,           # 良好 (20-30ms)
-            'moderate': self.match_statistics.fair_matches,        # 一般 (30-50ms)
-            'large': self.match_statistics.poor_matches,           # 较差 (50-100ms)
-            'severe': self.match_statistics.severe_matches,        # 严重 (100-200ms)
+            'excellent': self.match_statistics.excellent_matches,
+            'good': self.match_statistics.good_matches,
+            'fair': self.match_statistics.fair_matches,
+            'poor': self.match_statistics.poor_matches,
+            'severe': self.match_statistics.severe_matches,
         }
 
         # 成功匹配总数（精确匹配对数量）
         total_successful_matches = len(self.matched_pairs)
         
-        # 调试：验证统计数据一致性
-        stats_sum = sum(stats.values())
-
         # 计算百分比（基于成功的匹配对总数）
         result = {}
         for key, count in stats.items():
@@ -1516,7 +1491,7 @@ class NoteMatcher:
 
         result['total_successful_matches'] = total_successful_matches
 
-        logger.debug(f"📊 [后端] 匹配质量评级统计: 成功配对数={total_successful_matches} (只统计成功匹配的质量分布)")
+        logger.debug(f"📊 [后端] 匹配质量评级统计: 成功配对数={total_successful_matches}")
 
         return result
 
@@ -1697,32 +1672,7 @@ class NoteMatcher:
             logger.waring(f"音符ID {note.id} 的时间属性未初始化")
         
         return keyon_time, keyoff_time
-    
-    # TODO  
-    def get_global_average_delay(self) -> float:
-        """
-        获取全局平均延时（已废弃，重定向到 get_mean_error）
-        
-        注意：此方法已废弃，与 get_mean_error() 完全相同。
-        建议直接使用 get_mean_error()。
-        
-        Returns:
-            float: 平均误差（0.1ms单位，带符号）
-        """
-        return self.get_mean_error()
-    
-    def get_variance(self) -> float:
-        """
-        获取总体方差
-        
-        注意：此方法已废弃，UI 不需要显示方差。
-        如需波动程度，请使用 get_standard_deviation()。
-        
-        Returns:
-            float: 总体方差（单位：(0.1ms)²）
-        """
-        std = self.get_standard_deviation()
-        return std ** 2 if std > 0 else 0.0
+
     
     def get_standard_deviation(self) -> float:
         """
@@ -1750,19 +1700,6 @@ class NoteMatcher:
             float: 变异系数（百分比，例如 15.5 表示 15.5%）
         """
         return self._get_delay_metrics().get_coefficient_of_variation()
-    
-    def get_mean_squared_error(self) -> float:
-        """
-        获取均方误差（MSE）（已废弃）
-        
-        注意：此方法已废弃，UI 不需要显示 MSE。
-        如需误差水平，请使用 get_root_mean_squared_error()。
-        
-        Returns:
-            float: 均方误差（单位：(0.1ms)²）
-        """
-        rmse = self.get_root_mean_squared_error()
-        return rmse ** 2 if rmse > 0 else 0.0
 
     def get_root_mean_squared_error(self) -> float:
         """
@@ -1781,6 +1718,14 @@ class NoteMatcher:
             float: 平均误差ME（单位：0.1ms）
         """
         return self._get_delay_metrics().get_mean_error()
+
+    def get_global_average_delay(self) -> float:
+        """获取整首曲子的平均时延（兼容性接口）"""
+        return self.get_mean_error()
+
+    def get_variance(self) -> float:
+        """获取已配对按键的总体方差"""
+        return self._get_delay_metrics().get_variance()
 
     def get_all_display_data(self) -> Dict[str, List[MatchResult]]:
         """

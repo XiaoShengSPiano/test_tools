@@ -13,7 +13,7 @@ from dash import Input, Output, State, html, no_update, dcc
 from backend.session_manager import SessionManager
 from spmid.note_matcher import MatchType
 from spmid.spmid_reader import Note
-from utils.constants import GRADE_RANGE_CONFIG
+from utils.constants import GRADE_LEVELS
 from backend.force_curve_analyzer import ForceCurveAnalyzer
 
 from utils.logger import Logger
@@ -61,12 +61,12 @@ def get_grade_detail_data(backend, grade_key: str, algorithm_name: Optional[str]
         matched_pairs = matcher.get_matched_pairs_with_grade()
         if not matched_pairs: return []
         
-        # 建立评级映射
-        match_map = {
-            'correct': MatchType.EXCELLENT, 'minor': MatchType.GOOD,
-            'moderate': MatchType.FAIR, 'large': MatchType.POOR, 'severe': MatchType.SEVERE
-        }
-        target_type = match_map.get(grade_key)
+        # 建立评级映射 (已统一为 excellent, good, fair, poor, severe, failed)
+        try:
+            target_type = MatchType(grade_key)
+        except ValueError:
+            logger.warning(f"未知评级 Key: {grade_key}")
+            return []
         
         detail_data = []
         for rec_note, rep_note, m_type, err_ms in matched_pairs:
@@ -154,7 +154,7 @@ def show_single_grade_detail(button_index, session_id, session_manager):
             alg_name, grade_key = None, button_index
             
         # 根据评级类型抓取数据
-        if grade_key == 'major':
+        if grade_key == 'failed':
             matcher = get_note_matcher_from_backend(backend, alg_name)
             data = get_failed_matches_detail_data(matcher, alg_name)
             cols = [{"name": n, "id": i} for n, i in [

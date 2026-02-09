@@ -11,55 +11,73 @@ from typing import Dict, Tuple, List
 # 导入颜色定义（颜色相关配置统一在 colors.py 中管理）
 from .colors import GRADE_BOOTSTRAP_COLORS as GRADE_COLORS
 
-# ==================== 评级配置 ====================
+# ==================== 评级配置 (Single Source of Truth) ====================
 
-# 评级范围配置（用于后端逻辑和数据处理）
-# 基于误差范围进行评级，与评级统计和表格筛选保持一致
-GRADE_RANGE_CONFIG: Dict[str, Tuple[float, float]] = {
-    'correct': (float('-inf'), 20),        # 优秀: 误差 ≤ 20ms
-    'minor': (20, 30),                     # 良好: 20ms < 误差 ≤ 30ms
-    'moderate': (30, 50),                  # 一般: 30ms < 误差 ≤ 50ms
-    'large': (50, 1000),                   # 较差: 50ms < 误差 ≤ 1000ms
-    'severe': (1000, float('inf')),        # 严重: 误差 > 1000ms
-    'major': (float('inf'), float('inf'))  # 失败: 无匹配 (特殊处理)
+# 评级阈值定义 (ms)
+# 基于 NoteMatcher 的核心对齐标准
+GRADE_THRESHOLDS = {
+    'excellent': 20.0,
+    'good': 30.0,
+    'fair': 50.0,
+    'poor': 100.0,
+    'severe': 200.0
 }
-
-# 评级显示配置（用于UI展示）
-# 格式: (grade_key, display_name, bootstrap_color_class)
-GRADE_DISPLAY_CONFIG: List[Tuple[str, str, str]] = [
-    ('correct', '优秀 (≤20ms)', 'success'),
-    ('minor', '良好 (20-30ms)', 'warning'),
-    ('moderate', '一般 (30-50ms)', 'info'),
-    ('large', '较差 (50-100ms)', 'danger'),
-    ('severe', '严重 (100-200ms)', 'dark')
-    # 注意：不再显示失败匹配，因为匹配质量评级只统计成功匹配
-]
 
 # 评级名称映射
 GRADE_NAMES: Dict[str, str] = {
-    'correct': '优秀',
-    'minor': '良好',
-    'moderate': '一般',
-    'large': '较差',
+    'excellent': '优秀',
+    'good': '良好',
+    'fair': '一般',
+    'poor': '较差',
     'severe': '严重',
-    'major': '失败'
+    'failed': '失败'
 }
 
-# 评级颜色映射（从 colors.py 导入，见文件顶部）
-# GRADE_COLORS 已在顶部从 colors.py 导入
+# 评级显示配置（用于UI仪表盘、统计和统计卡片）
+# 格式: (grade_key, display_label, bootstrap_color_class)
+GRADE_DISPLAY_CONFIG: List[Tuple[str, str, str]] = [
+    ('excellent', f'优秀 (≤{GRADE_THRESHOLDS["excellent"]}ms)', 'success'),
+    ('good', f'良好 ({GRADE_THRESHOLDS["excellent"]}-{GRADE_THRESHOLDS["good"]}ms)', 'warning'),
+    ('fair', f'一般 ({GRADE_THRESHOLDS["good"]}-{GRADE_THRESHOLDS["fair"]}ms)', 'info'),
+    ('poor', f'较差 ({GRADE_THRESHOLDS["fair"]}-{GRADE_THRESHOLDS["poor"]}ms)', 'danger'),
+    ('severe', f'严重 ({GRADE_THRESHOLDS["poor"]}-{GRADE_THRESHOLDS["severe"]}ms)', 'dark')
+]
 
-# 所有评级级别（按顺序）
-GRADE_LEVELS: List[str] = ['correct', 'minor', 'moderate', 'large', 'severe']
+# 核心评级级别列表
+GRADE_LEVELS: List[str] = ['excellent', 'good', 'fair', 'poor', 'severe']
 
-# 包含失败匹配的完整评级级别
-GRADE_LEVELS_WITH_FAILED: List[str] = ['correct', 'minor', 'moderate', 'large', 'severe', 'major']
+# 包含失败匹配的完整级别列表
+GRADE_LEVELS_WITH_FAILED: List[str] = GRADE_LEVELS + ['failed']
 
 
-# ==================== 兼容性别名 ====================
+def get_grade_by_delay(delay_ms: float) -> str:
+    """
+    根据延时差值获取对应的评级 key
+    
+    Args:
+        delay_ms: 延时值（绝对值或相对值，取绝对值进行比较）
+        
+    Returns:
+        str: 对应的等级 key (excellent, good, fair, poor, severe, failed)
+    """
+    abs_delay = abs(delay_ms)
+    if abs_delay <= GRADE_THRESHOLDS['excellent']:
+        return 'excellent'
+    elif abs_delay <= GRADE_THRESHOLDS['good']:
+        return 'good'
+    elif abs_delay <= GRADE_THRESHOLDS['fair']:
+        return 'fair'
+    elif abs_delay <= GRADE_THRESHOLDS['poor']:
+        return 'poor'
+    elif abs_delay <= GRADE_THRESHOLDS['severe']:
+        return 'severe'
+    else:
+        return 'failed'
 
-# 为了兼容旧代码，提供别名
-GRADE_CONFIGS = GRADE_DISPLAY_CONFIG  # layout_components.py 中使用的名称
 
+# ==================== 兼容性别名 (已弃用，请逐步迁移) ====================
+
+GRADE_CONFIGS = GRADE_DISPLAY_CONFIG # 用于 ui/components/grade_statistics.py 等
 
 # ==================== 其他全局常量 ====================
 

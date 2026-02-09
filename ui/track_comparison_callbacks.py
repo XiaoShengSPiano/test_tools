@@ -61,8 +61,6 @@ def update_track_selection_handler(pathname, trigger, session_id, session_manage
                 {'display': 'none'}
             )
 
-
-
         # 获取激活的算法（已上传的文件）
         active_algorithms = backend.get_active_algorithms()
         logger.debug(f"获取到 {len(active_algorithms)} 个激活的算法")
@@ -194,7 +192,7 @@ def perform_comparison_handler(n_clicks, checkbox_values, checkbox_ids, baseline
         if not n_clicks:
             raise PreventUpdate
         
-        logger.info("🎯 开始执行音轨对比分析")
+        logger.debug("[DEBUG]🎯 开始执行音轨对比分析")
         
         try:
             # 获取backend
@@ -226,8 +224,8 @@ def perform_comparison_handler(n_clicks, checkbox_values, checkbox_ids, baseline
                     baseline_track = value
                     break
             
-            logger.info(f"选中的音轨: {selected_tracks}")
-            logger.info(f"标准音轨: {baseline_track}")
+            logger.debug(f"[DEBUG] 选中的音轨: {selected_tracks}")
+            logger.debug(f"[DEBUG] 标准音轨: {baseline_track}")
             
             if not baseline_track:
                 return (
@@ -246,8 +244,6 @@ def perform_comparison_handler(n_clicks, checkbox_values, checkbox_ids, baseline
             # 执行对比
             # 开始计时对比总流程
             total_start_time = time.time()
-            
-            logger.info("🎯 开始执行音轨对比流程")
             
             # 1. 执行算法对比
             compare_start_time = time.time()

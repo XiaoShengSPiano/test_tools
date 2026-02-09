@@ -33,7 +33,7 @@ class DataManager:
         self.valid_record_data = None
         self.valid_replay_data = None
         
-        logger.info("✅ DataManager初始化完成")
+        logger.debug("[DEBUG] DataManager初始化完成")
     
     def clear_data_state(self) -> None:
         """清理所有数据状态"""
@@ -45,7 +45,7 @@ class DataManager:
         self.valid_record_data = None
         self.valid_replay_data = None
         self.spmid_loader.clear_data()
-        logger.info("✅ 数据状态已清理")
+        logger.debug("[DEBUG] 数据状态已清理")
     
     def set_upload_data_source(self, filename: str) -> None:
         """设置上传数据源信息"""
@@ -54,7 +54,7 @@ class DataManager:
             'filename': filename,
             'history_id': None
         }
-        logger.info(f"✅ 设置上传数据源: {filename}")
+        logger.debug(f"[DEBUG] 设置上传数据源: {filename}")
     
     def set_history_data_source(self, history_id: str, filename: str) -> None:
         """设置历史数据源信息"""
@@ -63,7 +63,7 @@ class DataManager:
             'filename': filename,
             'history_id': history_id
         }
-        logger.info(f"✅ 设置历史数据源: {filename} (ID: {history_id})")
+        logger.debug(f"[DEBUG] 设置历史数据源: {filename} (ID: {history_id})")
     
     def get_data_source_info(self) -> Dict[str, Any]:
         """获取数据源信息"""
