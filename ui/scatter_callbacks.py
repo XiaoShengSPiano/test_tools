@@ -101,36 +101,31 @@ def register_scatter_callbacks(app, session_mgr: SessionManager):
         style, children, point_info = no_update, no_update, no_update
         
         if plot_id == 'key-delay-zscore-scatter-plot':
-            res = zscore_handler.handle_zscore_scatter_click(click_data, None, None, session_id, current_style)
-            style, children, point_info = res[0], res[1], res[3] if len(res) > 3 else res[2]
+            style, children, point_info = zscore_handler.handle_zscore_scatter_click(click_data, session_id, current_style)
         
         elif plot_id == 'hammer-velocity-delay-scatter-plot':
-            res = hammer_velocity_handler.handle_hammer_velocity_scatter_click(click_data, None, None, session_id, current_style)
-            style, children, point_info = res[0], res[1], res[2]
+            style, children, point_info = hammer_velocity_handler.handle_hammer_velocity_scatter_click(click_data, session_id, current_style)
             
         elif plot_id in ['hammer-velocity-relative-delay-scatter-plot', 'relative-delay-distribution-plot']:
-            res = hammer_velocity_handler.handle_hammer_velocity_relative_delay_plot_click(click_data, None, None, session_id, current_style)
-            style, children, point_info = res[0], res[1], res[2]
+            style, children, point_info = hammer_velocity_handler.handle_hammer_velocity_scatter_click(click_data, session_id, current_style)
             
         elif plot_id == 'key-delay-scatter-plot':
-            res = key_delay_handler.handle_key_delay_scatter_click(click_data, None, None, session_id, current_style)
-            style, children, point_info = res[0], res[1], res[2]
+            style, children, point_info = key_delay_handler.handle_key_delay_scatter_click(click_data, session_id, current_style)
             
         elif plot_id == 'hammer-velocity-comparison-plot':
-            res = velocity_comparison_handler.handle_hammer_velocity_comparison_click(click_data, None, None, session_id, current_style)
-            style, children, point_info = res[0], res[1], res[2]
+            style, children, point_info = velocity_comparison_handler.handle_hammer_velocity_comparison_click(click_data, session_id, current_style)
             
         elif plot_id == 'key-force-interaction-plot':
-            res = key_force_handler.handle_key_force_interaction_plot_click(click_data, None, None, session_id, current_style)
-            style, children, point_info = res[0], res[1], res[2]
+            style, children, point_info = key_force_handler.handle_key_force_interaction_plot_click(click_data, session_id, current_style)
             
         elif plot_id in ['raw-delay-time-series-plot', 'relative-delay-time-series-plot']:
             raw_data = click_data if plot_id == 'raw-delay-time-series-plot' else None
             rel_data = click_data if plot_id == 'relative-delay-time-series-plot' else None
+            # 注意：DelayTimeSeriesHandler 暂未重构，保持原样或在此一并简化
             res = delay_time_series_handler.handle_delay_time_series_click_multi(raw_data, rel_data, None, None, session_id, current_style)
             style, children, point_info = res[0], res[1], res[2]
 
-        return style, children, point_info, [no_update] * len(all_click_data)
+        return style, children, point_info, [None] * len(all_click_data)
     
     @app.callback(
         Output({'type': 'scatter-plot', 'id': 'relative-delay-distribution-plot'}, 'figure'),

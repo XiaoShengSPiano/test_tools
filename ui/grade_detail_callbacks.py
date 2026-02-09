@@ -2,7 +2,6 @@
 匹配质量评级统计详情回调控制逻辑
 """
 import json
-import logging
 import traceback
 from typing import Dict, List, Optional, Any
 
@@ -13,13 +12,15 @@ from dash import Input, Output, State, html, no_update, dcc
 from backend.session_manager import SessionManager
 from spmid.note_matcher import MatchType
 from spmid.spmid_reader import Note
-from utils.constants import GRADE_LEVELS
 from backend.force_curve_analyzer import ForceCurveAnalyzer
 
 from utils.logger import Logger
 
 # 日志记录器
+from ui.duration_diff_curves import DurationDiffCurvePlotter
+
 logger = Logger.get_logger()
+plotter = DurationDiffCurvePlotter()
 
 # ==========================================
 # 1. 数据工具函数 (Utilities)
@@ -344,50 +345,6 @@ def _create_similarity_content(rec_note, rep_note, backend) -> List[Any]:
         logger.error(traceback.format_exc())
         return [html.Div(f"相似度分析出错: {e}", className="alert alert-danger")]
 
-def _add_hammer_markers(fig, note, label, color, time_offset=0.0):
-    """向图表添加锤击点标记（与表格一致：仅绘制第一个锤击）
-    
-    表格中「锤击时间」「锤速」来自 get_first_hammer_time / get_first_hammer_velocity，
-    即 hammers.index[0]、hammers.values[0]。此处必须使用相同数据源，确保与表格一一对应。
-    
-    - X坐标：first_hammer_time - time_offset（与表格锤击时间一致）
-    - Y坐标：first_hammer_velocity（与表格锤速一致）
-    
-    Args:
-        fig: Plotly图表对象
-        note: Note对象（包含hammers数据）
-        label: 标签名称（如'录制'或'播放'）
-        color: 标记颜色
-        time_offset: 时间偏移量（用于对齐）
-    """
-    if note.hammers is None or (note.hammers.empty):
-        return
-    
-    t_ms = note.get_first_hammer_time()
-    v = note.get_first_hammer_velocity()
-    # 与表格一致：即使锤速为 0 也绘制，不过滤
-    if t_ms is None:
-        return
-    v = v if v is not None else 0
-    x = float(t_ms) - time_offset
-    
-    fig.add_trace(go.Scattergl(
-        x=[x],
-        y=[int(v)],
-        mode='markers',
-        name=f'{label}锤击',
-        marker=dict(symbol='diamond', size=10, color=color),
-        hovertemplate=f'<b>{label}锤击</b><br>时间: %{{x:.2f}}ms<br>锤速: %{{y}}<extra></extra>'
-    ))
-
-def _add_after_touch_traces(fig, rec_note, rep_note, delay=0.0):
-    """向图表添加触后曲线"""
-    rec_x = (rec_note.after_touch.index + rec_note.offset) / 10.0
-    rep_x = (rep_note.after_touch.index + rep_note.offset) / 10.0 - delay
-    
-    fig.add_trace(go.Scattergl(x=rec_x, y=rec_note.after_touch.values, name='录制', line=dict(color='blue')))
-    fig.add_trace(go.Scattergl(x=rep_x, y=rep_note.after_touch.values, name='播放', line=dict(color='red')))
-
 def _create_curves_subplot(backend, key_id, algorithm_name, matched_pair):
     """构建对比曲线 Dash 组件 - 返回两个独立的图表"""
     rec_note, rep_note, match_type, error_ms = matched_pair
@@ -410,33 +367,17 @@ def _create_curves_subplot(backend, key_id, algorithm_name, matched_pair):
     
     delay = delay / 10.0
 
-    # 创建原始对比图（偏移前）
+    # 使用统一绘图器创建图表
     fig_original = go.Figure()
-    _add_after_touch_traces(fig_original, rec_note, rep_note, delay=0.0)
-    _add_hammer_markers(fig_original, rec_note, '录制', 'blue', time_offset=0.0)
-    _add_hammer_markers(fig_original, rep_note, '播放', 'red', time_offset=0.0)
-    
-    fig_original.update_layout(
-        height=300,
-        title=f"按键 {key_id} - 原始对比",
-        margin=dict(t=50, b=50),
-        xaxis_title="时间 (ms)",
-        yaxis_title="触后值 / 锤速"
-    )
+    plotter.add_note_traces(fig_original, rec_note, "录制 (原始)", "blue")
+    plotter.add_note_traces(fig_original, rep_note, "播放 (原始)", "red")
+    fig_original.update_layout(height=300, title=f"按键 {key_id} - 原始对比", margin=dict(t=30, b=30))
 
-    # 创建对齐对比图（偏移后）
     fig_aligned = go.Figure()
-    _add_after_touch_traces(fig_aligned, rec_note, rep_note, delay=delay)
-    _add_hammer_markers(fig_aligned, rec_note, '录制', 'blue', time_offset=0.0)
-    _add_hammer_markers(fig_aligned, rep_note, '播放', 'red', time_offset=delay)
-    
-    fig_aligned.update_layout(
-        height=300,
-        title=f"按键 {key_id} - 对齐对比 (偏移: {delay:.1f}ms)",
-        margin=dict(t=50, b=50),
-        xaxis_title="时间 (ms)",
-        yaxis_title="触后值 / 锤速"
-    )
+    plotter.add_note_traces(fig_aligned, rec_note, "录制 (对齐)", "blue")
+    plotter.add_note_traces(fig_aligned, rep_note, "播放 (对齐)", "red", time_offset=delay)
+    plotter.draw_split_analysis(fig_aligned, matched_pair)
+    fig_aligned.update_layout(height=300, title=f"按键 {key_id} - 对齐对比 (偏移: {delay:.2f}ms)", margin=dict(t=30, b=30))
 
     return fig_original, fig_aligned
 
@@ -674,7 +615,7 @@ def register_all_callbacks(app, session_manager: SessionManager):
         if not backend: return no_update
 
         # 获取完整结果数据
-        if grade_key == 'major':
+        if grade_key == 'failed':
             matcher = get_note_matcher_from_backend(backend, alg)
             all_data = get_failed_matches_detail_data(matcher, alg)
             filter_field = 'key_id'

@@ -3,7 +3,7 @@
 
 将绘图逻辑从 PianoAnalysisBackend 中分离，提供清晰的绘图服务接口
 """
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 import logging
 
 logger = logging.getLogger(__name__)
@@ -24,10 +24,12 @@ class PlotService:
         初始化绘图服务
         
         Args:
-            backend: PianoAnalysisBackend 实例，提供数据访问接口
+            backend: PianoAnalysisBackend 实例
         """
         self.backend = backend
         self.logger = logger
+    
+    # ==================== 属性代理与辅助 ====================
     
     @property
     def plot_generator(self):
@@ -35,8 +37,8 @@ class PlotService:
         return self.backend.plot_generator
     
     @property
-    def multi_algorithm_plot_generator(self):
-        """多算法绘图生成器"""
+    def multi_plot_gen(self):
+        """多算法绘图生成器代理 (统一简称)"""
         return self.backend.multi_algorithm_plot_generator
     
     @property
@@ -49,6 +51,17 @@ class PlotService:
         """力度曲线分析器"""
         return self.backend.force_curve_analyzer
     
+    def _get_active_algs(self) -> List[Any]:
+        """获取活跃算法列表"""
+        return self.backend.get_active_algorithms()
+
+    def _get_active_algs_or_empty_plot(self, message: str = "没有激活的算法") -> Union[List[Any], Any]:
+        """快速获取算法列表，如果没有则返回空图表"""
+        algs = self._get_active_algs()
+        if not algs:
+            return self.plot_generator._create_empty_plot(message)
+        return algs
+
     def _get_current_analyzer(self, algorithm_name: Optional[str] = None):
         """获取当前分析器"""
         return self.backend._get_current_analyzer(algorithm_name)
@@ -62,17 +75,17 @@ class PlotService:
         y轴：延时（keyon_offset，转换为ms）
         数据来源：所有已匹配的按键对，按时间顺序排列
         """
-        active_algorithms = self.backend.get_active_algorithms()
+        algs = self._get_active_algs()
 
-        if not active_algorithms:
+        if not algs:
             return {
                 'raw_delay_plot': self.plot_generator._create_empty_plot("没有激活的算法"),
                 'relative_delay_plot': self.plot_generator._create_empty_plot("没有激活的算法")
             }
 
-        self.logger.info(f"处理 {len(active_algorithms)} 个激活算法")
-        return self.multi_algorithm_plot_generator.generate_multi_algorithm_delay_time_series_plot(
-            active_algorithms
+        self.logger.info(f"处理 {len(algs)} 个激活算法")
+        return self.multi_plot_gen.generate_multi_algorithm_delay_time_series_plot(
+            algs
         )
 
     def generate_delay_histogram_plot(self) -> Any:
@@ -84,25 +97,13 @@ class PlotService:
         - 反映算法的实际延时表现
         - 与阈值设定（20/50ms）对应
         """
-        active_algorithms = self.backend.get_active_algorithms()
-
-        if not active_algorithms:
-            return self.plot_generator._create_empty_plot("没有激活的算法")
-
-        return self.multi_algorithm_plot_generator.generate_multi_algorithm_delay_histogram_plot(
-            active_algorithms
-        )
+        res = self._get_active_algs_or_empty_plot()
+        return self.multi_plot_gen.generate_multi_algorithm_delay_histogram_plot(res) if isinstance(res, list) else res
 
     def generate_offset_alignment_plot(self) -> Any:
         """生成偏移对齐分析柱状图 - 键位为横坐标，中位数、均值、标准差为纵坐标，分4个子图显示（支持单算法和多算法模式）"""
-        active_algorithms = self.backend.get_active_algorithms()
-
-        if not active_algorithms:
-            return {}
-
-        return self.multi_algorithm_plot_generator.generate_multi_algorithm_offset_alignment_plot(
-            active_algorithms
-        )
+        res = self._get_active_algs_or_empty_plot()
+        return self.multi_plot_gen.generate_multi_algorithm_offset_alignment_plot(res) if isinstance(res, list) else {}
 
     # ==================== 散点图 ====================
     
@@ -113,14 +114,8 @@ class PlotService:
         y轴：延时的Z-Score标准化值
         点的颜色：根据延时大小着色（深蓝→浅蓝→绿→黄→橙→红）
         """
-        active_algorithms = self.backend.get_active_algorithms()
-
-        if not active_algorithms:
-            return self.plot_generator._create_empty_plot("没有激活的算法")
-
-        return self.multi_algorithm_plot_generator.generate_multi_algorithm_key_delay_zscore_scatter_plot(
-            active_algorithms
-        )
+        res = self._get_active_algs_or_empty_plot()
+        return self.multi_plot_gen.generate_multi_algorithm_key_delay_zscore_scatter_plot(res) if isinstance(res, list) else res
 
     def generate_single_key_delay_comparison_plot(self, key_id: int) -> Any:
         """
@@ -129,15 +124,8 @@ class PlotService:
         Args:
             key_id: 要对比的按键ID
         """
-        active_algorithms = self.backend.get_active_algorithms()
-
-        if not active_algorithms:
-            return self.plot_generator._create_empty_plot("没有激活的算法")
-
-        return self.multi_algorithm_plot_generator.generate_single_key_delay_comparison_plot(
-            active_algorithms,
-            key_id
-        )
+        res = self._get_active_algs_or_empty_plot()
+        return self.multi_plot_gen.generate_single_key_delay_comparison_plot(res, key_id) if isinstance(res, list) else res
 
     def generate_key_delay_scatter_plot(
         self, 
@@ -151,16 +139,10 @@ class PlotService:
         点的颜色：根据延时大小着色（深蓝→浅蓝→绿→黄→橙→红）
         数据来源：所有已匹配的按键对
         """
-        active_algorithms = self.backend.get_active_algorithms()
-
-        if not active_algorithms:
-            return self.plot_generator._create_empty_plot("没有激活的算法")
-
-        return self.multi_algorithm_plot_generator.generate_multi_algorithm_key_delay_scatter_plot(
-            active_algorithms,
-            only_common_keys=only_common_keys,
-            selected_algorithm_names=selected_algorithm_names
-        )
+        res = self._get_active_algs_or_empty_plot()
+        if not isinstance(res, list): return res
+        return self.multi_plot_gen.generate_multi_algorithm_key_delay_scatter_plot(
+            res, only_common_keys=only_common_keys, selected_algorithm_names=selected_algorithm_names)
 
     def generate_hammer_velocity_delay_scatter_plot(self) -> Any:
         """
@@ -168,14 +150,8 @@ class PlotService:
         x轴：锤速（播放锤速）
         y轴：延时（keyon_offset，转换为ms）
         """
-        active_algorithms = self.backend.get_active_algorithms()
-
-        if not active_algorithms:
-            return self.plot_generator._create_empty_plot("没有激活的算法")
-
-        return self.multi_algorithm_plot_generator.generate_multi_algorithm_hammer_velocity_delay_scatter_plot(
-            active_algorithms
-        )
+        res = self._get_active_algs_or_empty_plot()
+        return self.multi_plot_gen.generate_multi_algorithm_hammer_velocity_delay_scatter_plot(res) if isinstance(res, list) else res
 
     def generate_hammer_velocity_relative_delay_scatter_plot(self) -> Any:
         """
@@ -183,14 +159,8 @@ class PlotService:
         x轴：log₁₀(锤速)（播放锤速的对数值）
         y轴：相对延时（去除平均延时后的延时）
         """
-        active_algorithms = self.backend.get_active_algorithms()
-
-        if not active_algorithms:
-            return self.plot_generator._create_empty_plot("没有激活的算法")
-
-        return self.multi_algorithm_plot_generator.generate_multi_algorithm_hammer_velocity_relative_delay_scatter_plot(
-            active_algorithms
-        )
+        res = self._get_active_algs_or_empty_plot()
+        return self.multi_plot_gen.generate_multi_algorithm_hammer_velocity_relative_delay_scatter_plot(res) if isinstance(res, list) else res
 
     def generate_key_hammer_velocity_scatter_plot(self) -> Any:
         """
@@ -199,14 +169,8 @@ class PlotService:
         y轴：锤速（播放锤速）
         点的颜色：根据延时大小着色
         """
-        active_algorithms = self.backend.get_active_algorithms()
-
-        if not active_algorithms:
-            return self.plot_generator._create_empty_plot("没有激活的算法")
-
-        return self.multi_algorithm_plot_generator.generate_multi_algorithm_key_hammer_velocity_scatter_plot(
-            active_algorithms
-        )
+        res = self._get_active_algs_or_empty_plot()
+        return self.multi_plot_gen.generate_multi_algorithm_key_hammer_velocity_scatter_plot(res) if isinstance(res, list) else res
 
     def generate_key_force_interaction_plot(self) -> Any:
         """
@@ -217,11 +181,8 @@ class PlotService:
         y轴：延时 (ms)
         不同颜色表示不同算法/按键
         """
-        active_algorithms = self.backend.get_active_algorithms()
-
-        if not active_algorithms:
-            return self.plot_generator._create_empty_plot("没有激活的算法")
-
+        res = self._get_active_algs_or_empty_plot()
+        if not isinstance(res, list): return res
         # 获取交互分析结果并生成图表
         analysis_result = self.backend.get_key_force_interaction_analysis()
         return self.plot_generator.generate_key_force_interaction_plot(analysis_result)
@@ -236,22 +197,20 @@ class PlotService:
             key_ids: 要显示的按键ID列表，默认显示所有按键
             key_filter: 按键筛选条件
         """
-        active_algorithms = self.backend.get_active_algorithms()
-
-        if not active_algorithms:
-            return self.plot_generator._create_empty_plot("没有激活的算法")
+        algs = self._get_active_algs()
+        if not algs: return self.plot_generator._create_empty_plot("没有激活的算法")
 
         # 准备数据
-        analyzers = [alg.analyzer for alg in active_algorithms if alg.analyzer]
-        algorithm_names = [alg.metadata.algorithm_name for alg in active_algorithms]
-
-        # 使用多算法图表生成器，自动处理单/多文件
-        self.logger.info(f"处理 {len(active_algorithms)} 个SPMID文件，数据类型: {data_types}，按键ID: {key_ids}")
-        return self.multi_algorithm_plot_generator.generate_unified_waterfall_plot(
+        analyzers = [alg.analyzer for alg in algs if alg.analyzer]
+        names = [alg.metadata.algorithm_name for alg in algs]
+        k_filter = key_filter or (self.backend.key_filter.key_filter if self.backend.key_filter else None)
+        
+        self.logger.info(f"处理 {len(algs)} 个SPMID文件，数据类型: {data_types}，按键ID: {key_ids}")
+        return self.multi_plot_gen.generate_unified_waterfall_plot(
             self.backend,                # 后端实例
             analyzers,                   # 分析器列表
-            algorithm_names,             # 算法名称列表
-            key_filter or (self.backend.key_filter.key_filter if self.backend.key_filter else None),  # 按键过滤器
+            names,             # 算法名称列表
+            k_filter,  # 按键过滤器
             data_types,                 # 数据类型选择
             key_ids                     # 按键ID选择
         )
@@ -262,31 +221,50 @@ class PlotService:
         Args:
             data_types: 数据类型列表，如果为None则统计所有类型
         """
-        active_algorithms = self.backend.get_active_algorithms()
+        algs = self._get_active_algs()
+        if not algs: return {'available_keys': [], 'summary': {}}
 
-        if not active_algorithms:
-            return {'available_keys': [], 'summary': {}}
+        analyzers = [alg.analyzer for alg in algs if alg.analyzer]
+        names = [alg.metadata.algorithm_name for alg in algs]
 
-        analyzers = [alg.analyzer for alg in active_algorithms if alg.analyzer]
-        algorithm_names = [alg.metadata.algorithm_name for alg in active_algorithms]
-
-        return self.multi_algorithm_plot_generator.get_waterfall_key_statistics(
-            self.backend, analyzers, algorithm_names, data_types
+        return self.multi_plot_gen.get_waterfall_key_statistics(
+            self.backend, analyzers, names, data_types
         )
 
-    def generate_watefall_conbine_plot(self, key_on: float, key_off: float, key_id: int) -> Tuple[Any, Any, Any]:
-        """生成瀑布图对比图"""
-        return self.plot_generator.generate_watefall_conbine_plot(key_on, key_off, key_id)
-    
-    def generate_watefall_conbine_plot_by_index(self, index: int, is_record: bool) -> Tuple[Any, Any, Any]:
-        """根据索引生成瀑布图对比图"""
-        return self.plot_generator.generate_watefall_conbine_plot_by_index(index, is_record)
-
     # ==================== 详细图表（点击交互） ====================
-    
+
+    def _find_detail_notes(self, analyzer, record_index, replay_index, is_record=None):
+        """统一查找详情音符对象的内部方法"""
+        if not analyzer or not analyzer.note_matcher:
+            return None, None
+            
+        # 1. 优先通过 UUID 匹配对查找
+        # record_index/replay_index can be UUID (str) or offset (int)
+        matched = analyzer.note_matcher.find_matched_pair_by_uuid(record_index, replay_index)
+        if matched:
+            return matched[0], matched[1]
+            
+        # 2. 尝试备选方案：通过 Index/Offset 查找 (兼容单算法模式)
+        if is_record is not None:
+            pairs = analyzer.get_matched_pairs()
+            for r_n, p_n in pairs:
+                if (is_record and r_n.offset == record_index) or (not is_record and p_n.offset == replay_index):
+                    return r_n, p_n
+        
+        # 3. 查找单侧错误音符 (丢锤/多锤)
+        r_note, p_note = None, None
+        if record_index is not None:
+            # Check drop hammers (record side error)
+            r_note = next((n for n in analyzer.drop_hammers if str(getattr(n, 'uuid', n.offset)) == str(record_index)), None)
+        if replay_index is not None:
+            # Check multi hammers (replay side error)
+            p_note = next((n for n in analyzer.multi_hammers if str(getattr(n, 'uuid', n.offset)) == str(replay_index)), None)
+            
+        return r_note, p_note
+
     def generate_scatter_detail_plot_by_indices(self, record_index: int, replay_index: int) -> Tuple[Any, Any, Any]:
         """
-        根据record_index和replay_index生成散点图点击的详细曲线图
+        根据record_index和replay_index生成散点图点击的详细曲线图 (单算法模式)
 
         Args:
             record_index: 录制音符索引
@@ -295,178 +273,66 @@ class PlotService:
         Returns:
             Tuple[Any, Any, Any]: (录制音符图, 播放音符图, 对比图)
         """
-        analyzer = self._get_current_analyzer()
-        if not analyzer or not analyzer.note_matcher:
-            self.logger.warning("分析器或匹配器不存在，无法生成详细曲线图")
-            return None, None, None
-        
-        # 从匹配对中查找对应的Note对象
-        matched_pairs = analyzer.get_matched_pairs()
-        record_note = None
-        play_note = None
-        
-        for r_note, p_note in matched_pairs:
-            if r_note.offset == record_index and p_note.offset == replay_index:
-                record_note = r_note
-                play_note = p_note
-                break
-        
-        if record_note is None or play_note is None:
-            self.logger.warning(f"未找到匹配对: record_index={record_index}, replay_index={replay_index}")
-            return None, None, None
+        # 委托给多算法通用逻辑，algorithm_name=None 表示单算法模式
+        return self.generate_multi_algorithm_scatter_detail_plot_by_indices(None, record_index, replay_index)
 
-        # 计算平均延时
-        mean_delays = {}
-        mean_delay_val = 0.0
-        analyzer = self._get_current_analyzer()
-        if analyzer:
-            mean_error_0_1ms = analyzer.get_mean_error()
-            mean_delay_val = mean_error_0_1ms / 10.0  # 转换为毫秒
-            mean_delays['default'] = mean_delay_val
-        else:
-            self.logger.warning("无法获取单算法模式的平均延时")
-
-        # 使用plot_generator生成详细图表
-        detail_figure1 = self.plot_generator.generate_note_comparison_plot(record_note, None, mean_delays=mean_delays)
-        detail_figure2 = self.plot_generator.generate_note_comparison_plot(None, play_note, mean_delays=mean_delays)
-        detail_figure_combined = self.plot_generator.generate_note_comparison_plot(record_note, play_note, mean_delays=mean_delays)
-        
-        # 生成全过程处理图
-        processing_stages_figure = None
-        if self.force_curve_analyzer:
-            try:
-                comparison_result = self.force_curve_analyzer.compare_curves(
-                    record_note, 
-                    play_note,
-                    mean_delay=mean_delay_val
-                )
-                if comparison_result:
-                    processing_stages_figure = self.force_curve_analyzer.visualize_all_processing_stages(comparison_result)
-            except Exception as e:
-                self.logger.error(f"生成全过程处理图失败: {e}")
-
-        self.logger.info(f"生成散点图点击的详细曲线图，record_index={record_index}, replay_index={replay_index}")
-        return detail_figure1, detail_figure2, detail_figure_combined
-    
     def generate_multi_algorithm_scatter_detail_plot_by_indices(
-        self,
-        algorithm_name: str,
-        record_index: int,
-        replay_index: int
+        self, algorithm_name: Optional[str], record_index: Any, replay_index: Any
     ) -> Tuple[Any, Any, Any]:
         """
         多算法模式下，根据算法名和索引生成散点图点击的详细曲线图
+        此方法也作为单算法模式的通用入口 (当algorithm_name为None时)
 
         Args:
-            algorithm_name: 算法名称
-            record_index: 录制音符索引
-            replay_index: 播放音符索引
+            algorithm_name: 算法名称 (None表示单算法模式)
+            record_index: 录制音符索引或UUID
+            replay_index: 播放音符索引或UUID
 
         Returns:
             Tuple[Any, Any, Any]: (录制音符图, 播放音符图, 对比图)
         """
-        # 在多算法模式下，需要指定算法名称来获取分析器
         analyzer = self._get_current_analyzer(algorithm_name)
-        if not analyzer or not analyzer.note_matcher:
-            self.logger.warning(f"算法 {algorithm_name} 的分析器或匹配器不存在")
+        r_note, p_note = self._find_detail_notes(analyzer, record_index, replay_index)
+        
+        if not r_note and not p_note:
+            self.logger.warning(f"无法定位音符 (算法={algorithm_name}): record={record_index}, replay={replay_index}")
             return None, None, None
 
-        # 通过UUID查找对应的Note对象
-        matched_pair = analyzer.note_matcher.find_matched_pair_by_uuid(record_index, replay_index)
-        
-        record_note = None
-        play_note = None
-
-        if matched_pair:
-            record_note, play_note, match_type, error_ms = matched_pair
-        else:
-            # 如果在匹配对中没找到，尝试在错误列表中查找（支持丢锤/多锤的单侧显示）
-            if record_index is not None:
-                # 查找丢锤 (record_index valid, replay_index None)
-                for note in analyzer.drop_hammers:
-                    if str(note.uuid) == str(record_index):
-                        record_note = note
-                        self.logger.info(f"在丢锤列表中找到录制音符: {record_index}")
-                        break
-            
-            if replay_index is not None:
-                # 查找多锤 (record_index None, replay_index valid)
-                for note in analyzer.multi_hammers:
-                    if str(note.uuid) == str(replay_index):
-                        play_note = note
-                        self.logger.info(f"在多锤列表中找到播放音符: {replay_index}")
-                        break
-            
-            if record_note is None and play_note is None:
-                self.logger.warning(f"未找到匹配对或单侧音符 (算法={algorithm_name}): record_uuid={record_index}, replay_uuid={replay_index}")
-                return None, None, None
-
-        # 计算该算法的平均延时
+        # 计算平均延时视图
         mean_delays = {}
         mean_delay_val = 0.0
         if analyzer:
             mean_error_0_1ms = analyzer.get_mean_error()
             mean_delay_val = mean_error_0_1ms / 10.0  # 转换为毫秒
-            mean_delays[algorithm_name] = mean_delay_val
+            mean_delays[algorithm_name or 'default'] = mean_delay_val
 
-        # 收集其他算法中匹配到同一个record_index的播放音符
-        other_algorithm_notes = []
-        active_algorithms = self.backend.multi_algorithm_manager.get_active_algorithms() if self.backend.multi_algorithm_manager else []
-        
-        if len(active_algorithms) > 1:
-            for alg in active_algorithms:
-                # 跳过当前算法
-                if alg.metadata.algorithm_name == algorithm_name:
-                    continue
+        # 收集交叉比对音符 (仅在多算法模式下有用)
+        others = []
+        if algorithm_name and self.backend.multi_algorithm_manager:
+            active_algs = self.backend.multi_algorithm_manager.get_active_algorithms()
+            for alg in active_algs:
+                if alg.metadata.algorithm_name == algorithm_name: continue
+                if not alg.analyzer: continue
                 
-                # 检查该算法是否有有效的分析器和匹配器
-                if not alg.analyzer or not alg.analyzer.note_matcher:
-                    continue
-                
-                # 计算该算法的平均延时
                 try:
                     alg_mean_error = alg.analyzer.get_mean_error()
                     mean_delays[alg.metadata.algorithm_name] = alg_mean_error / 10.0
-                except:
-                    mean_delays[alg.metadata.algorithm_name] = 0.0
+                except Exception:
+                    mean_delays[alg.metadata.algorithm_name] = 0.0 # Default if error
                 
-                # 在该算法的匹配对中查找匹配到同一个record_index (UUID) 的播放音符
-                alg_matched_pairs = alg.analyzer.get_matched_pairs()
-                for rec_note, rep_note in alg_matched_pairs:
-                    if str(rec_note.uuid) == str(record_index):
-                        other_algorithm_notes.append((alg.metadata.algorithm_name, rep_note))
-                        self.logger.info(f"找到算法 '{alg.metadata.algorithm_name}' 中匹配到 record_uuid={record_index} 的播放音符")
-                        break
+                # 寻找其他算法中匹配到同一录制UUID的播放音符
+                # 假设record_index是UUID，或者在单算法模式下是offset
+                _, other_p = self._find_detail_notes(alg.analyzer, record_index, None)
+                if other_p: others.append((alg.metadata.algorithm_name, other_p))
 
-        # 使用plot_generator生成详细图表（包含其他算法的播放曲线）
-        detail_figure1 = self.plot_generator.generate_note_comparison_plot(
-            record_note, None, 
-            algorithm_name=algorithm_name,
-            other_algorithm_notes=[],  # 只显示录制音符，不显示其他
-            mean_delays=mean_delays
-        )
-        detail_figure2 = self.plot_generator.generate_note_comparison_plot(
-            None, play_note, 
-            algorithm_name=algorithm_name,
-            other_algorithm_notes=[],  # 只显示播放音符，不显示其他
-            mean_delays=mean_delays
-        )
-        detail_figure_combined = self.plot_generator.generate_note_comparison_plot(
-            record_note, play_note, 
-            algorithm_name=algorithm_name,
-            other_algorithm_notes=other_algorithm_notes,  # 组合图显示所有算法
-            mean_delays=mean_delays
-        )
+        # 生成结果
+        f1 = self.plot_generator.generate_note_comparison_plot(r_note, None, algorithm_name=algorithm_name, mean_delays=mean_delays)
+        f2 = self.plot_generator.generate_note_comparison_plot(None, p_note, algorithm_name=algorithm_name, mean_delays=mean_delays)
+        f_comb = self.plot_generator.generate_note_comparison_plot(r_note, p_note, algorithm_name=algorithm_name, 
+                                                                 other_algorithm_notes=others, mean_delays=mean_delays)
+        return f1, f2, f_comb
 
-        self.logger.info(f"生成多算法散点图点击的详细曲线图，算法={algorithm_name}, record_index={record_index}, replay_index={replay_index}, 其他算法数量={len(other_algorithm_notes)}")
-        return detail_figure1, detail_figure2, detail_figure_combined
-
-    def generate_multi_algorithm_detail_plot_by_index(
-        self,
-        algorithm_name: str,
-        index: int,
-        is_record: bool
-    ) -> Tuple[Any, Any, Any]:
+    def generate_multi_algorithm_detail_plot_by_index(self, algorithm_name: str, index: int, is_record: bool) -> Tuple[Any, Any, Any]:
         """
         多算法模式下，根据算法名和单个索引生成瀑布图点击的详细曲线图
 
@@ -478,52 +344,11 @@ class PlotService:
         Returns:
             Tuple[Any, Any, Any]: (录制音符图, 播放音符图, 对比图)
         """
-        analyzer = self._get_current_analyzer(algorithm_name)
-        if not analyzer or not analyzer.note_matcher:
-            self.logger.warning(f"算法 {algorithm_name} 的分析器或匹配器不存在")
-            return None, None, None
+        # 委托给中心逻辑，将index映射到record_index或replay_index
+        return self.generate_multi_algorithm_scatter_detail_plot_by_indices(
+            algorithm_name, index if is_record else None, index if not is_record else None)
 
-        # 从匹配对中查找对应的Note对象
-        matched_pairs = analyzer.get_matched_pairs()
-        record_note = None
-        play_note = None
-        
-        for r_note, p_note in matched_pairs:
-            if is_record and r_note.offset == index:
-                record_note = r_note
-                play_note = p_note
-                break
-            elif not is_record and p_note.offset == index:
-                record_note = r_note
-                play_note = p_note
-                break
-        
-        if record_note is None or play_note is None:
-            self.logger.warning(f"未找到匹配对 (算法={algorithm_name}): index={index}, is_record={is_record}")
-            return None, None, None
-
-        # 计算该算法的平均延时
-        mean_delays = {}
-        mean_delay_val = 0.0
-        if analyzer:
-            mean_error_0_1ms = analyzer.get_mean_error()
-            mean_delay_val = mean_error_0_1ms / 10.0
-            mean_delays[algorithm_name] = mean_delay_val
-
-        # 生成详细图表
-        detail_figure1 = self.plot_generator.generate_note_comparison_plot(record_note, None, mean_delays=mean_delays)
-        detail_figure2 = self.plot_generator.generate_note_comparison_plot(None, play_note, mean_delays=mean_delays)
-        detail_figure_combined = self.plot_generator.generate_note_comparison_plot(record_note, play_note, mean_delays=mean_delays)
-
-        self.logger.info(f"生成多算法瀑布图点击的详细曲线图，算法={algorithm_name}, index={index}, is_record={is_record}")
-        return detail_figure1, detail_figure2, detail_figure_combined
-
-    def generate_multi_algorithm_error_detail_plot_by_index(
-        self,
-        algorithm_name: str,
-        index: int,
-        is_record: bool
-    ) -> Tuple[Any, Any, Any]:
+    def generate_multi_algorithm_error_detail_plot_by_index(self, algorithm_name: str, index: int, is_record: bool) -> Tuple[Any, Any, Any]:
         """
         多算法模式下，根据算法名和索引生成错误详情的详细曲线图（用于丢锤/多锤详情）
 
@@ -535,55 +360,9 @@ class PlotService:
         Returns:
             Tuple[Any, Any, Any]: (录制音符图, 播放音符图, 对比图)
         """
-        analyzer = self._get_current_analyzer(algorithm_name)
-        if not analyzer or not analyzer.error_detector:
-            self.logger.warning(f"算法 {algorithm_name} 的分析器或错误检测器不存在")
-            return None, None, None
-
-        error_detector = analyzer.error_detector
-        record_note = None
-        play_note = None
-
-        # 搜索所有错误类型的数据
-        if is_record:
-            # 搜索录制侧错误
-            for drop_idx, drop_note in error_detector.drop_hammers:
-                if drop_idx == index:
-                    record_note = drop_note
-                    play_note = None
-                    break
-            
-            if record_note is None:
-                for multi_idx, multi_note in error_detector.multi_hammers:
-                    if multi_idx == index:
-                        record_note = multi_note
-                        play_note = None
-                        break
-        else:
-            # 搜索播放侧错误（通常播放侧不会有独立的错误音符）
-            # 如果需要显示播放侧的错误，需要根据实际错误检测逻辑调整
-            self.logger.warning(f"播放侧错误详情暂不支持: index={index}")
-            return None, None, None
-
-        if record_note is None:
-            self.logger.warning(f"未找到错误音符 (算法={algorithm_name}): index={index}, is_record={is_record}")
-            return None, None, None
-
-        # 计算该算法的平均延时
-        mean_delays = {}
-        mean_delay_val = 0.0
-        if analyzer:
-            mean_error_0_1ms = analyzer.get_mean_error()
-            mean_delay_val = mean_error_0_1ms / 10.0
-            mean_delays[algorithm_name] = mean_delay_val
-
-        # 生成详细图表（只有录制音符，没有播放音符）
-        detail_figure1 = self.plot_generator.generate_note_comparison_plot(record_note, None, mean_delays=mean_delays)
-        detail_figure2 = self.plot_generator.generate_note_comparison_plot(None, play_note, mean_delays=mean_delays) if play_note else None
-        detail_figure_combined = self.plot_generator.generate_note_comparison_plot(record_note, play_note, mean_delays=mean_delays) if play_note else None
-
-        self.logger.info(f"生成多算法错误详情的详细曲线图，算法={algorithm_name}, index={index}, is_record={is_record}")
-        return detail_figure1, detail_figure2, detail_figure_combined
+        # 委托给中心逻辑，将index映射到record_index或replay_index
+        return self.generate_multi_algorithm_scatter_detail_plot_by_indices(
+            algorithm_name, index if is_record else None, index if not is_record else None)
 
     # ==================== 相对延时分布图 ====================
     
@@ -594,12 +373,5 @@ class PlotService:
         Returns:
             plotly Figure对象
         """
-        active_algorithms = self.backend.get_active_algorithms()
-
-        if not active_algorithms:
-            return self.plot_generator._create_empty_plot("没有激活的算法")
-
-        return self.multi_algorithm_plot_generator.generate_relative_delay_distribution_plot(
-            active_algorithms
-        )
-    
+        res = self._get_active_algs_or_empty_plot()
+        return self.multi_plot_gen.generate_relative_delay_distribution_plot(res) if isinstance(res, list) else res

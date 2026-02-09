@@ -1,13 +1,14 @@
 """
 散点图处理器基类 - 包含所有散点图处理器共享的通用方法
 """
-
+import json
 import traceback
 from typing import Optional, Tuple, List, Any, Union, Dict
 
 import pandas as pd
-from dash import no_update
+from dash import no_update, dcc, html
 from dash._callback import NoUpdate
+from dash._callback_context import callback_context
 
 from backend.session_manager import SessionManager
 from backend.piano_analysis_backend import PianoAnalysisBackend
@@ -28,6 +29,7 @@ class ScatterHandlerBase:
     - 音符数据查找
     - 分析器管理
     - 图表生成通用逻辑
+    - 统一的UI交互逻辑 (弹窗、样式、ID解析)
     """
     
     def __init__(self, session_manager: SessionManager):
@@ -241,6 +243,37 @@ class ScatterHandlerBase:
             record_note, replay_note, algorithm_name=algorithm_name,
             other_algorithm_notes=[], mean_delays=mean_delays or {}
         )
+
+    def _generate_key_delay_detail_plots(self, backend: PianoAnalysisBackend, click_data: Dict[str, Any]) -> Tuple[Any, Any, Any]:
+        """
+        统一生成按键延时图的详细曲线图的方法
+        
+        Args:
+            backend: 后端实例
+            click_data: 包含 'algorithm_name', 'record_index', 'replay_index' 的字典
+            
+        Returns:
+            Tuple[Any, Any, Any]: (figure1, figure2, combined_figure)
+        """
+        algorithm_name = click_data.get('algorithm_name')
+        record_index = click_data.get('record_index')
+        replay_index = click_data.get('replay_index')
+
+        if algorithm_name:
+            # 多算法模式
+            logger.debug(f"[DEBUG] 调用backend.generate_multi_algorithm_scatter_detail_plot_by_indices: algorithm_name='{algorithm_name}', record_index={record_index}, replay_index={replay_index}")
+            return backend.generate_multi_algorithm_scatter_detail_plot_by_indices(
+                algorithm_name=algorithm_name,
+                record_index=record_index,
+                replay_index=replay_index
+            )
+        else:
+            # 单算法模式
+            logger.debug(f"[DEBUG] 调用backend.generate_scatter_detail_plot_by_indices: record_index={record_index}, replay_index={replay_index}")
+            return backend.generate_scatter_detail_plot_by_indices(
+                record_index=record_index,
+                replay_index=replay_index
+            )
     
     # ==================== 数据解析相关 ====================
     
@@ -378,7 +411,7 @@ class ScatterHandlerBase:
             return None
         
         point = click_data['points'][0]
-        logger.info(f"🔍 {plot_name}点击 - 点击点数据: {point}")
+        logger.debug(f"[DEBUG] {plot_name}点击 - 点击点数据: {point}")
         
         if not point.get('customdata'):
             logger.warning(f"[WARNING] {plot_name}点击 - 点没有customdata")
@@ -386,7 +419,7 @@ class ScatterHandlerBase:
         
         # 安全地提取customdata
         raw_customdata = point['customdata']
-        logger.info(f"{plot_name}点击 - raw_customdata类型: {type(raw_customdata)}, 值: {raw_customdata}")
+        logger.debug(f"[DEBUG] {plot_name}点击 - raw_customdata类型: {type(raw_customdata)}, 值: {raw_customdata}")
         
         if isinstance(raw_customdata, list) and len(raw_customdata) > 0:
             customdata = raw_customdata[0] if isinstance(raw_customdata[0], list) else raw_customdata
@@ -397,7 +430,7 @@ class ScatterHandlerBase:
             logger.warning(f"[WARNING] {plot_name}点击 - customdata不是列表类型: {type(customdata)}, 值: {customdata}")
             return None
         
-        logger.info(f"🔍 {plot_name}点击 - customdata: {customdata}, 长度: {len(customdata)}")
+        logger.debug(f"[DEBUG] {plot_name}点击 - customdata: {customdata}, 长度: {len(customdata)}")
         
         if len(customdata) < expected_customdata_length:
             logger.warning(f"[WARNING] {plot_name}点击 - customdata长度不足: {len(customdata)}，期望至少{expected_customdata_length}个元素")
@@ -413,17 +446,6 @@ class ScatterHandlerBase:
                                   record_velocity: float, replay_velocity: float):
         """
         构建速度数据项
-        
-        Args:
-            item: 原始数据项
-            algorithm_name: 算法名称
-            record_note: 录制音符对象
-            replay_note: 播放音符对象
-            record_velocity: 录制速度
-            replay_velocity: 播放速度
-            
-        Returns:
-            Dict: 速度数据项
         """
         return {
             'algorithm_name': algorithm_name,
@@ -441,3 +463,51 @@ class ScatterHandlerBase:
             'record_note': record_note,
             'replay_note': replay_note
         }
+
+    # ==================== 统一UI交互逻辑 ====================
+
+    def _get_modal_style(self, show: bool = True) -> Dict[str, Any]:
+        """统一获取模态框样式"""
+        return {
+            'display': 'block' if show else 'none',
+            'position': 'fixed',
+            'zIndex': '9999',
+            'left': '0',
+            'top': '0',
+            'width': '100%',
+            'height': '100%',
+            'backgroundColor': 'rgba(0,0,0,0.6)',
+            'backdropFilter': 'blur(5px)'
+        }
+
+    def _get_triggered_plot_id(self) -> Optional[str]:
+        """解析触发回调的Plot ID"""
+        ctx = callback_context
+        if not ctx.triggered:
+            return None
+        
+        trigger_id_raw = ctx.triggered[0]['prop_id'].split('.')[0]
+        if trigger_id_raw.startswith('{'):
+            try:
+                
+                return json.loads(trigger_id_raw).get('id', trigger_id_raw)
+            except Exception:
+                return trigger_id_raw
+        return trigger_id_raw
+
+    def _create_modal_response(self, combined_figure: Any, point_info: Dict[str, Any], height: str = '600px') -> Tuple[Dict[str, Any], List[Any], Dict[str, Any]]:
+        """
+        统一创建模态框响应 (所有Handler需返回此三元组)
+        
+        Returns:
+            Tuple[style, children, point_info]
+        """
+        return (
+            self._get_modal_style(True),
+            [dcc.Graph(figure=combined_figure, style={'height': height})],
+            point_info
+        )
+
+    def _handle_modal_close(self) -> Tuple[Dict[str, Any], List[Any], NoUpdate]:
+        """统一处理模态框关闭逻辑"""
+        return self._get_modal_style(False), [], no_update

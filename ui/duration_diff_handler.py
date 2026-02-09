@@ -16,301 +16,160 @@ import dash_table
 
 from utils.logger import Logger
 from spmid.spmid_reader import Note
+from components.common_curve_plotter import DurationDiffCurvePlotter
 
 logger = Logger.get_logger()
 
 @dataclass
 class DurationDiffPair:
-    """持续时间差异对数据
-    
-    简化设计：只存储索引、Note对象和比值
-    其他数据（duration、keyon、keyoff）直接从Note对象获取
-    """
+    """持续时间差异对数据"""
     record_idx: int
     replay_idx: int
     record_note: Note
     replay_note: Note
     duration_ratio: float
-    
-    @property
-    def record_duration(self) -> float:
-        """录制持续时间(ms)"""
-        return self.record_note.duration_ms if self.record_note and self.record_note.duration_ms is not None else 0.0
-    
-    @property
-    def replay_duration(self) -> float:
-        """播放持续时间(ms)"""
-        return self.replay_note.duration_ms if self.replay_note and self.replay_note.duration_ms is not None else 0.0
-    
-    @property
-    def record_keyon(self) -> Optional[float]:
-        """录制key-on时间(ms)"""
-        return self.record_note.key_on_ms if self.record_note else None
-    
-    @property
-    def record_keyoff(self) -> Optional[float]:
-        """录制key-off时间(ms)"""
-        return self.record_note.key_off_ms if self.record_note else None
-    
-    @property
-    def replay_keyon(self) -> Optional[float]:
-        """播放key-on时间(ms)"""
-        return self.replay_note.key_on_ms if self.replay_note else None
-    
-    @property
-    def replay_keyoff(self) -> Optional[float]:
-        """播放key-off时间(ms)"""
-        return self.replay_note.key_off_ms if self.replay_note else None
 
 class DurationDiffHandler:
-    """Duration difference display handler"""
+    """持续时间差异分析处理器"""
 
     def __init__(self):
         self.diff_pairs: List[DurationDiffPair] = []
+        self.plotter = DurationDiffCurvePlotter()
 
-    def set_diff_pairs(self, diff_pairs_data: List[Tuple]) -> None:
-        """设置持续时间差异对数据
-        
-        Args:
-            diff_pairs_data: 元组列表，每个元组包含11个元素：
-                (record_idx, replay_idx, record_note, replay_note,
-                 record_duration, replay_duration, duration_ratio,
-                 record_keyon, record_keyoff, replay_keyon, replay_keyoff)
-        """
+    def set_diff_pairs(self, diff_pairs_data: List[Any]) -> None:
+        """从匹配结果设置持续时间差异数据"""
         self.diff_pairs = []
         for data in diff_pairs_data:
-            if len(data) >= 11:
-                # 只提取必要的数据：索引、Note对象、比值
-                # duration、keyon、keyoff 等信息直接从 Note 对象获取
-                record_idx = data[0]
-                replay_idx = data[1]
-                record_note = data[2]
-                replay_note = data[3]
-                duration_ratio = data[6]
-                
+            # 支持多种输入格式以便向后兼容
+            if isinstance(data, (list, tuple)) and len(data) >= 7:
                 self.diff_pairs.append(DurationDiffPair(
-                    record_idx=record_idx,
-                    replay_idx=replay_idx,
-                    record_note=record_note,
-                    replay_note=replay_note,
-                    duration_ratio=duration_ratio
+                    record_idx=data[0],
+                    replay_idx=data[1],
+                    record_note=data[2],
+                    replay_note=data[3],
+                    duration_ratio=data[6]
+                ))
+            elif isinstance(data, dict):
+                 self.diff_pairs.append(DurationDiffPair(
+                    record_idx=data.get('record_idx', 0),
+                    replay_idx=data.get('replay_idx', 0),
+                    record_note=data.get('record_note'),
+                    replay_note=data.get('replay_note'),
+                    duration_ratio=data.get('duration_ratio', 1.0)
                 ))
             else:
-                logger.warning(f"跳过无效的持续时间差异数据: 长度={len(data)}, 期望=11")
+                logger.warning(f"跳过无效的持续时间差异数据: 类型={type(data)}, 数据={data}")
+
 
     def create_table_data(self) -> List[Dict]:
-        """创建表格显示数据
-        
-        所有数据从 Note 对象的属性自动获取，无需额外存储
-        """
+        """创建表格显示数据"""
         table_data = []
         for i, pair in enumerate(self.diff_pairs):
             table_data.append({
                 "index": i + 1,
                 "key_id": pair.record_note.id if pair.record_note else "N/A",
-                "record_idx": pair.record_idx,
-                "replay_idx": pair.replay_idx,
-                "record_duration": pair.record_duration,  # 从property获取
-                "replay_duration": pair.replay_duration,  # 从property获取
-                "duration_ratio": pair.duration_ratio,
-                "record_keyon": pair.record_keyon,  # 从property获取
-                "record_keyoff": pair.record_keyoff,  # 从property获取
-                "replay_keyon": pair.replay_keyon,  # 从property获取
-                "replay_keyoff": pair.replay_keyoff,  # 从property获取
+                "record_duration": f"{pair.record_note.duration_ms:.1f} ms" if pair.record_note and pair.record_note.duration_ms is not None else "0.0 ms",
+                "replay_duration": f"{pair.replay_note.duration_ms:.1f} ms" if pair.replay_note and pair.replay_note.duration_ms is not None else "0.0 ms",
+                "duration_ratio": f"{pair.duration_ratio:.2f}",
                 "diff_level": self._get_diff_level(pair.duration_ratio)
             })
         return table_data
 
     def _get_diff_level(self, ratio: float) -> str:
-        """Get difference level description"""
-        if ratio >= 3.0:
-            return "significant"
-        elif ratio >= 2.5:
-            return "large"
-        elif ratio >= 2.0:
-            return "medium"
-        else:
-            return "small"
+        if ratio >= 3.0: return "非常显著 (Significant)"
+        elif ratio >= 2.0: return "显著 (Large)"
+        elif ratio >= 1.5: return "一般 (Medium)"
+        return "轻微 (Small)"
 
 print("Duration difference handler loaded successfully")
 
-# Global handler instance
+# 全局处理器实例
 duration_diff_handler = DurationDiffHandler()
 
-def create_duration_diff_layout(handler: DurationDiffHandler) -> html.Div:
-    """Create duration difference display layout"""
-    table_data = handler.create_table_data()
+def create_duration_diff_layout() -> html.Div:
+    """创建持续时间差异分析布局"""
+    table_data = duration_diff_handler.create_table_data()
 
-    layout = html.Div([
-        html.H3("Duration Difference Analysis"),
+    return html.Div([
+        html.H4([html.I(className="bi bi-clock-history me-2"), "持续时间差异分析"], className="mb-4"),
+        
         dbc.Row([
             dbc.Col([
                 dbc.Card([
-                    dbc.CardHeader("Difference Pairs List"),
+                    dbc.CardHeader("差异列表"),
                     dbc.CardBody([
-                        html.P("Found {} difference pairs (ratio >= 2.0)".format(len(handler.diff_pairs))),
                         dash_table.DataTable(
                             id="duration-diff-table",
                             columns=[
-                                {"name": "Index", "id": "index"},
-                                {"name": "Key ID", "id": "key_id"},
-                                {"name": "Record Idx", "id": "record_idx"},
-                                {"name": "Replay Idx", "id": "replay_idx"},
-                                {"name": "Record Duration(ms)", "id": "record_duration"},
-                                {"name": "Replay Duration(ms)", "id": "replay_duration"},
-                                {"name": "Duration Ratio", "id": "duration_ratio"},
-                                {"name": "Record KeyOn(ms)", "id": "record_keyon"},
-                                {"name": "Record KeyOff(ms)", "id": "record_keyoff"},
-                                {"name": "Replay KeyOn(ms)", "id": "replay_keyon"},
-                                {"name": "Replay KeyOff(ms)", "id": "replay_keyoff"},
-                                {"name": "Diff Level", "id": "diff_level"}
+                                {"name": "序号", "id": "index"},
+                                {"name": "按键ID", "id": "key_id"},
+                                {"name": "录制时长", "id": "record_duration"},
+                                {"name": "播放时长", "id": "replay_duration"},
+                                {"name": "时长比值", "id": "duration_ratio"},
+                                {"name": "差异等级", "id": "diff_level"}
                             ],
                             data=table_data,
-                            page_size=15,
+                            page_size=10,
                             style_table={"overflowX": "auto"},
-                            style_cell={
-                                "textAlign": "center",
-                                "padding": "8px",
-                                "minWidth": "80px",
-                                "maxWidth": "150px"
-                            },
-                            style_header={
-                                "backgroundColor": "rgb(230, 230, 230)",
-                                "fontWeight": "bold"
-                            },
-                            style_data_conditional=[
-                                {
-                                    "if": {"column_id": "diff_level", "filter_query": "{diff_level} = 'significant'"},
-                                    "backgroundColor": "rgb(255, 200, 200)",
-                                    "color": "red",
-                                    "fontWeight": "bold"
-                                },
-                                {
-                                    "if": {"column_id": "diff_level", "filter_query": "{diff_level} = 'large'"},
-                                    "backgroundColor": "rgb(255, 220, 200)",
-                                    "color": "orange",
-                                    "fontWeight": "bold"
-                                }
-                            ],
-                            sort_action="native",
-                            sort_by=[{"column_id": "record_keyon", "direction": "asc"}],
-                            filter_action="native",
+                            style_cell={"textAlign": "center", "padding": "10px"},
                             row_selectable="single",
-                            selected_rows=[],
-                            tooltip_header={
-                                "index": "Pair index",
-                                "key_id": "Piano key ID",
-                                "record_idx": "Index in record data",
-                                "replay_idx": "Index in replay data",
-                                "record_duration": "Record note duration",
-                                "replay_duration": "Replay note duration",
-                                "duration_ratio": "Replay/Record duration ratio",
-                                "record_keyon": "Record note key-on time",
-                                "record_keyoff": "Record note key-off time",
-                                "replay_keyon": "Replay note key-on time",
-                                "replay_keyoff": "Replay note key-off time",
-                                "diff_level": "Difference level category"
-                            }
+                            selected_rows=[0] if table_data else []
                         )
                     ])
-                ])
-            ], width=12)
-        ]),
-        dbc.Row([
+                ], className="shadow-sm")
+            ], width=5),
+            
             dbc.Col([
                 dbc.Card([
-                    dbc.CardHeader("Selected Pair Details"),
+                    dbc.CardHeader("曲线对比与拆分分析"),
                     dbc.CardBody([
-                        html.Div(id="selected-pair-details", children=[
-                            html.P("Click a table row to view details", className="text-muted")
+                        html.Div(id="duration-diff-plot-container", children=[
+                            html.P("请在左侧表格中选择一行查看曲线详情", className="text-muted text-center py-5")
                         ])
                     ])
-                ])
-            ], width=12)
-        ], className="mt-4")
+                ], className="shadow-sm")
+            ], width=7)
+        ])
     ])
 
-    return layout
-
 def register_duration_diff_callbacks(app, session_manager):
-    """Register duration difference callbacks"""
+    """注册回调"""
     @app.callback(
-        Output("selected-pair-details", "children"),
-        [Input("duration-diff-table", "selected_rows"),
-         Input("duration-diff-table", "data")]
+        Output("duration-diff-plot-container", "children"),
+        [Input("duration-diff-table", "selected_rows")],
+        [State("session-id", "data")]
     )
-    def update_selected_pair_details(selected_rows, table_data):
-        """Update selected pair details"""
-        if not selected_rows or not table_data:
-            return html.P("Click a table row to view details", className="text-muted")
-
-        selected_index = selected_rows[0]
-        if selected_index >= len(duration_diff_handler.diff_pairs):
-            return html.P("Invalid selection", className="text-danger")
-
-        pair = duration_diff_handler.diff_pairs[selected_index]
-
-        details = html.Div([
-            html.H5("Pair #{} Details".format(selected_index + 1), className="mb-3"),
-            dbc.Row([
-                dbc.Col([
-                    html.H6("Record Info", className="text-primary"),
-                    html.Table([
-                        html.Tr([html.Td("Index:"), html.Td(str(pair.record_idx))]),
-                        html.Tr([html.Td("Key ID:"), html.Td(str(pair.record_note.id if pair.record_note else "N/A"))]),
-                        html.Tr([html.Td("Duration:"), html.Td("{:.1f} ms".format(pair.record_duration))]),
-                        html.Tr([html.Td("KeyOn:"), html.Td("{:.1f} ms".format(pair.record_keyon) if pair.record_keyon is not None else "N/A")]),
-                        html.Tr([html.Td("KeyOff:"), html.Td("{:.1f} ms".format(pair.record_keyoff) if pair.record_keyoff is not None else "N/A")])
-                    ], className="table table-sm table-bordered")
-                ], width=6),
-                dbc.Col([
-                    html.H6("Replay Info", className="text-success"),
-                    html.Table([
-                        html.Tr([html.Td("Index:"), html.Td(str(pair.replay_idx))]),
-                        html.Tr([html.Td("Key ID:"), html.Td(str(pair.replay_note.id if pair.replay_note else "N/A"))]),
-                        html.Tr([html.Td("Duration:"), html.Td("{:.1f} ms".format(pair.replay_duration))]),
-                        html.Tr([html.Td("KeyOn:"), html.Td("{:.1f} ms".format(pair.replay_keyon) if pair.replay_keyon is not None else "N/A")]),
-                        html.Tr([html.Td("KeyOff:"), html.Td("{:.1f} ms".format(pair.replay_keyoff) if pair.replay_keyoff is not None else "N/A")])
-                    ], className="table table-sm table-bordered")
-                ], width=6)
-            ]),
-            html.Hr(),
-            dbc.Row([
-                dbc.Col([
-                    html.H6("Difference Analysis", className="text-warning"),
-                    html.Table([
-                        html.Tr([html.Td("Duration Ratio:"), html.Td("{:.2f}".format(pair.duration_ratio))]),
-                        html.Tr([html.Td("Diff Level:"), html.Td(duration_diff_handler._get_diff_level(pair.duration_ratio))]),
-                        html.Tr([html.Td("Time Difference:"), html.Td("{:.1f} ms".format(abs(pair.replay_duration - pair.record_duration)))])
-                    ], className="table table-sm table-bordered")
-                ], width=12)
-            ])
-        ])
-
-        return details
+    def update_plot(selected_rows, session_id):
+        if not selected_rows or not duration_diff_handler.diff_pairs:
+            return html.P("未选择数据", className="text-muted text-center py-5")
+            
+        idx = selected_rows[0]
+        if idx >= len(duration_diff_handler.diff_pairs):
+            return html.P("无效的选择", className="text-danger")
+            
+        pair = duration_diff_handler.diff_pairs[idx]
+        
+        # 使用统一绘图器
+        # 我们需要构造一个匹配对格式 (rec_note, rep_note, match_type, error_ms)
+        matched_pair = (pair.record_note, pair.replay_note, "DURATION_DIFF", 0.0)
+        
+        # 由于这里是在独立分析中，我们不知道全局平均延时，暂设为0或尝试计算
+        fig = duration_diff_handler.plotter.create_comparison_figure(matched_pair)
+        
+        return dcc.Graph(figure=fig)
 
 def get_duration_diff_layout(session_manager):
-    """Get duration difference layout"""
-    update_duration_diff_data(session_manager)
-    return create_duration_diff_layout(duration_diff_handler)
-
-def update_duration_diff_data(session_manager):
-    """Update duration difference data"""
+    """获取页面布局并更新数据"""
     try:
-        backend = session_manager.get_current_backend()
-        if backend and hasattr(backend, "multi_algorithm_manager"):
-            for algorithm in backend.multi_algorithm_manager.get_active_algorithms():
-                if hasattr(algorithm.analyzer, "note_matcher") and hasattr(algorithm.analyzer.note_matcher, "duration_diff_pairs"):
-                    diff_pairs = algorithm.analyzer.note_matcher.duration_diff_pairs
-                    if diff_pairs:
-                        duration_diff_handler.set_diff_pairs(diff_pairs)
-                        logger.info("Updated duration difference data: {} pairs".format(len(diff_pairs)))
-                        break
-        elif backend and hasattr(backend, "_get_current_analyzer"):
-            analyzer = backend._get_current_analyzer()
-            if analyzer and hasattr(analyzer, "note_matcher") and hasattr(analyzer.note_matcher, "duration_diff_pairs"):
-                diff_pairs = analyzer.note_matcher.duration_diff_pairs
-                duration_diff_handler.set_diff_pairs(diff_pairs)
-                logger.info("Updated duration difference data: {} pairs".format(len(diff_pairs)))
+        backend = session_manager.get_backend(session_manager.get_current_session_id())
+        if backend:
+            # 尝试从 active 算法中获取数据
+            algs = backend.get_active_algorithms()
+            if algs:
+                matcher = getattr(algs[0].analyzer, 'note_matcher', None)
+                if matcher and hasattr(matcher, 'duration_diff_pairs'):
+                    duration_diff_handler.set_diff_pairs(matcher.duration_diff_pairs)
     except Exception as e:
-        logger.error("Failed to update duration difference data: {}".format(e))
+        logger.error(f"更新持续时间差异数据失败: {e}")
+        
+    return create_duration_diff_layout()

@@ -27,14 +27,12 @@ from .table_data_generator import TableDataGenerator
 from .delay_analysis import DelayAnalysis
 from .multi_algorithm_manager import MultiAlgorithmManager, AlgorithmDataset, AlgorithmStatus
 from .force_curve_analyzer import ForceCurveAnalyzer
-from .relative_delay_analyzer import RelativeDelayAnalyzer
 
 logger = Logger.get_logger()
 
 
 class PianoAnalysisBackend:
     """钢琴分析后端主类 - 统一管理单算法和多算法分析流程"""
-
     def __init__(self, session_id=None, history_manager=None):
         """
         初始化钢琴分析后端
@@ -74,9 +72,6 @@ class PianoAnalysisBackend:
         
         # 初始化表格数据生成器（统一管理所有表格数据生成）
         self.table_data_generator = TableDataGenerator(self)
-        
-        # 初始化相对延时分析器（处理相对延时分析）
-        self.relative_delay_analyzer = RelativeDelayAnalyzer(self)
         
         # ==================== 临时文件缓存 ====================
         # 用于存储上传的文件二进制数据，减少 dcc.Store 的负载
@@ -238,13 +233,13 @@ class PianoAnalysisBackend:
             bool: 分析是否成功
         """
         try:
-            logger.info("开始数据分析流程")
+            logger.debug("[DEBUG]开始数据分析流程")
 
             # 获取需要分析的算法列表
             algorithms_to_analyze = self._get_algorithms_to_analyze()
 
             if not algorithms_to_analyze:
-                logger.error("没有需要分析的算法")
+                logger.error("[ERROR]没有需要分析的算法")
                 return False
 
             # 对每个算法执行分析
@@ -252,12 +247,12 @@ class PianoAnalysisBackend:
             for algorithm in algorithms_to_analyze:
                 if self._analyze_single_algorithm(algorithm):
                     success_count += 1
-                    logger.info(f"算法 '{algorithm.metadata.algorithm_name}' 分析成功")
+                    logger.debug(f"[DEBUG]算法 '{algorithm.metadata.algorithm_name}' 分析成功")
                 else:
-                    logger.error(f"算法 '{algorithm.metadata.algorithm_name}' 分析失败")
+                    logger.error(f"[ERROR]算法 '{algorithm.metadata.algorithm_name}' 分析失败")
 
             if success_count == len(algorithms_to_analyze):
-                logger.info(f"数据分析完成，共分析 {success_count} 个算法")
+                logger.debug(f"[DEBUG]数据分析完成，共分析 {success_count} 个算法")
                 return True
             else:
                 logger.error(f"数据分析部分失败，成功 {success_count}/{len(algorithms_to_analyze)} 个算法")
@@ -309,12 +304,12 @@ class PianoAnalysisBackend:
             raw_record_notes = [note.to_standard_note() for note in tracks[0]]
             raw_replay_notes = [note.to_standard_note() for note in tracks[1]]
             
-            # [新增] 重新应用最新的过滤规则 (User Requirement)
+            # 重新应用最新的过滤规则 (User Requirement)
             from spmid.data_filter import DataFilter
             data_filter = DataFilter()
             record_notes, replay_notes, _ = data_filter.filter_notes(raw_record_notes, raw_replay_notes)
             
-            logger.info(f"💾 从历史加载并重新过滤: 录制({len(raw_record_notes)}->{len(record_notes)}), 播放({len(raw_replay_notes)}->{len(replay_notes)})")
+            logger.debug(f"[DEBUG] 从历史加载并重新过滤: 录制({len(raw_record_notes)}->{len(record_notes)}), 播放({len(raw_replay_notes)}->{len(replay_notes)})")
 
             # 4. 生成算法名称 (如果用户没给，用文件名+电机/算法标记)
             display_name = f"{record['filename']}_{record['motor_type']}_{record['algorithm']}"
@@ -567,13 +562,6 @@ class PianoAnalysisBackend:
         """
         return self.plot_service.get_waterfall_key_statistics(data_types)
     
-    def generate_watefall_conbine_plot(self, key_on: float, key_off: float, key_id: int) -> Any:
-        """生成瀑布图对比图（委托给PlotService）"""
-        return self.plot_service.generate_watefall_conbine_plot(key_on, key_off, key_id)
-    
-    def generate_watefall_conbine_plot_by_index(self, index: int, is_record: bool) -> Any:
-        """根据索引生成瀑布图对比图（委托给PlotService）"""
-        return self.plot_service.generate_watefall_conbine_plot_by_index(index, is_record)
     
     def _find_algorithm_by_name(self, algorithm_name: str):
         """根据算法名称查找算法"""
@@ -1257,22 +1245,6 @@ class PianoAnalysisBackend:
             return {}
         
         return self.multi_algorithm_manager.get_comparison_statistics()
-    
-    def get_same_algorithm_relative_delay_analysis(self) -> Dict[str, Any]:
-        """分析同种算法不同曲子的相对延时分布（委托给RelativeDelayAnalyzer）"""
-        return self.relative_delay_analyzer.analyze_same_algorithm_relative_delays()
-    
-    def get_relative_delay_range_data_points_by_subplot(
-        self, 
-        display_name: str, 
-        filename_display: str, 
-        relative_delay_min_ms: float, 
-        relative_delay_max_ms: float
-    ) -> List[Dict[str, Any]]:
-        """根据子图信息获取指定相对延时范围内的数据点详情（委托给RelativeDelayAnalyzer）"""
-        return self.relative_delay_analyzer.get_data_points_by_range(
-            display_name, filename_display, relative_delay_min_ms, relative_delay_max_ms
-        )
     
     def generate_relative_delay_distribution_plot(self) -> Any:
         """生成同种算法不同曲子的相对延时分布图（委托给PlotService）"""

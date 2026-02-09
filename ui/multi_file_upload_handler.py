@@ -10,10 +10,13 @@
 import time
 import hashlib
 import traceback
+import os
 from typing import List, Dict, Any, Tuple, Optional
 import dash_bootstrap_components as dbc
 from dash import html, dcc, no_update
+
 from utils.logger import Logger
+from backend.file_upload_service import FileUploadService
 
 logger = Logger.get_logger()
 
@@ -34,11 +37,12 @@ class MultiFileUploadHandler:
         """单例模式实现"""
         if cls._instance is None:
             cls._instance = super(MultiFileUploadHandler, cls).__new__(cls)
+            cls._instance._initialized = False
         return cls._instance
 
     def __init__(self):
         """初始化多文件上传处理器（只在第一次创建时执行）"""
-        if not hasattr(self, '_initialized'):
+        if not self._initialized:
             self._initialized = True
     
     def normalize_file_lists(self, contents_list: Any, filename_list: Any) -> Tuple[List[str], List[str]]:
@@ -107,7 +111,6 @@ class MultiFileUploadHandler:
             default_piano = "Grand"
             
             # [优化] 如果是新文件，默认提示去掉后缀后的文件名
-            import os
             default_display_name = os.path.splitext(filename)[0]
             
             bg_color = '#f8f9fa'
@@ -248,17 +251,8 @@ class MultiFileUploadHandler:
                 'history_hints': [] # 存储查重后的历史信息（若有）
             }
             
-            # 获取已处理的文件列表
-            processed_files = set()
-            if existing_store_data and isinstance(existing_store_data, dict):
-                processed_files = set(existing_store_data.get('filenames', []))
-            
-            # 创建文件卡片列表 - 统一上传管理器已处理重复检测，这里总是处理
+            # 遍历新上传的文件并生成卡片
             file_items = []
-            
-            # 为了导入解密逻辑（FileUploadService 是静态方法，但也可以直接用 base64）
-            from backend.file_upload_service import FileUploadService
-            
 
             for i, (content, filename) in enumerate(zip(contents_list, filename_list)):
                 file_id = self.generate_file_id(timestamp, i)

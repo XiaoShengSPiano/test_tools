@@ -17,7 +17,7 @@ from utils.logger import Logger
 
 logger = Logger.get_logger()
 
-
+# TODO
 class ForceCurveAnalyzer:
     """
     力度曲线分析器
@@ -40,7 +40,7 @@ class ForceCurveAnalyzer:
     
     def compare_curves(self, note1, note2, record_note=None, replay_note=None, mean_delay: float = 0.0) -> Optional[Dict[str, Any]]:
         """
-        对比两条力度曲线 (深度重构版)
+        对比两条力度曲线
         """
         try:
             if record_note is None: record_note = note1
@@ -165,7 +165,7 @@ class ForceCurveAnalyzer:
             overall_similarity = np.sqrt(physical_similarity * shape_similarity)
             overall_similarity = max(0.0, min(1.0, overall_similarity))
 
-            # 根据用户要求，如果视觉差异大，分数必须低。
+            # 如果视觉差异大，分数必须低。
             # 这里强制阈值：如果物理结构分低于 0.6，总分直接锁定在及格线以下
             if physical_similarity < 0.6:
                 overall_similarity = min(overall_similarity, physical_similarity)
