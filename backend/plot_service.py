@@ -238,11 +238,35 @@ class PlotService:
         if not analyzer or not analyzer.note_matcher:
             return None, None
             
-        # 1. 优先通过 UUID 匹配对查找
-        # record_index/replay_index can be UUID (str) or offset (int)
-        matched = analyzer.note_matcher.find_matched_pair_by_uuid(record_index, replay_index)
-        if matched:
-            return matched[0], matched[1]
+        # 1. 尝试通过 UUID 精确对查找 (如果两个索引都提供)
+        if record_index is not None and replay_index is not None:
+            matched = analyzer.note_matcher.find_matched_pair_by_uuid(record_index, replay_index)
+            if matched:
+                return matched[0], matched[1]
+            
+        # 1.1 扩展查找：如果只有 record_index，寻找任何匹配到该 record 的对 (用于多算法对比)
+        if record_index is not None:
+            # 在匹配对中搜索
+            for rec, rep, match_type, error_ms in analyzer.note_matcher.matched_pairs:
+                if str(getattr(rec, 'uuid', '')) == str(record_index):
+                    return rec, rep
+            
+            # 在丢锤中搜索 (录制侧有，回放侧无)
+            r_note = next((n for n in analyzer.drop_hammers if str(getattr(n, 'uuid', n.offset)) == str(record_index)), None)
+            if r_note:
+                return r_note, None
+
+        # 1.2 扩展查找：如果只有 replay_index，寻找任何匹配到该 replay 的对
+        if replay_index is not None:
+            # 在匹配对中搜索
+            for rec, rep, match_type, error_ms in analyzer.note_matcher.matched_pairs:
+                if str(getattr(rep, 'uuid', '')) == str(replay_index):
+                    return rec, rep
+            
+            # 在多锤中搜索 (录制侧无，回放侧有)
+            p_note = next((n for n in analyzer.multi_hammers if str(getattr(n, 'uuid', n.offset)) == str(replay_index)), None)
+            if p_note:
+                return None, p_note
             
         # 2. 尝试备选方案：通过 Index/Offset 查找 (兼容单算法模式)
         if is_record is not None:
@@ -250,17 +274,8 @@ class PlotService:
             for r_n, p_n in pairs:
                 if (is_record and r_n.offset == record_index) or (not is_record and p_n.offset == replay_index):
                     return r_n, p_n
-        
-        # 3. 查找单侧错误音符 (丢锤/多锤)
-        r_note, p_note = None, None
-        if record_index is not None:
-            # Check drop hammers (record side error)
-            r_note = next((n for n in analyzer.drop_hammers if str(getattr(n, 'uuid', n.offset)) == str(record_index)), None)
-        if replay_index is not None:
-            # Check multi hammers (replay side error)
-            p_note = next((n for n in analyzer.multi_hammers if str(getattr(n, 'uuid', n.offset)) == str(replay_index)), None)
             
-        return r_note, p_note
+        return None, None
 
     def generate_scatter_detail_plot_by_indices(self, record_index: int, replay_index: int) -> Tuple[Any, Any, Any]:
         """
@@ -306,6 +321,11 @@ class PlotService:
             mean_delay_val = mean_error_0_1ms / 10.0  # 转换为毫秒
             mean_delays[algorithm_name or 'default'] = mean_delay_val
 
+        # 确保我们有录制侧的标识符，以便在其他算法中寻找对应点
+        search_record_uuid = record_index
+        if search_record_uuid is None and r_note:
+            search_record_uuid = getattr(r_note, 'uuid', None)
+
         # 收集交叉比对音符 (仅在多算法模式下有用)
         others = []
         if algorithm_name and self.backend.multi_algorithm_manager:
@@ -321,9 +341,10 @@ class PlotService:
                     mean_delays[alg.metadata.algorithm_name] = 0.0 # Default if error
                 
                 # 寻找其他算法中匹配到同一录制UUID的播放音符
-                # 假设record_index是UUID，或者在单算法模式下是offset
-                _, other_p = self._find_detail_notes(alg.analyzer, record_index, None)
-                if other_p: others.append((alg.metadata.algorithm_name, other_p))
+                if search_record_uuid is not None:
+                    _, other_p = self._find_detail_notes(alg.analyzer, search_record_uuid, None)
+                    if other_p: 
+                        others.append((alg.metadata.algorithm_name, other_p))
 
         # 生成结果
         f1 = self.plot_generator.generate_note_comparison_plot(r_note, None, algorithm_name=algorithm_name, mean_delays=mean_delays)

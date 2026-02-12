@@ -3,10 +3,8 @@
 
 """
 力度曲线分析器 - 使用标准DTW算法分析曲线相似度
-
-简化版：移除复杂的导数DTW，直接比较归一化后的曲线形状
 """
-
+import traceback
 import plotly.graph_objects as go
 from typing import List, Tuple, Dict, Any, Optional, Union
 import numpy as np
@@ -17,7 +15,7 @@ from utils.logger import Logger
 
 logger = Logger.get_logger()
 
-# TODO
+# TODO：需要优化 ？
 class ForceCurveAnalyzer:
     """
     力度曲线分析器
@@ -27,7 +25,7 @@ class ForceCurveAnalyzer:
 
     def __init__(self,
                  dtw_distance_metric: str = 'euclidean',
-                 dtw_window_size_ratio: float = 0.5):
+                 dtw_window_size_ratio: float = 0.15):
         """
         初始化力度曲线分析器
 
@@ -37,168 +35,137 @@ class ForceCurveAnalyzer:
         """
         self.dtw_distance_metric = dtw_distance_metric
         self.dtw_window_size_ratio = dtw_window_size_ratio
-    
+
+    def _calculate_action_fidelity(self, s1: Dict, s2: Dict) -> float:
+        """计算两个动作段落之间的保真度"""
+        if s1['type'] != s2['type']: return 0.0
+        max_v = max(abs(s1['end_v']), abs(s2['end_v']), 1.0)
+        v_sim = np.exp(-5.0 * (abs(s1['end_v'] - s2['end_v']) / max_v))
+        max_slp = max(abs(s1['avg_slope']), abs(s2['avg_slope']), 0.1)
+        slp_sim = np.exp(-5.0 * (abs(s1['avg_slope'] - s2['avg_slope']) / max_slp))
+        return v_sim * slp_sim
+
+    def _get_structural_alignment(self, sigs1: List[Dict], sigs2: List[Dict]) -> Tuple[float, List[Tuple[int, int]]]:
+        """使用带权 LCS 算法对齐物理动作序列"""
+        if not sigs1 and not sigs2: return 1.0, []
+        if not sigs1 or not sigs2: return 0.2, []
+        
+        # 提取非 Stable 的动作序列
+        seq1 = [(i, s) for i, s in enumerate(sigs1) if s['type'] != 'Stable']
+        seq2 = [(i, s) for i, s in enumerate(sigs2) if s['type'] != 'Stable']
+        
+        if not seq1 or not seq2: return 0.2, []
+
+        n, m = len(seq1), len(seq2)
+        dp = np.zeros((n + 1, m + 1))
+        
+        for i in range(1, n + 1):
+            for j in range(1, m + 1):
+                if seq1[i-1][1]['type'] == seq2[j-1][1]['type']:
+                    weight = self._calculate_action_fidelity(seq1[i-1][1], seq2[j-1][1])
+                    dp[i, j] = dp[i-1, j-1] + weight
+                else:
+                    dp[i, j] = max(dp[i-1, j], dp[i, j-1])
+        
+        matches = []
+        i, j = n, m
+        while i > 0 and j > 0:
+            if seq1[i-1][1]['type'] == seq2[j-1][1]['type'] and dp[i, j] > max(dp[i-1, j], dp[i, j-1]):
+                matches.append((seq1[i-1][0], seq2[j-1][0]))
+                i -= 1
+                j -= 1
+            elif dp[i-1, j] >= dp[i, j-1]:
+                i -= 1
+            else:
+                j -= 1
+        
+        match_weight_sum = dp[n, m]
+        score = (match_weight_sum / max(n, m)) ** 1.2
+        return max(0.1, min(1.0, score)), matches[::-1]
+
     def compare_curves(self, note1, note2, record_note=None, replay_note=None, mean_delay: float = 0.0) -> Optional[Dict[str, Any]]:
-        """
-        对比两条力度曲线
-        """
+        """对比两条力度曲线"""
         try:
             if record_note is None: record_note = note1
             if replay_note is None: replay_note = note2
             
-            # 提取原始曲线 (不加 offset)
+            # 1. 提取并采样曲线 (0.1ms 硬件级精度)
             curve1_raw = self._extract_full_curve(record_note, use_offset=False)
             curve2_raw = self._extract_full_curve(replay_note, use_offset=False)
+            if not curve1_raw or not curve2_raw: return None
             
-            if curve1_raw is None or curve2_raw is None:
-                return None
-            
-            t1_raw, v1_raw = curve1_raw
-            t2_raw, v2_raw = curve2_raw
-            
-            # 归一化时间轴：采用相对时间 (从0开始)
-            # 这样对比将纯粹专注于波形形状，而不受其在全局序列中位置的影响
-            t1_rel = t1_raw - t1_raw[0] if len(t1_raw) > 0 else t1_raw
-            t2_rel = t2_raw - t2_raw[0] if len(t2_raw) > 0 else t2_raw
+            target_dt = 0.1
+            t1, v1 = self._resample_curves(curve1_raw[0] - curve1_raw[0][0], curve1_raw[1], target_dt)
+            t2, v2 = self._resample_curves(curve2_raw[0] - curve2_raw[0][0], curve2_raw[1], target_dt)
 
-            # 1. 重采样 (建立统一的时间基准)
-            # 使用 0.5ms 作为均衡步长
-            target_dt = 0.5 
-            t1, v1 = self._resample_curves(t1_rel, v1_raw, target_dt)
-            t2, v2 = self._resample_curves(t2_rel, v2_raw, target_dt)
+            # 2. 归一化特征
+            v1_norm, v2_norm = self._normalize(v1), self._normalize(v2)
 
-            # 2. 对齐策略 (由于已经相对化，此处对齐更加纯粹)
-            # 在相对时间轴下，直接比较形状
-            t2_aligned = t2 # 已经对齐到起始点 0
-
-            # 3. 归一化 (用于形状对比)
-            v1_norm = self._normalize(v1)
-            v2_norm = self._normalize(v2)
-
-            # 4.1 提取动作签名序列 (Action Signature)
-            # 将曲线转化为一系列有序的物理动作 [Rise, Fall, Rise...]
+            # 3. 物理特征提取与结构化对齐
             rec_features = self._analyze_single_curve_features(t1, v1)
-            rep_features = self._analyze_single_curve_features(t2_aligned, v2)
+            rep_features = self._analyze_single_curve_features(t2, v2)
             
-            rec_sigs = rec_features.get('segments', [])
-            rep_sigs = rep_features.get('segments', [])
-            
-            # --- 深度对比逻辑：统一特征签名匹配 ---
-            
-            # 1. 结构一致性 (Structural Integrity)
-            def get_structural_score(sigs1, sigs2):
-                if not sigs1 and not sigs2: return 1.0
-                if not sigs1 or not sigs2: return 0.2 # 彻底结构缺失重罚
-                
-                type_seq1 = [s['type'] for s in sigs1 if s['type'] != 'Stable']
-                type_seq2 = [s['type'] for s in sigs2 if s['type'] != 'Stable']
-                
-                if type_seq1 == type_seq2:
-                    return 1.0
-                else:
-                    # 序列不一致惩罚 (基于编辑距离的思想，简单化处理)
-                    common_len = min(len(type_seq1), len(type_seq2))
-                    matches = sum(1 for i in range(common_len) if type_seq1[i] == type_seq2[i])
-                    base_score = matches / max(len(type_seq1), len(type_seq2))
-                    return base_score ** 2 # 非线性重罚
+            rec_sigs, rep_sigs = rec_features.get('segments', []), rep_features.get('segments', [])
+            structural_score, aligned_segment_pairs = self._get_structural_alignment(rec_sigs, rep_sigs)
 
-            structural_score = get_structural_score(rec_sigs, rep_sigs)
-
-            # 2. 细节还原度 (Signature Fidelity) - 幅度与斜率的一体化对比
-            def compare_action_fidelity(s1, s2):
-                # 对比端点幅度 (End Value)
-                # 使用指数惩罚，偏差 15% 以上分数迅速跌落
-                max_v = max(abs(s1['end_v']), abs(s2['end_v']), 1.0)
-                v_diff = abs(s1['end_v'] - s2['end_v']) / max_v
-                v_sim = np.exp(-12.0 * v_diff)
-                
-                # 对比斜率 (Slope)
-                max_slp = max(abs(s1['avg_slope']), abs(s2['avg_slope']), 0.1)
-                slp_diff = abs(s1['avg_slope'] - s2['avg_slope']) / max_slp
-                slp_sim = np.exp(-10.0 * slp_diff)
-                
-                # 动作还原度 = 幅度与斜率的联合判定（任何一个不行都不行）
-                return v_sim * slp_sim 
-
+            # 4. 细节还原度计算 (仅针对对齐成功的物理段落)
             fidelity_scores = []
             amp_sims = []
-            min_len = min(len(rec_sigs), len(rep_sigs))
-            for i in range(min_len):
-                if rec_sigs[i]['type'] == rep_sigs[i]['type']:
-                    # 单独计算幅度分用于显示 (端点值对比)
-                    max_v = max(abs(rec_sigs[i]['end_v']), abs(rep_sigs[i]['end_v']), 1.0)
-                    v_sim = np.exp(-12.0 * (abs(rec_sigs[i]['end_v'] - rep_sigs[i]['end_v']) / max_v))
-                    amp_sims.append(v_sim)
-                    
-                    fidelity_scores.append(compare_action_fidelity(rec_sigs[i], rep_sigs[i]))
-                else:
-                    fidelity_scores.append(0.0)
-                    amp_sims.append(0.0)
+            for (idx1, idx2) in aligned_segment_pairs:
+                s1, s2 = rec_sigs[idx1], rep_sigs[idx2]
+                f_score = self._calculate_action_fidelity(s1, s2)
+                fidelity_scores.append(f_score)
+                max_v = max(abs(s1['end_v']), abs(s2['end_v']), 1.0)
+                amp_sims.append(np.exp(-5.0 * (abs(s1['end_v'] - s2['end_v']) / max_v)))
             
-            avg_fidelity = np.mean(fidelity_scores) if fidelity_scores else structural_score
-            amp_similarity = np.mean(amp_sims) if amp_sims else structural_score
+            avg_fidelity = np.mean(fidelity_scores) if fidelity_scores else 0.0
+            amp_similarity = np.mean(amp_sims) if amp_sims else 0.0
             
-            # 物理结构分 (Strict Physical) - 50%
-            physical_similarity = structural_score * (0.3 + 0.7 * avg_fidelity)
-            # 确保在范围 0-1
-            physical_similarity = max(0.0, min(1.0, physical_similarity))
-            amp_similarity = max(0.0, min(1.0, amp_similarity))
-
-            # 4.2 形状与相关性评分 (Shape & Correlation) - 50%
-            # 调高 DTW 敏感度至极高 (映射系数 20)
+            # 5. 边沿相似度聚合
+            rise_pairs = [f for f, (idx1, _) in zip(fidelity_scores, aligned_segment_pairs) if rec_sigs[idx1]['type'] == 'Rise']
+            fall_pairs = [f for f, (idx1, _) in zip(fidelity_scores, aligned_segment_pairs) if rec_sigs[idx1]['type'] == 'Fall']
+            rising_sim = np.mean(rise_pairs) if rise_pairs else 0.0
+            falling_sim = np.mean(fall_pairs) if fall_pairs else 0.0
+            
+            # 6. 形状相似度 (DTW + Pearson)
             window_size = int(max(len(v1_norm), len(v2_norm)) * self.dtw_window_size_ratio)
-            alignment = dtw(
-                v1_norm, v2_norm, 
-                dist_method=self.dtw_distance_metric,
-                step_pattern='symmetric2',
-                window_type='slantedband' if self.dtw_window_size_ratio > 0 else 'none',
-                window_args={'window_size': window_size} if self.dtw_window_size_ratio > 0 else {}
-            )
-            norm_dist = alignment.distance / (len(v1_norm) + len(v2_norm))
-            dtw_sim = np.exp(-20.0 * norm_dist) 
+            alignment = dtw(v1_norm, v2_norm, dist_method=self.dtw_distance_metric, step_pattern='symmetric2',
+                            window_type='slantedband' if self.dtw_window_size_ratio > 0 else 'none',
+                            window_args={'window_size': window_size} if self.dtw_window_size_ratio > 0 else {})
             
+            dtw_sim = np.exp(-15.0 * (alignment.distance / (len(v1_norm) + len(v2_norm))))
             pearson_sim = self._calculate_pearson(v1_norm, v2_norm)
-            shape_similarity = 0.4 * dtw_sim + 0.6 * pearson_sim
+            shape_similarity = 0.7 * dtw_sim + 0.3 * pearson_sim
 
-            # 5. 综合总分：采用几何平均思想 (Anti-inflation)
-            # 任何一个维度（物理结构或形状相关性）极低，都会导致总分极低
-            overall_similarity = np.sqrt(physical_similarity * shape_similarity)
-            overall_similarity = max(0.0, min(1.0, overall_similarity))
-
-            # 如果视觉差异大，分数必须低。
-            # 这里强制阈值：如果物理结构分低于 0.6，总分直接锁定在及格线以下
-            if physical_similarity < 0.6:
-                overall_similarity = min(overall_similarity, physical_similarity)
-
-            # 6. 构建结果
-            stages = {
-                'stage_start_aligned': {'record_times': t1, 'record_values': v1, 'replay_times': t2_aligned, 'replay_values': v2, 'description': '相对时间对齐'},
-                'stage_normalized': {'record_times': t1, 'record_values': v1_norm, 'replay_times': t2_aligned, 'replay_values': v2_norm, 'description': '归一化特征'}
-            }
+            # 7. 综合判定 (4:6 加权)
+            physical_similarity = structural_score * (0.3 + 0.7 * avg_fidelity)
+            overall_similarity = 0.4 * physical_similarity + 0.6 * shape_similarity
             
+            # 兼容性修正逻辑
+            if physical_similarity < 0.6:
+                overall_similarity *= (0.5 + 0.5 * (physical_similarity / 0.6))
+
             return {
                 'match_found': True,
-                'overall_similarity': float(overall_similarity),
+                'overall_similarity': float(np.clip(overall_similarity, 0, 1)),
                 'shape_similarity': float(shape_similarity),
                 'amplitude_similarity': float(amp_similarity),
-                'physical_similarity': float(physical_similarity),
+                'physical_similarity': float(np.clip(physical_similarity, 0, 1)),
                 'pearson_correlation': float(pearson_sim),
                 'dtw_distance': float(alignment.distance),
-                'max_record': rec_features.get('peak_value', 0.0),
-                'max_replay': rep_features.get('peak_value', 0.0),
-                'processing_stages': stages,
+                'processing_stages': {
+                    'stage_start_aligned': {'record_times': t1, 'record_values': v1, 'replay_times': t2, 'replay_values': v2, 'description': '时间轴对齐'},
+                    'stage_normalized': {'record_times': t1, 'record_values': v1_norm, 'replay_times': t2, 'replay_values': v2_norm, 'description': '特征归一化'}
+                },
                 'record_features': rec_features,
                 'replay_features': rep_features,
                 'feature_comparison': self._compare_features(rec_features, rep_features),
-                'rising_edge_similarity': float(physical_similarity),
-                'falling_edge_similarity': float(physical_similarity),
-                'alignment_comparison': {'record_times': t1, 'record_values': v1, 'replay_times': t2_aligned, 'replay_values': v2}
+                'rising_edge_similarity': float(rising_sim),
+                'falling_edge_similarity': float(falling_sim),
+                'alignment_comparison': {'record_times': t1, 'record_values': v1, 'replay_times': t2, 'replay_values': v2}
             }
-            
         except Exception as e:
-            logger.error(f"❌ DTW曲线对比失败: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
+            logger.error(f"❌ 曲线对比失败: {e}\n{traceback.format_exc()}")
             return None
 
     def _normalize(self, values: np.ndarray) -> np.ndarray:
@@ -211,7 +178,7 @@ class ForceCurveAnalyzer:
             
         return (values - v_min) / (v_max - v_min)
 
-    def _resample_curves(self, times: np.ndarray, values: np.ndarray, target_dt: float = 0.5) -> Tuple[np.ndarray, np.ndarray]:
+    def _resample_curves(self, times: np.ndarray, values: np.ndarray, target_dt: float = 0.1) -> Tuple[np.ndarray, np.ndarray]:
         """
         重采样曲线到固定的时间间隔 (ms)
         针对 100us (0.1ms) 采样单位进行统一插值
@@ -325,8 +292,10 @@ class ForceCurveAnalyzer:
             # 计算一阶导数 (速度)
             dv = np.gradient(v_smooth, times)
             
-            # 状态判定阈值 (力度单位/ms)
-            threshold = 1.0 
+            # 状态判定阈值 (动态调整：基于峰值力度的 1%)
+            # 确保轻触和重压都能获得合理的段落分解
+            peak_val = np.max(values)
+            threshold = max(0.5, peak_val * 0.01)
             
             segments = []
             curr_type = None
@@ -380,16 +349,12 @@ class ForceCurveAnalyzer:
             return []
 
     def _compare_features(self, feat1: Dict, feat2: Dict) -> Dict[str, Any]:
-        """对比两组特征 (增强版)"""
-        if not feat1 or not feat2:
-            return {}
-            
+        """对齐后的核心物理特征差异对比"""
+        if not feat1 or not feat2: return {}
         return {
-            'peak_diff': feat2.get('peak_value', 0) - feat1.get('peak_value', 0),
-            'peak_count_diff': feat2.get('peak_count', 1) - feat1.get('peak_count', 1),
-            'rise_time_diff': feat2.get('rise_time_ms', 0) - feat1.get('rise_time_ms', 0),
-            'volatility_ratio': feat2.get('volatility', 0) / (feat1.get('volatility', 0) + 1e-6),
-            'impulse_diff': feat2.get('impulse', 0) - feat1.get('impulse', 0)
+            'peak_diff': float(feat2.get('peak_value', 0) - feat1.get('peak_value', 0)),
+            'peak_count_diff': int(feat2.get('peak_count', 1) - feat1.get('peak_count', 1)),
+            'rise_time_diff': float(feat2.get('rise_time_ms', 0) - feat1.get('rise_time_ms', 0))
         }
     
     def generate_processing_stages_figures(self, comparison_result: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -484,31 +449,6 @@ class ForceCurveAnalyzer:
                 name=f'{prefix}各波谷', showlegend=False
             ))
 
-    def visualize_all_processing_stages(self, comparison_result: Dict[str, Any]) -> Optional[Any]:
-        """兼容性包装器"""
-        return None
-
-    def visualize_alignment_comparison(self, comparison_result: Dict[str, Any]) -> Optional[Any]:
-        """兼容性包装器 - 返回修正后的对比图"""
-        try:
-            if 'processing_stages' not in comparison_result: return None
-            stages = comparison_result['processing_stages']
-            if 'stage_offset_corrected' not in stages: return None
-            
-            data = stages['stage_offset_corrected']
-            fig = go.Figure()
-            fig.add_trace(go.Scattergl(x=data['record_times'], y=data['record_values'], name='录制', line=dict(color='blue')))
-            fig.add_trace(go.Scattergl(x=data['replay_times'], y=data['replay_values'], name='播放', line=dict(color='red', dash='dash')))
-            fig.update_layout(title="曲线对比 (时间修正后)")
-            return fig
-        except:
-            return None
-
-    def generate_similarity_stages_figures(self, comparison_result: Dict[str, Any],
-                                         base_name: str, compare_name: str, similarity: float) -> List[Dict[str, Any]]:
-        """兼容性包装器"""
-        return self.generate_processing_stages_figures(comparison_result)
-
     def _extract_full_curve(self, note, use_offset=True) -> Optional[Tuple[np.ndarray, np.ndarray]]:
         """从 Note 的 after_touch 提取完整曲线 (times, values)。"""
         try:
@@ -534,46 +474,4 @@ class ForceCurveAnalyzer:
             logger.error(f"提取曲线失败: {e}")
             return None
     
-    def _calculate_simple_similarity(self, values1: np.ndarray, values2: np.ndarray) -> float:
-        """
-        计算简单的相似度
 
-        Args:
-            values1: 第一组值
-            values2: 第二组值
-
-        Returns:
-            相似度 (0-1)
-        """
-        try:
-            # 处理不同长度的数组 - 插值到相同长度
-            len1, len2 = len(values1), len(values2)
-            if len1 != len2:
-                # 取较短的长度作为基准，插值较长的数组
-                min_len = min(len1, len2)
-                if len1 > len2:
-                    # values1 较长，对 values2 插值
-                    indices = np.linspace(0, len2-1, min_len)
-                    values2_aligned = np.interp(indices, np.arange(len2), values2)
-                    values1_aligned = values1[:min_len]
-                else:
-                    # values2 较长，对 values1 插值
-                    indices = np.linspace(0, len1-1, min_len)
-                    values1_aligned = np.interp(indices, np.arange(len1), values1)
-                    values2_aligned = values2[:min_len]
-            else:
-                values1_aligned = values1
-                values2_aligned = values2
-
-            # 简单的均方根误差归一化相似度
-            mse = np.mean((values1_aligned - values2_aligned) ** 2)
-            max_possible_error = np.var(values1_aligned) + np.var(values2_aligned)
-            if max_possible_error == 0:
-                return 1.0
-
-            similarity = 1.0 - (mse / max_possible_error)
-            return max(0.0, min(1.0, similarity))
-
-        except Exception as e:
-            logger.error(f"❌ 计算相似度失败: {e}")
-            return 0.5

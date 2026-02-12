@@ -128,6 +128,7 @@ def get_failed_matches_detail_data(matcher, algorithm_name: Optional[str] = None
         for (data_type, index), reason in failure_reasons.items():
             attr = '_record_data' if data_type == 'record' else '_replay_data'
             notes = getattr(matcher, attr, [])
+            
             if index < len(notes):
                 note = notes[index]
                 row = {
@@ -135,12 +136,17 @@ def get_failed_matches_detail_data(matcher, algorithm_name: Optional[str] = None
                     'index': index, 'key_id': note.id, 'reason': reason,
                     'keyon': f"{note.key_on_ms:.2f}", 'keyoff': f"{note.key_off_ms:.2f}",
                     'duration': f"{note.duration_ms:.2f}", 'hammer_time': format_hammer_time(note),
-                    'hammer_velocity': format_hammer_velocity(note)
+                    'hammer_velocity': format_hammer_velocity(note),
+                    'record_uuid': note.uuid if data_type == 'record' else None,
+                    'replay_uuid': note.uuid if data_type == 'replay' else None,
+                    'global_index': note.uuid
                 }
                 if algorithm_name: row['algorithm_name'] = algorithm_name
                 detail_data.append(row)
         return detail_data
-    except: return []
+    except Exception as e:
+        logger.error(f"Error in get_failed_matches_detail_data: {e}")
+        return []
 
 def show_single_grade_detail(button_index, session_id, session_manager):
     """根据点击属性派发具体数据及列定义"""
@@ -216,10 +222,61 @@ def _process_note_data(session_manager, session_id, row_data, table_index, activ
         if record_uuid and replay_uuid:
             matched = matcher.find_matched_pair_by_uuid(str(record_uuid), str(replay_uuid))
         
-        if not matched:
-            logger.warning("_process_note_data: 未找到匹配对 key_id=%s record_uuid=%s replay_uuid=%s", key_id, record_uuid, replay_uuid)
-            return _create_modal_style(True), [html.Div("未找到匹配曲线")], no_update
+        # 获取前后邻居匹配对 (即使当前未匹配，也可以根据 UUID 找邻居)
+        prev_pair, next_pair = matcher.get_neighbor_matched_pairs(
+            str(record_uuid) if record_uuid else None, 
+            str(replay_uuid) if replay_uuid else None
+        )
         
+        logger.info(f"[DEBUG] _process_note_data: matched={matched is not None}, prev={prev_pair is not None}, next={next_pair is not None}")
+
+        if not matched:
+            # 处理未匹配音符的情况
+            logger.info("_process_note_data: 处于未匹配模式，尝试显示单边曲线和邻居")
+            # 查找音符对象
+            current_note = None
+            note_side = ""
+            if record_uuid:
+                current_note = next((n for n in getattr(matcher, '_record_data', []) if str(n.uuid) == str(record_uuid)), None)
+                note_side = "录制"
+            elif replay_uuid:
+                current_note = next((n for n in getattr(matcher, '_replay_data', []) if str(n.uuid) == str(replay_uuid)), None)
+                note_side = "播放"
+            
+            if not current_note:
+                return _create_modal_style(True), [html.Div("未找到匹配曲线且无法定位原始音符")], no_update
+            
+            # 创建单边图表
+            fig_single = go.Figure()
+            plotter.add_note_traces(fig_single, current_note, f"{note_side} (原始)", "blue" if note_side=="录制" else "red")
+            fig_single.update_layout(title=f"未匹配音符详情 ({note_side} 按键 {current_note.id})", height=350)
+            
+            # 构建内容
+            tab1_content = []
+            
+            # 添加邻居 (前)
+            if prev_pair:
+                fig_p = plotter.create_comparison_figure(prev_pair)
+                fig_p.update_layout(title=f"前一匹配对 (按键 {current_note.id})", height=250)
+                tab1_content.append(html.H6("⬅️ 前一匹配对", className="text-muted mt-2"))
+                tab1_content.append(dcc.Graph(figure=fig_p, style={'marginBottom': '15px'}))
+                tab1_content.append(html.Hr())
+
+            # 当前音符
+            tab1_content.append(html.H6(f"⚠️ 当前音符 (未匹配 - {note_side})", className="text-warning mt-2"))
+            tab1_content.append(dcc.Graph(figure=fig_single, style={'marginBottom': '20px'}))
+
+            # 添加邻居 (后)
+            if next_pair:
+                tab1_content.append(html.Hr())
+                fig_n = plotter.create_comparison_figure(next_pair)
+                fig_n.update_layout(title=f"后一匹配对 (按键 {current_note.id})", height=250)
+                tab1_content.append(html.H6("➡️ 后一匹配对", className="text-muted mt-2"))
+                tab1_content.append(dcc.Graph(figure=fig_n, style={'marginBottom': '15px'}))
+
+            content = [dcc.Tabs([dcc.Tab(label='曲线对比', children=html.Div(tab1_content, style={'padding': '20px'}))])]
+            return _create_modal_style(True), content, no_update
+
         rec_note, rep_note, match_type, error_ms = matched
         validation_errors = []
 
@@ -255,10 +312,55 @@ def _process_note_data(session_manager, session_id, row_data, table_index, activ
         }
         
         # Tab 1: 原始对比
-        tab1_content = [
-            dcc.Graph(figure=fig_original, style={'marginBottom': '20px'}),
-            dcc.Graph(figure=fig_aligned, style={'marginBottom': '20px'}),
-        ]
+        tab1_content = []
+        
+        # 如果有前一个匹配对，添加图表
+        if prev_pair:
+            # 获取对应的邻居序号
+            key_pairs = matcher.matched_pairs
+            # 过滤出当前按键并排序
+            this_key_pairs = sorted([p for p in key_pairs if p[0].id == key_id], key=lambda x: x[0].key_on_ms)
+            p_seq = -1
+            for i, p in enumerate(this_key_pairs):
+                if str(p[0].uuid) == str(prev_pair[0].uuid) and str(p[1].uuid) == str(prev_pair[1].uuid):
+                    p_seq = i + 1
+                    break
+            
+            p_label = f" (序号 {p_seq})" if p_seq != -1 else ""
+            fig_prev = plotter.create_comparison_figure(prev_pair)
+            fig_prev.update_layout(title=None, height=250, margin=dict(t=30))
+            tab1_content.append(html.H6(f"⬅️ 前一匹配对{p_label}", className="text-muted mt-2"))
+            tab1_content.append(dcc.Graph(figure=fig_prev, style={'marginBottom': '15px'}))
+            tab1_content.append(html.Hr())
+        # 当前匹配对的原始对比 (按照用户要求，删除对齐对比曲线)
+        # 获取当前序号
+        this_key_pairs = sorted([p for p in matcher.matched_pairs if p[0].id == key_id], key=lambda x: x[0].key_on_ms)
+        c_seq = -1
+        for i, p in enumerate(this_key_pairs):
+            if str(p[0].uuid) == str(rec_note.uuid) and str(p[1].uuid) == str(rep_note.uuid):
+                c_seq = i + 1
+                break
+        c_label = f" (序号 {c_seq})" if c_seq != -1 else ""
+        
+        fig_original.update_layout(title=None) # 移除内部标题，由 H6 统一承担
+        tab1_content.append(html.H6(f"📍 当前匹配对{c_label} - 原始对比", className="text-primary mt-2 font-weight-bold"))
+        tab1_content.append(dcc.Graph(figure=fig_original, style={'marginBottom': '20px'}))
+
+        # 如果有下一个匹配对，添加图表
+        if next_pair:
+            this_key_pairs = sorted([p for p in matcher.matched_pairs if p[0].id == key_id], key=lambda x: x[0].key_on_ms)
+            n_seq = -1
+            for i, p in enumerate(this_key_pairs):
+                if str(p[0].uuid) == str(next_pair[0].uuid) and str(p[1].uuid) == str(next_pair[1].uuid):
+                    n_seq = i + 1
+                    break
+            
+            n_label = f" (序号 {n_seq})" if n_seq != -1 else ""
+            tab1_content.append(html.Hr())
+            fig_next = plotter.create_comparison_figure(next_pair)
+            fig_next.update_layout(title=None, height=250, margin=dict(t=30))
+            tab1_content.append(html.H6(f"➡️ 后一匹配对{n_label}", className="text-muted mt-2"))
+            tab1_content.append(dcc.Graph(figure=fig_next, style={'marginBottom': '15px'}))
         
         # Tab 2: 相似度分析
         tab2_content = _create_similarity_content(rec_note, rep_note, backend)

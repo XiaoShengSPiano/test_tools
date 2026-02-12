@@ -185,6 +185,11 @@ class NoteMatcher:
         self.multi_hammers: List[Note] = []                  # 多锤音符
         self.abnormal_matches: List[Tuple[Note, Note]] = []  # 异常匹配对 (record_note, replay_note)
         self.duration_diff_pairs: List[Tuple[Note, Note, float]] = []  # 持续时间差异对 (rec_note, rep_note, ratio)
+        self.failure_reasons: Dict[Tuple[str, int], str] = {} # {(data_type, index): reason}
+
+        # 原始数据引用（用于查找邻居）
+        self._record_data: List[Note] = []
+        self._replay_data: List[Note] = []
 
         # 匹配统计
         self.match_statistics = MatchStatistics()
@@ -219,6 +224,8 @@ class NoteMatcher:
             List[Tuple[Note, Note]]: 精确匹配对列表 (record_note, replay_note)
         """
         # 按key_id分组
+        self._record_data = record_data
+        self._replay_data = replay_data
         record_by_key = self._group_notes_by_key(record_data)
         replay_by_key = self._group_notes_by_key(replay_data)
 
@@ -1225,6 +1232,88 @@ class NoteMatcher:
             if str(rec_note.uuid) == str(record_uuid) and str(rep_note.uuid) == str(replay_uuid):
                 return (rec_note, rep_note, match_type, error_ms)
         return None
+
+    def get_neighbor_matched_pairs(self, record_uuid: Optional[str] = None, replay_uuid: Optional[str] = None) -> Tuple[Optional[Tuple], Optional[Tuple]]:
+        """
+        获取当前音符/匹配对在同一按键下的前一个和后一个成功的匹配对
+        
+        Args:
+            record_uuid: 录制音符ID
+            replay_uuid: 播放音符ID (如果为None，表示查找未匹配音符的邻居)
+            
+        Returns:
+            Tuple[Optional[Tuple], Optional[Tuple]]: (previous_pair, next_pair)
+        """
+        try:
+            # 1. 确定 key_id 和参考时间
+            key_id = None
+            ref_time = 0.0
+            
+            if record_uuid and replay_uuid:
+                current_pair = self.find_matched_pair_by_uuid(record_uuid, replay_uuid)
+                if current_pair:
+                    key_id = current_pair[0].id
+                    ref_time = current_pair[0].key_on_ms
+            
+            if key_id is None:
+                # 尝试从录制数据中找
+                if record_uuid:
+                    note = next((n for n in self._record_data if str(n.uuid) == str(record_uuid)), None)
+                    if note:
+                        key_id = note.id
+                        ref_time = note.key_on_ms
+                # 尝试从播放数据中找
+                if key_id is None and replay_uuid:
+                    note = next((n for n in self._replay_data if str(n.uuid) == str(replay_uuid)), None)
+                    if note:
+                        key_id = note.id
+                        ref_time = note.key_on_ms
+            
+            if key_id is None:
+                return None, None
+                
+            # 2. 获取该按键的所有成功匹配对并按录制时间排序
+            key_pairs = [p for p in self.matched_pairs if p[0].id == key_id]
+            key_pairs.sort(key=lambda x: x[0].key_on_ms)
+            
+            logger.info(f"[DEBUG] get_neighbor_matched_pairs: key_id={key_id}, total_key_matches={len(key_pairs)}, ref_time={ref_time:.2f}")
+            
+            if not key_pairs:
+                return None, None
+                
+            # 3. 寻找参考位置
+            # 如果是当前匹配对，找它的邻居
+            prev_pair = None
+            next_pair = None
+            
+            idx = -1
+            for i, p in enumerate(key_pairs):
+                if record_uuid and replay_uuid:
+                    if str(p[0].uuid) == str(record_uuid) and str(p[1].uuid) == str(replay_uuid):
+                        idx = i
+                        break
+                elif record_uuid and str(p[0].uuid) == str(record_uuid):
+                    idx = i # 虽然逻辑上不该在 matched_pairs 里
+                    break
+            
+            if idx != -1:
+                # 找到了当前匹配对
+                prev_pair = key_pairs[idx - 1] if idx > 0 else None
+                next_pair = key_pairs[idx + 1] if idx < len(key_pairs) - 1 else None
+            else:
+                # 没找到精确匹配（可能是失败记录），找时间最近的邻居
+                for p in key_pairs:
+                    if p[0].key_on_ms < ref_time:
+                        prev_pair = p # 会不断更新为最接近的一个
+                    elif p[0].key_on_ms > ref_time:
+                        next_pair = p
+                        break # 第一个大于它的就是后一个
+            
+            logger.info(f"[DEBUG] get_neighbor_matched_pairs result: prev={prev_pair is not None}, next={next_pair is not None}")
+            return prev_pair, next_pair
+        except Exception as e:
+            logger.error(f"Error in get_neighbor_matched_pairs: {e}")
+            return None, None
 
     def get_failed_matches_count(self) -> int:
         """获取失败匹配数量"""

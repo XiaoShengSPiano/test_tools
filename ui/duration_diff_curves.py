@@ -101,14 +101,14 @@ class DurationDiffCurvePlotter:
             return analysis
         return None
 
-    def create_comparison_figure(self, matched_pair, delay_ms=0.0):
+    def create_comparison_figure(self, matched_pair, delay_ms=0.0, labels=("录制", "播放")):
         """创建完整的对比图（包含原始和对齐追踪）"""
         rec_note, rep_note, _, _ = matched_pair
         fig = go.Figure()
         
         # 绘制
-        self.add_note_traces(fig, rec_note, '录制', 'blue')
-        self.add_note_traces(fig, rep_note, '播放', 'red', time_offset=delay_ms)
+        self.add_note_traces(fig, rec_note, labels[0], 'blue')
+        self.add_note_traces(fig, rep_note, labels[1], 'red', time_offset=delay_ms)
         
         # 尝试添加拆分分析
         self.draw_split_analysis(fig, matched_pair)
